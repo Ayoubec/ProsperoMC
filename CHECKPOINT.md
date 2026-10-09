@@ -171,3 +171,46 @@ Needfinishactualgraphicsbuild95889; stage-app-update.py FIRST afternative34123, 
 ## FINAL input/UI/modpack/static-buffer update UPLOADED + VERIFIED
 All builds complete; no active build sessions. Wine module8894438ef7e7e362c85a2a47390ef3eab34c4e7d94be0f45e58f912a5d981c91, all link/import errors empty,74patches including0671 confirmed. Finalnativec35de9bdecea1362a1e62152813c8c8cacab1be8e2873a8ab097f510cee70e55, ELF8a9ba3a09d2d0b563af449c423a609b58e09535b07a117865f5b8a9bb6486b74. FinalJARf3ba9dc3162cefed22808388fb5849e9b6670993e640a826257f4f92b556b0e1. ntdll1c86 unchanged, verified/skipped. Updatedapp/JAR/win32u/Eboot/param0x80040/sourcepatches/reports/manifests ONLY. ActualPS5ELFviews and ordinaryfilesreadbackPASS. Worlds/options/prefix/Java/modsunmodified. UserCLOSEDauthorizationusedforsend; newtestquestionNOWasksreopen8/16fancyFPS+hotbarwheel, gamecanrunNOmorewriteswithoutfreshcloseconfirmation.
 Candidateperformanceand120HzactualnegotiationNOTCLAIMEDyet. 32launchertestsPASS; nativefrontend guards/navigationPASS; runtimebridge/stage4PASS; wheeledgesactualnativefunctionsPASS; package-preservation2PASS; publicationCPUedit/external/GPUwritechecksPASS; cachedquadprefix/provoking/windingPASS; originalCIarchiveonlydriverobjectchangedPASS; actualcompiledtexturecapsPASS. CurrentofficialSDKbaseline unchanged otherobjects/PSBC. Previousrendererfeedback60@4low/21@8fancy/8@16fancy recorded. Useraskedhurry9percent: completedverifiedsendbeforeGithubpublication. Newnativepickeractualpreviewartifacts/frontend/packs.png viewedcorrect. PublicdocsupdatedformatlimitationsandHFRfallback. ReadyforuserconsoleFPS/control/UIfeedback; doNOTresetgraphicssettingsorclaim60@16.
+
+
+## 2026-10-09 resolution, fixed window and selection music — UPLOADED
+
+User confirmed app/game closed before upload. New async console test now pending;
+the game may be running again, so obtain a fresh close confirmation before writes.
+Resolution selector supports 720p/1080p, saves with memory, changes Wine virtual
+desktop plus Minecraft width/height on the next launch. Settings render preview
+was inspected. Frontend navigation/guards, native bridge persistence/preservation,
+32 launcher integration checks and 2 app-only publication checks pass. Initial
+launcher tests hit sandbox loopback denial; approved loopback run passes all 32.
+
+Rebuilt only win32u with 76 release-matched patches, adding local0672 fixed
+window styles and reviewed upstream0910 worker-desktop cache. The native title
+sets WINE_PS5_FIXED_WINDOW=1; child/non-PS5 window styles are preserved. Existing
+working ntdll/OpenGL shader/resource synchronization remains unchanged. Latest
+upstream reviewed through d5a0ec0195531f0b607aea548be8f014d2f9146a: new D3D9
+batch structural validation is irrelevant to this OpenGL game; not imported.
+0908 applies to native/guest machine differences, not this PE64 Java instance.
+
+Home selection music sce_sys/snd0.at9 now contains 87.355 seconds of “hollow.
+(mastered)” by steveologic, using PS5 AT9 Converter f8ab08b. 192kbps stereo48kHz,
+2096808 bytes, measured-28.04LUFS, loop and fades; decoded WAV preview passed.
+Added build/upload inclusion and prominent README thanks with GitHub/Instagram.
+Original MP3 remains outside Git. Presentation cache may need loader refresh.
+
+Fresh console options already useVbo:true, renderDistance4, fancyGraphicstrue,
+maxFps150. Previous VBO:false observation was stale. Scoped write preserves EVERY
+option value, checked by parsed dictionary equality; no FPS benefit claimed.
+User explicitly reports VBO made no difference. Latest logs archived in
+artifacts/console-window-before show expensive draw preparation/individual
+submissions and successful PS5 AGC operations. Future performance work should
+profile draw overhead, not reset graphics options or treat etaHEN0 as GPUidle.
+60FPS ceiling still unresolved; actual TV120Hz negotiation unknown. Vulkan
+possible in principle for newer releases, unvalidated; 1.12.2 stays OpenGL.
+
+All app-only uploads and exact signed-ELF/ordinary-file readbacks pass. Both stage
+reports verified; worlds, mods, Java and prefix untouched. Local deletion of three
+old artwork source files predated this work; excluded from our Git commit.
+New hashes:
+win32u f003791d4e4fb39f12e54b52fb924486cce746beec6908c84a817c71bfcd2e13
+JAR 1b97a153d167a4b1ad7d0c552bdfc3f549e81dbb37f37b427adb1585173df822
+EBOOT aff64dee9d1418147d532197081435a8a259796107fe7abad040d81e59071188

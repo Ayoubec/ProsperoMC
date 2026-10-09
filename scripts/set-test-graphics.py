@@ -12,9 +12,10 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--host', required=True)
 parser.add_argument('--framebuffer', choices=('true', 'false'), help='Change only the framebuffer option')
 parser.add_argument('--performance', action='store_true', help='Apply a conservative vanilla performance preset')
+parser.add_argument('--vbo', choices=('true', 'false'), help='Change only GPU vertex-buffer use, preserving other options')
 args = parser.parse_args()
-if args.performance and args.framebuffer:
-    parser.error('Choose either --performance or --framebuffer')
+if sum((bool(args.performance), bool(args.framebuffer), bool(args.vbo))) > 1:
+    parser.error('Choose only one of --performance, --framebuffer or --vbo')
 with ftplib.FTP() as ftp:
     ftp.connect(args.host, 2121, timeout=15)
     ftp.login()
@@ -30,11 +31,13 @@ with ftplib.FTP() as ftp:
             raise
     out = ROOT / 'artifacts/console-test-graphics'
     out.mkdir(exist_ok=True)
-    backup = out / ('options-before-performance-test.txt' if args.performance else
+    backup = out / ('options-before-vbo-test.txt' if args.vbo else 'options-before-performance-test.txt' if args.performance else
                     'options-before-framebuffer-test.txt' if args.framebuffer else 'options-before.txt')
     if not backup.exists():
         backup.write_bytes(before)
     changes = {'fboEnable': args.framebuffer} if args.framebuffer else {'fboEnable': 'false', 'useVbo': 'false', 'mipmapLevels': '0'}
+    if args.vbo:
+        changes = {'useVbo': args.vbo}
     if args.performance:
         # Keep the framebuffer path that now renders correctly; use GPU vertex
         # buffers and reduce visible chunks while measuring the first world.

@@ -73,7 +73,7 @@ if __name__ == '__main__':
         if args.app_update:
             names = ['launcher/prosperomc-launcher.jar','win/wine/lib/wine/x86_64-unix/ntdll.prx',
                      'win/wine/lib/wine/x86_64-unix/win32u.prx','WINE_SOURCES.txt','STAGE-REPORT.json','eboot.bin',
-                     'sce_sys/icon0.png','sce_sys/pic0.dds','sce_sys/pic1.dds','sce_sys/param.json']
+                     'sce_sys/icon0.png','sce_sys/pic0.dds','sce_sys/pic1.dds','sce_sys/param.json','sce_sys/snd0.at9']
             names += [p.relative_to(title).as_posix() for p in sorted((title / 'WINE_PATCHES').glob('*.patch'))]
             deploy.ensure_directory(ftp,deploy.TITLE_ROOT+'/WINE_PATCHES')
             publish(ftp,deploy.DATA_ROOT,data,['launcher/prosperomc-launcher.jar','STAGE-REPORT.json'],True)

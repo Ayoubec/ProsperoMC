@@ -45,6 +45,8 @@ int main(void) {
     f.memory_mb=512;assert(!press(PM_KEY_LEFT));assert(f.memory_mb==512);
     f.memory_mb=8192;assert(!press(PM_KEY_RIGHT));assert(f.memory_mb==8192);
     assert(press(PM_KEY_CONFIRM));assert(!strcmp(a.command,"settings"));assert(a.memory_mb==8192);
+    assert(!press(PM_KEY_DOWN));assert(f.focus==7);
+    assert(!press(PM_KEY_RIGHT));assert(f.resolution_index==1);
     assert(!press(PM_KEY_DOWN));assert(f.focus==1);
     for(j=0;j<4;j++) {
         const int majors[]={8,17,21,25};
@@ -56,6 +58,7 @@ int main(void) {
     assert(press(PM_KEY_CONFIRM));assert(!strcmp(a.command,"detect-java"));assert(!a.java_major);
     assert(!press(PM_KEY_RIGHT));assert(f.focus==6);
     assert(press(PM_KEY_CONFIRM));assert(!strcmp(a.command,"settings"));assert(a.memory_mb==8192);
+    assert(a.resolution_height==1080);
     assert(press(PM_KEY_REFRESH));assert(!strcmp(a.command,"detect-java"));
     view.java_count=2;view.java_runtimes[0].major=8;view.java_runtimes[0].valid=1;view.java_runtimes[1].major=16;
     assert(!press(PM_KEY_SECONDARY));assert(f.selected_java==1);
@@ -83,7 +86,7 @@ int main(void) {
         assert(f.selected_version>=0&&f.selected_version<PM_MAX_VERSIONS);
         assert(f.selected_mod>=0&&f.selected_mod<PM_MAX_MODS);
         assert(f.selected_java>=0&&f.selected_java<PM_MAX_JAVA);
-        assert(f.focus>=0&&f.focus<=(screen==PM_SETTINGS?6:4));
+        assert(f.focus>=0&&f.focus<=(screen==PM_SETTINGS?7:4));
     }
     /* Valid 720p buffer is guarded; undersized buffers are refused. */
     bytes=(unsigned char*)malloc(1280*720*4+32);assert(bytes);

@@ -101,3 +101,24 @@ runtime_archive_sha256 = "9665578ed587d5392f1011f8665d9153ac19f89c735738e39054e7
 sdk_manifest_sha256 = "bad8f45e33e11b3ca23716ac619fbdfdfbdd84e0eafaa043733816908b84c9f8"
 license = "GPL-3.0-or-later"
 purpose = "Batch indexed and non-indexed legacy quads with preserved provoking vertices; keep conservative fallback for complex geometry; exact generated bounds avoid redundant scans"
+
+[[local_patch]]
+name = "0672-win32u-ps5-fixed-game-window.patch"
+source_revision = "490f6d5dcbb2a5047345b8af88d114bbcaad69a8"
+file = "vendor/prospero-win/wine/patches/0672-win32u-ps5-fixed-game-window.patch"
+sha256 = "64fb5405563dad7d08a5ddaaf61b22d152bab7f67a34f6b0543f87d38661819c"
+license = "LGPL-2.1-or-later"
+
+[[upstream_patch]]
+name = "0910-win32u-ps5-worker-desktop-cache.patch"
+source_revision = "807eed638c268b94f313e6371e2c760fe1cb2b5b"
+file = "vendor/prospero-win/wine/patches/0910-win32u-ps5-worker-desktop-cache.patch"
+sha256 = "3ca01512ce9f395264543f116f9620167ce02d625d7b397b1cb1418727f7d0b2"
+license = "LGPL-2.1-or-later"
+
+[[source]]
+name = "PS5 AT9 Converter"
+revision = "f8ab08b33c1407bbd715a0af3c80c4da585832f4"
+url = "https://github.com/blackbearreloaded/ps5-at9-converter"
+license = "GPL-3.0-or-later"
+purpose = "Encode steveologic home-screen selection music"

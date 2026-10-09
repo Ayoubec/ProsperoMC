@@ -949,7 +949,7 @@ static int start_thread(void (*entry)(void *), void *arg, size_t stack_bytes)
 int main(int argc, char **argv)
 {
     static char prefix[256 + PW_APP_ID_CAPACITY], desktop[24], view[8] = "window";
-    enum { WINE64_FIXED_ENV_COUNT = 7,
+    enum { WINE64_FIXED_ENV_COUNT = 8,
            WINE64_PROFILE_ENV_CAPACITY = 3 + PW_GAME_GRAPHICS_ENV_MAX + PW_GAME_RUNTIME_ENV_MAX + PW_GAME_CPU_ENV_MAX +
                                          PW_GAME_CLOCK_ENV_MAX };
     static PwWineStartEnv extra[WINE64_FIXED_ENV_COUNT + WINE64_PROFILE_ENV_CAPACITY] = {
@@ -962,6 +962,7 @@ int main(int argc, char **argv)
         { "USER", "prospero" },
         { "WINE_PS5_TRACE_STARTUP", "1" },  /* patch 0560: name startup steps */
         { "WINE_PS5_VIEW", view },          /* patch 0430: the game's windows, or the desktop */
+        { "WINE_PS5_FIXED_WINDOW", "1" },   /* ProsperoMC: disable edge resizing. */
         { NULL, NULL }, { NULL, NULL }, { NULL, NULL }, { NULL, NULL }, /* profile-specific environment */
     };
     _Static_assert(sizeof(extra) / sizeof(extra[0]) ==

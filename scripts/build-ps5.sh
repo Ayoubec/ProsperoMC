@@ -54,6 +54,7 @@ done
 cp "$vendor/sce_sys/param.json" "$dist/sce_sys/param.json"
 cp "$root/sce_sys/icon0.png" "$dist/sce_sys/icon0.png"
 cp "$root/sce_sys/pic0.dds" "$root/sce_sys/pic1.dds" "$dist/sce_sys/"
+cp "$root/sce_sys/snd0.at9" "$dist/sce_sys/"
 cp "$foundation/runtime/libc.prx" "$dist/sce_module/libc.prx"
 chmod 755 "$dist/eboot.bin" "$dist/sce_module/libc.prx"
 readelf=${LLVM_READELF:-$(command -v llvm-readelf-18 || command -v llvm-readelf)}

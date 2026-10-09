@@ -338,10 +338,17 @@ class LauncherTests(unittest.TestCase):
         account = self.root / "private/account.json"
         account.parent.mkdir()
         account.write_text(json.dumps({"name": "OwnedPlayer", "uuid": "a" * 32, "accessToken": "DO-NOT-EXPOSE", "expiresAt": int(time.time() * 1000) + 99999999}))
+        self.request(command="settings", resolution="1920x1080")
         self.request(command="prepare-launch", id="fixture", accountMode="microsoft")
         profile = (self.root / "profiles/launch.profile").read_text()
         plan = (self.root / "profiles/launch-plan.json").read_text()
         self.assertIn("java25", profile)
+        self.assertIn("desktop=1920x1080", profile)
+        arguments=json.loads(plan)["arguments"]
+        self.assertEqual(arguments[arguments.index("--width")+1], "1920")
+        self.assertEqual(arguments[arguments.index("--height")+1], "1080")
+        self.assertIn("settings.resolution=1920x1080", (self.root / "launcher-view.properties").read_text())
+        self.request(ok=False, command="settings", resolution="wrong")
         self.assertIn("-Dlog4j.configurationFile=", profile)
         self.assertIn("client-1.12.xml", profile)
         self.assertIn("org.prosperomc.Main", profile)

@@ -72,10 +72,11 @@ static void normalize(PmFrontend *f,const PmView *v) {
     if(count(v->version_count,PM_MAX_VERSIONS)&&!visible_version(f,&v->versions[f->selected_version])) {
         int first=next_version(f,v,0,1);if(first>=0) f->selected_version=first;
     }
-    f->focus=bound(f->focus,0,f->screen==PM_SETTINGS?6:f->screen==PM_LIBRARY?4:f->screen==PM_VERSIONS?3:f->screen==PM_ACCOUNTS?2:1);
+    f->focus=bound(f->focus,0,f->screen==PM_SETTINGS?7:f->screen==PM_LIBRARY?4:f->screen==PM_VERSIONS?3:f->screen==PM_ACCOUNTS?2:1);
     f->memory_mb=bound(f->memory_mb,512,8192);
     if(!f->initialized_settings) {
         f->memory_mb=v->memory_mb?bound(v->memory_mb,512,8192):2048;
+        f->resolution_index=v->resolution_height==1080?1:0;
         f->initialized_settings=1;
     }
 }
@@ -204,20 +205,23 @@ int pm_frontend_update(PmFrontend *f,const PmView *v,PmKey key,PmAction *a) {
             if(n)f->selected_java=(f->selected_java+1)%n;
             return 0;
         }
-        if(key==PM_KEY_UP) f->focus=f->focus>4?1:0;
-        if(key==PM_KEY_DOWN) f->focus=f->focus==0?1:f->focus<=4?5:6;
+        if(key==PM_KEY_UP) f->focus=f->focus==7?0:f->focus>4?1:7;
+        if(key==PM_KEY_DOWN) f->focus=f->focus==0?7:f->focus==7?1:f->focus<=4?5:6;
         if(key==PM_KEY_LEFT||key==PM_KEY_RIGHT) {
             delta=key==PM_KEY_RIGHT?1:-1;
-            if(f->focus==0) f->memory_mb=bound(f->memory_mb+delta*256,512,8192);
+            if(f->focus==7) f->resolution_index=1-f->resolution_index;
+            else if(f->focus==0) f->memory_mb=bound(f->memory_mb+delta*256,512,8192);
             else if(f->focus<=4) f->focus=bound(f->focus+delta,1,4);
             else f->focus=bound(f->focus+delta,5,6);
         }
         if(key==PM_KEY_CONFIRM) {
+            if(f->focus==7) {f->resolution_index=1-f->resolution_index;return 0;}
             if(f->focus>=1&&f->focus<=4) {
                 a->java_major=java_majors[f->focus-1];return action(a,"install-java",NULL);
             }
             if(f->focus==5) return action(a,"detect-java",NULL);
             a->memory_mb=f->memory_mb;
+            a->resolution_height=f->resolution_index?1080:720;
             return action(a,"settings",NULL);
         }
         break;
@@ -528,34 +532,36 @@ static void settings(Canvas *c,const PmFrontend *f,const PmView *v) {
     char b[256];int mb=bound(f->memory_mb,512,8192),j;
     screen_title(c,"Launcher settings","Java is detected automatically. Minecraft downloads include the required runtime.");
     panel(c,108,302,1704,578,0);
-    panel(c,137,327,1646,125,f->focus==0);
+    panel(c,137,327,1646,100,f->focus==0);
     text(c,"Minecraft memory",168,345,30,TITLE,1330);
     small(c,"Left / right adjusts in 256 MB steps.",171,391,MUTED,1146);
     snprintf(b,sizeof(b),"%d MB",mb);text(c,b,1500,352,30,LIME,250);
-    box(c,173,435,1569,4,EDGE);box(c,173,435,(mb-512)*1569/(8192-512),4,LIME);
-    text(c,"Java runtimes",140,479,30,TITLE,980);
-    small(c,"Windows 64-bit / detected in launcher data",1150,484,FAINT,630);
+    box(c,173,417,1569,4,EDGE);box(c,173,417,(mb-512)*1569/(8192-512),4,LIME);
+    snprintf(b,sizeof(b),"RESOLUTION   <  %s  >   /   applies next launch",f->resolution_index?"1920 x 1080":"1280 x 720");
+    button(c,b,137,443,1646,f->focus==7,0);
+    text(c,"Java runtimes",140,530,30,TITLE,980);
+    small(c,"Windows 64-bit / detected in launcher data",1150,535,FAINT,630);
     for(j=0;j<4;j++) {
         const PmJavaRuntime *runtime=runtime_for_major(v,java_majors[j]);
         int x=137+j*416,valid=runtime&&runtime->valid;
-        panel(c,x,538,398,139,f->focus==j+1);
-        snprintf(b,sizeof(b),"Java %d",java_majors[j]);text(c,b,x+23,553,30,TITLE,350);
-        roundbox(c,x+348,565,11,11,5,valid?LIME:FAINT);
-        small(c,valid?runtime->version:runtime?"Needs repair":"Not installed",x+23,603,valid?LIME:MUTED,351);
-        text(c,valid?"GET / VERIFY":"DOWNLOAD",x+23,644,20,FAINT,350);
+        panel(c,x,580,398,139,f->focus==j+1);
+        snprintf(b,sizeof(b),"Java %d",java_majors[j]);text(c,b,x+23,595,30,TITLE,350);
+        roundbox(c,x+348,607,11,11,5,valid?LIME:FAINT);
+        small(c,valid?runtime->version:runtime?"Needs repair":"Not installed",x+23,645,valid?LIME:MUTED,351);
+        text(c,valid?"GET / VERIFY":"DOWNLOAD",x+23,686,20,FAINT,350);
     }
     if(count(v->java_count,PM_MAX_JAVA)) {
         int total=count(v->java_count,PM_MAX_JAVA),index=bound(f->selected_java,0,total-1);
         const PmJavaRuntime *selected=&v->java_runtimes[index];
         snprintf(b,sizeof(b),"Detected %d / %d: Java %d / %.64s / %s",index+1,total,selected->major,selected->version,selected->valid?"Ready":"Needs repair");
-        small(c,b,140,698,selected->valid?MUTED:WARN,1610);
-        text(c,selected->detail[0]?selected->detail:selected->path,140,740,20,FAINT,1610);
+        small(c,b,140,735,selected->valid?MUTED:WARN,1610);
+        text(c,selected->detail[0]?selected->detail:selected->path,140,774,20,FAINT,1610);
     } else {
-        small(c,"No Java runtimes detected. Select a card to download Java, or refresh.",140,702,MUTED,1610);
-        text(c,"The Minecraft installer chooses and downloads the required Java automatically.",140,740,20,FAINT,1610);
+        small(c,"No Java runtimes detected. Select a card to download Java, or refresh.",140,735,MUTED,1610);
+        text(c,"The Minecraft installer chooses and downloads the required Java automatically.",140,774,20,FAINT,1610);
     }
-    button(c,"REFRESH RUNTIMES",137,771,790,f->focus==5,0);
-    button(c,"SAVE MEMORY SETTINGS",959,771,824,f->focus==6,1);
+    button(c,"REFRESH RUNTIMES",137,804,790,f->focus==5,0);
+    button(c,"SAVE SETTINGS",959,804,824,f->focus==6,1);
 }
 static void accounts(Canvas *c,const PmFrontend *f,const PmView *v) {
     int offline=!strcmp(v->account_mode,"offline");

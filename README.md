@@ -4,19 +4,30 @@ Minecraft Java launcher for homebrew-enabled PS5, rebuilt on [prospero-win](http
 
 This project is under development and uses Windows x64 Java through Wine.
 Vanilla 1.12.2 now loads saved worlds on the tested PS5, with movement and audio.
-The user reports 60 FPS at 4 chunks on low graphics, about 21 FPS at 8 chunks
-and 8 FPS at 16 chunks with fancy graphics and fullscreen. These measurements
-predate the new static-buffer/index reuse update, which needs a console retest.
+The latest user reports are 60 FPS at 3 chunks, 16–32 FPS at 8 chunks and
+8–24 FPS at 16 chunks. An earlier snapshot had VBO disabled, but the fresh
+config already has it enabled and the user reports no improvement from it.
+This update preserves the current graphics choices.
 Other versions, mod loaders and online features require separate
 console checks. It is an independent launcher, not an embedded Qt build of PolyMC.
 
 ![Native launcher UI preview](assets/generated/launcher-preview.png)
+
+**Home-screen music — “hollow. (mastered)” by [steveologic](https://github.com/steveologic).**
+Huge thanks to steveologic for the soundtrack! Follow his work on
+[Instagram](https://www.instagram.com/steveoology/). An 87-second loop plays
+when ProsperoMC is highlighted in the PS5 home menu, through `sce_sys/snd0.at9`;
+it does not play inside the launcher. Refresh the loader's cached presentation
+assets after updating if the previous selection music remains.
 
 The main flow is to choose a release or snapshot in Versions and download it.
 Installation selects the Java major required by that version, reuses a valid
 installed Windows x64 runtime, or downloads a verified runtime when missing.
 Settings lists detected runtimes and offers Java downloads. Minecraft 1.12.2
 is the initial test case, not the application's fixed or main version.
+Settings also selects 1280×720 or 1920×1080; choose a resolution and Save
+Settings before the next launch. Higher resolution can reduce performance.
+Game windows have edge resizing disabled on PS5.
 
 To add a modpack, copy a PolyMC/MultiMC ZIP or Modrinth `.mrpack` into
 `/data/ProsperoMC/imports` over FTP. In Library or Mods, press Square, choose
@@ -31,6 +42,14 @@ The display profile requests 120 Hz with the upstream SDK's 60 Hz fallback;
 actual refresh depends on the console/display accepting the mode. Minecraft's
 own FPS and VSync settings are preserved. The launcher has focus transitions,
 animated progress feedback, held-D-pad scrolling and quiet navigation sounds.
+The reported 60 FPS ceiling still needs a display-mode check; requesting
+120 Hz does not prove that the connected display negotiated that mode.
+
+Recent upstream Wine changes are reviewed selectively; see the
+[October 9 upstream review](docs/upstream-review-2026-10-09.md). New Minecraft
+releases include a Vulkan renderer, but modern Minecraft/Java/LWJGL and the
+packaged Wine/RADV path still need console validation. The working 1.12.2
+instance uses OpenGL on the PS5 GPU.
 
 ## Build and use
 

@@ -52,6 +52,12 @@ wheel = root / 'vendor/prospero-win/wine/patches/0671-win32u-ps5-mouse-wheel.pat
 wheel_built = wheel.name in report['patches']
 if wheel_built:
     shutil.copy2(wheel,title / 'WINE_PATCHES' / wheel.name)
+additional_patches = {}
+for name in ('0672-win32u-ps5-fixed-game-window.patch', '0910-win32u-ps5-worker-desktop-cache.patch'):
+    assert name in report['patches'], name
+    source = root / 'vendor/prospero-win/wine/patches' / name
+    shutil.copy2(source, title / 'WINE_PATCHES' / name)
+    additional_patches[name] = digest(source)
 text = notice.read_text().replace('all other Wine modules remain from v0.1.1.', 'other Wine modules remain from v0.1.1 except the graphics repair below.')
 marker = '\nProsperoMC BGRA texture graphics repair:\n'
 text = text.split(marker)[0] + marker + (
@@ -69,6 +75,8 @@ text = text.split(marker)[0] + marker + (
      '  Source patch WINE_PATCHES/' + local_patch['file'] + '; SHA-256 ' + local_patch['sha256'] + '\n'
      '  Reproduce modified driver with scripts/prepare-graphics-batching.py then scripts/build-graphics-batching.sh.\n'
      if local_patch else '') +
+    ''.join('  Additional Wine patch WINE_PATCHES/'+name+'; SHA-256 '+sha+'\n' for name,sha in additional_patches.items()) +
+    '  Upstream 0910 from prospero-win 807eed638c268b94f313e6371e2c760fe1cb2b5b.\n'
     '  Reproduce with scripts/prepare-wine-graphics.py then scripts/build-wine-graphics.sh.\n'
     '  ntdll and the launcher executable are unchanged by this graphics update.\n')
 notice.write_bytes(text.encode())
@@ -81,6 +89,7 @@ for path in (title / 'STAGE-REPORT.json', title / 'prosperomc/STAGE-REPORT.json'
         stage['wine']['graphicsFix']['localPatch'] = local_patch
     if wheel_built:
         stage['wine']['graphicsFix']['wheelPatchSha256'] = digest(wheel)
+    stage['wine']['graphicsFix']['additionalPatches'] = additional_patches
     path.write_text(json.dumps(stage, indent=2) + '\n')
 spec = importlib.util.spec_from_file_location('deploy', root / 'scripts/deploy-ps5.py')
 deploy = importlib.util.module_from_spec(spec)

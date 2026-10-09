@@ -246,7 +246,8 @@ public final class Main {
         for(Map.Entry<String, String> e:request.entrySet()) {
             String k=e.getKey();
             if(k.equals("command"))continue;
-            if(k.matches("java[0-9]+")||Arrays.asList("memoryMb", "microsoftClientId", "manifestUrl", "assetsUrl", "fabricApi", "quiltApi", "graphics", "accountMode", "username", "modrinthApi", "javaApi").contains(k)) {
+            if(k.matches("java[0-9]+")||Arrays.asList("resolution", "memoryMb", "microsoftClientId", "manifestUrl", "assetsUrl", "fabricApi", "quiltApi", "graphics", "accountMode", "username", "modrinthApi", "javaApi").contains(k)) {
+                if(k.equals("resolution")&&!Arrays.asList("1280x720","1920x1080").contains(e.getValue()))throw new IOException("Choose 1280x720 or 1920x1080");
                 if(k.equals("memoryMb"))memory(e.getValue());
                 if(k.equals("accountMode")&&!Arrays.asList("microsoft", "offline").contains(e.getValue()))throw new IOException("accountMode must be microsoft or offline");
                 if(k.equals("graphics")&&!Arrays.asList("opengl", "zink").contains(e.getValue()))throw new IOException("graphics must be opengl or zink");
@@ -659,6 +660,7 @@ public final class Main {
         }
         v.put("mod.count", Integer.toString(n));
         v.put("settings.memoryMb", settings.getOrDefault("memoryMb", "2048"));
+        v.put("settings.resolution",settings.getOrDefault("resolution","1280x720"));
         v.put("settings.accountMode", settings.getOrDefault("accountMode", "microsoft"));
         v.put("settings.username",settings.getOrDefault("username","Player"));
         for(Map.Entry<String, String> e:settings.entrySet())if(e.getKey().matches("java[0-9]+"))v.put("settings."+e.getKey(), e.getValue());
@@ -789,8 +791,11 @@ public final class Main {
         placeholders.put("launcher_version", "1.0");
         placeholders.put("clientid", settings.getOrDefault("microsoftClientId", ""));
         placeholders.put("auth_xuid", "");
-        placeholders.put("resolution_width", "1280");
-        placeholders.put("resolution_height", "720");
+        String resolution=settings.getOrDefault("resolution","1280x720");
+        if(!Arrays.asList("1280x720","1920x1080").contains(resolution))throw new IOException("Unsupported launch resolution");
+        String[] dimensions=resolution.split("x");
+        placeholders.put("resolution_width", dimensions[0]);
+        placeholders.put("resolution_height", dimensions[1]);
         List<String> jvm=new ArrayList<String>();
         jvm.add("-Xms512M");
         jvm.add("-Xmx"+memory(request.getOrDefault("memoryMb", settings.getOrDefault("memoryMb", "2048")))+"M");
@@ -820,6 +825,8 @@ public final class Main {
         }
         List<String> planArgs=new ArrayList<String>();
         for(String a:gameArgs)planArgs.add(replace(a, placeholders, true));
+        if(!planArgs.contains("--width")){planArgs.add("--width");planArgs.add(dimensions[0]);}
+        if(!planArgs.contains("--height")){planArgs.add("--height");planArgs.add(dimensions[1]);}
         String main=Json.text(meta, "mainClass");
         if(!main.matches("[a-zA-Z_$][a-zA-Z0-9_$.]*"))throw new IOException("Invalid Minecraft main class");
         Path plan=root.resolve("profiles/launch-plan.json");
@@ -839,7 +846,7 @@ public final class Main {
         }
         if(argline.length()>32768)throw new IOException("Minecraft command line exceeds Windows/runtime 32768-character limit");
         String graphics=settings.getOrDefault("graphics", "opengl");
-        String text="[application]\nid=minecraft\nname=Minecraft Java\nexecutable="+windows(java)+"\nworking_directory="+windows(game)+"\narguments="+argline+"\nprefix=minecraft\nruntime=wine-wow64\narchitecture=pe64\ngraphics="+graphics+"\n[display]\ndesktop=1280x720\nview=window\nscaling=fit\nrefresh=120\n[input]\nmode=keyboard\nmouse=right_stick\ncross=space\ncircle=escape\nsquare=e\ntriangle=q\nl1=wheel_up\nr1=wheel_down\nl2=mouse_right\nr2=mouse_left\nup=w\ndown=s\nleft=a\nright=d\noptions=escape\n";
+        String text="[application]\nid=minecraft\nname=Minecraft Java\nexecutable="+windows(java)+"\nworking_directory="+windows(game)+"\narguments="+argline+"\nprefix=minecraft\nruntime=wine-wow64\narchitecture=pe64\ngraphics="+graphics+"\n[display]\ndesktop="+resolution+"\nview=window\nscaling=fit\nrefresh=120\n[input]\nmode=keyboard\nmouse=right_stick\ncross=space\ncircle=escape\nsquare=e\ntriangle=q\nl1=wheel_up\nr1=wheel_down\nl2=mouse_right\nr2=mouse_left\nup=w\ndown=s\nleft=a\nright=d\noptions=escape\n";
         FilesUtil.write(root.resolve("profiles/launch.profile"), text);
         FilesUtil.restrict(root.resolve("profiles/launch.profile"));
         writePolyMC(d, m);

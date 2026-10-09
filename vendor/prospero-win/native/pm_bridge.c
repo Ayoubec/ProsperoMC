@@ -144,6 +144,7 @@ static void view_property(void *context, const char *key, const char *value)
     else if (!strcmp(key,"mod.count")) { int n=integer(value,2147483647); view->mod_count=n>PM_MAX_MODS?PM_MAX_MODS:n; }
     else if (!strcmp(key,"java.count")) { int n=integer(value,2147483647); view->java_count=n>PM_MAX_JAVA?PM_MAX_JAVA:n; }
     else if (!strcmp(key,"memoryMb") || !strcmp(key,"settings.memoryMb")) view->memory_mb = integer(value,32768);
+    else if (!strcmp(key,"resolution") || !strcmp(key,"settings.resolution")) view->resolution_height=!strcmp(value,"1920x1080")?1080:720;
     else if (!strcmp(key,"auth.signedIn")) copy(view->account_status,sizeof(view->account_status),!strcmp(value,"true") ? "Signed in" : "Sign in to Minecraft");
     else if (!strcmp(key,"done")) view->progress_done = integer(value,2147483647);
     else if (!strcmp(key,"total")) view->progress_total = integer(value,2147483647);
@@ -237,7 +238,9 @@ int pm_bridge_request(const char *root, const PmAction *action)
     static const char *const commands[] = {"catalog","create","create-install","install","install-java","detect-java","import","prepare-launch","mods","mod-toggle","mod-add","settings","auth-device","auth-poll","clone","export","import-pack"};
     char name[768], temporary[768]; FILE *file; int allowed = 0, failed = 0;
     for (size_t i=0; i<sizeof(commands)/sizeof(commands[0]); i++) allowed |= !strcmp(action->command,commands[i]);
-    if (!allowed || action->java_major<0 || action->java_major>99 || path(name,sizeof(name),root,"request.properties") ||
+    if (!allowed || action->java_major<0 || action->java_major>99 ||
+        (action->resolution_height && action->resolution_height!=720 && action->resolution_height!=1080) ||
+        path(name,sizeof(name),root,"request.properties") ||
         path(temporary,sizeof(temporary),root,"request.properties.tmp")) return -1;
     path(name,sizeof(name),root,"response.properties"); unlink(name);
     path(name,sizeof(name),root,"runtime-notice.properties"); unlink(name);
@@ -251,6 +254,7 @@ int pm_bridge_request(const char *root, const PmAction *action)
     FIELD("accountMode",account_mode);
 #undef FIELD
     if (action->memory_mb) failed |= fprintf(file,"memoryMb=%d\n",action->memory_mb) < 0;
+    if(action->resolution_height)failed |= fprintf(file,"resolution=%s\n",action->resolution_height==1080?"1920x1080":"1280x720")<0;
     if (action->java_major) failed |= fprintf(file,"major=%d\n",action->java_major) < 0;
     if (!strcmp(action->command,"install-java")) failed |= write_property(file,"repair","true") != 0;
     failed |= fclose(file) != 0;
@@ -390,6 +394,7 @@ static int local_settings(const char *root, const PmAction *action, PmView *view
 {
     char name[768], temporary[768], line[4096]; FILE *input, *output; int failed=0;
     if ((action->memory_mb && (action->memory_mb<512 || action->memory_mb>8192)) ||
+        (action->resolution_height && action->resolution_height!=720 && action->resolution_height!=1080) ||
         (action->account_mode[0] && strcmp(action->account_mode,"offline") && strcmp(action->account_mode,"microsoft")) ||
         !value_safe(action->username) || path(name,sizeof(name),root,"settings.properties") ||
         path(temporary,sizeof(temporary),root,"settings.properties.tmp")) { errno=EINVAL; return -1; }
@@ -401,6 +406,7 @@ static int local_settings(const char *root, const PmAction *action, PmView *view
         while (fgets(line,sizeof(line),input)) {
             if (!strchr(line,'\n') && !feof(input)) { failed=1; break; }
             if ((action->memory_mb && !strncmp(line,"memoryMb=",9)) ||
+                (action->resolution_height && !strncmp(line,"resolution=",11)) ||
                 (action->account_mode[0] && !strncmp(line,"accountMode=",12)) ||
                 (action->username[0] && !strncmp(line,"username=",9))) continue;
             if (fputs(line,output)<0) { failed=1; break; }
@@ -410,6 +416,7 @@ static int local_settings(const char *root, const PmAction *action, PmView *view
         failed |= ferror(input)!=0; fclose(input);
     }
     if (action->memory_mb) failed |= fprintf(output,"memoryMb=%d\n",action->memory_mb)<0;
+    if(action->resolution_height)failed |= fprintf(output,"resolution=%s\n",action->resolution_height==1080?"1920x1080":"1280x720")<0;
     failed |= write_property(output,"accountMode",action->account_mode)!=0;
     failed |= write_property(output,"username",action->username)!=0;
     failed |= fclose(output)!=0;

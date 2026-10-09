@@ -31,7 +31,7 @@ typedef struct PmView {
     PmMod mods[PM_MAX_MODS]; int mod_count;
     PmPack packs[PM_MAX_INSTANCES]; int pack_count;
     PmJavaRuntime java_runtimes[PM_MAX_JAVA]; int java_count;
-    int memory_mb, busy, progress_done, progress_total;
+    int memory_mb, busy, progress_done, progress_total, resolution_height;
     char java_path[512], username[PM_TEXT];
     char auth_url[256], auth_code[64], account_status[PM_TEXT];
     char account_mode[16];
@@ -53,6 +53,7 @@ typedef struct PmAction {
     char mod[PM_TEXT], enabled[8], java_path[512];
     char account_mode[16];
     int memory_mb;
+    int resolution_height;
     int java_major;
 } PmAction;
 typedef struct PmFrontend {
@@ -60,6 +61,7 @@ typedef struct PmFrontend {
     int selected_instance, selected_version, selected_mod, selected_java;
     int focus, memory_mb, loader_index, version_filter;
     int initialized_settings;
+    int resolution_index;
     int pack_picker, selected_pack;
     unsigned animation_ms, focus_ms;
     int underline_x;

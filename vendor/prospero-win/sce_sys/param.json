@@ -28,7 +28,8 @@
   "masterVersion": "01.00",
   "pubtools": {
     "creationDate": "2026-09-08 00:00:00",
-    "toolVersion": "2.00"
+    "toolVersion": "2.00",
+    "loudnessSnd0": "-28.04"
   },
   "requiredSystemSoftwareVersion": "0x0000000000000000",
   "sdkVersion": "0x0000000000000000",

@@ -1,0 +1,39 @@
+Subject: win32u: keep ProsperoMC top-level windows fixed in size
+
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -1529,6 +1529,17 @@
+ }
+ 
+ /* Helper function for SetWindowLong(). */
++/* ProsperoMC presents a fixed game viewport. Keep child-window styles intact. */
++static DWORD ps5_fixed_window_style( DWORD style )
++{
++#ifdef WINE_PS5_USER_DRIVER
++    const char *fixed = getenv( "WINE_PS5_FIXED_WINDOW" );
++    if (!(style & WS_CHILD) && fixed && !strcmp( fixed, "1" ))
++        style &= ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
++#endif
++    return style;
++}
++
+ static LONG_PTR set_window_long_internal( HWND hwnd, INT offset, UINT size,
+                                           LONG_PTR newval, BOOL ansi, BOOL internal )
+ {
+@@ -1580,7 +1591,7 @@
+         release_win_ptr( win );
+         send_message( hwnd, WM_STYLECHANGING, GWL_STYLE, (LPARAM)&style );
+         if (!(win = get_win_ptr( hwnd )) || win == WND_OTHER_PROCESS) return 0;
+-        newval = style.styleNew;
++        newval = style.styleNew = ps5_fixed_window_style( style.styleNew );
+         /* WS_CLIPSIBLINGS can't be reset on top-level windows */
+         if (win->parent == get_desktop_window()) newval |= WS_CLIPSIBLINGS;
+         /* WS_MINIMIZE can't be reset */
+@@ -5897,6 +5908,7 @@
+            ex_style, debugstr_us(class_name), debugstr_us(version), debugstr_us(window_name), style, x, y, cx, cy,
+            parent, menu, class_instance, params, flags, instance, debugstr_w(class), ansi );
+ 
++    style = ps5_fixed_window_style( style );
+     cs.lpCreateParams = params;
+     cs.hInstance  = instance ? instance : class_instance;
+     cs.hMenu      = menu;
