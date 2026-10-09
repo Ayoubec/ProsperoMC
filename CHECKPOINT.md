@@ -242,3 +242,34 @@ New hashes:
 JAR 722679be25b99eb208fba871a1ac843150773607c937570fecce677dede36ae5
 EBOOT 06352734edb67b4aa14191edd9a9c4cad358e282649e1106d409378bfa0960a0
 win32u f003791d4e4fb39f12e54b52fb924486cce746beec6908c84a817c71bfcd2e13
+
+
+## Read-only owned draw-buffer performance candidate — build complete
+
+Baseline user25FPS1080p/18FPS1440p. User confirms bothMinecraft/ProsperoMC CLOSED
+before this graphics-only update. Latestdiagnostics artifacts/console-performance-highres
+confirm2560x1440 actualgameframe. Candidate only changes ps5_screen.c's read-only
+CPU-owned vertex/index buffer map/unmap path, notsettings/renderdistance/resolution.
+Guard requiresPIPE_BUFFER withVERTEX/INDEX and optionalVERTEX_STATE binds only;
+READ withoutWRITE/PERSISTENT/COHERENT, noexternalCPUexports and noGPUwrites.
+Eligible CPUreads skip unnecessary queued-GPU-read drains, readcacheflush and
+publication invalidation. CPUwrites, computeGPUwritten, persistent/external,
+texture and otherbindings retain oldsync. Map/unmap/publish regression excerpts
+pass1000repeatedreads pluswrite/GPU/export/bind guardcases. Staticbufferpublication
+regressionPASS; compiledBGRAcapabilitiesPASS; archiveonlyps5_screen.o changed,
+allotherobjects/PSBCexactCI. Preserved076Winepatchseries inclwindowfix+0910.
+
+Sourcepatch e37a0daa292a89832421060f52ecd50872b12653c44cb253fa3255e9796b2078;
+SDKmanifest aeb8111595362a40e66aab441cfcd9bbf2258958c55735a91eea985c0f91864e;
+runtimearchive949e2bd4b16960b2bbc9d066e49f19e7c9c3118c7a3d66f3dcc53d886a52a3b5.
+Modulelinkallimports/error/rawsyscall/unbound checksPASS. Rollback previousworking
+f003module artifacts/graphics-before-readonly-maps/win32u.prx, originalpatch and
+SDKprovenancebesideit. NoJava/nativechanged. Build45062DONE. Stagingdone, FTPview
+refreshed. Upload70230 COMPLETE: module/patch/notices/bothreports transferred and readback
+verified; graphicsreceiptPASS. Noactivebuildsessions. Newasynctestnowasks1080p/1440p
+sameworld/settings FPS plusvisualcorrectness; appmayberunningNOW, obtainfreshclose
+confirmation beforemorewrites. CandidateconsoleFPSnotestablished; compare sameworld/camera/chunkdistance/options at1080p/1440p.
+
+win32u bc0f2f2b08f20c5015cbce19e7120b46d95946998ccf5d6d391582330b698205
+JAR unchanged 722679be25b99eb208fba871a1ac843150773607c937570fecce677dede36ae5
+EBOOT unchanged 06352734edb67b4aa14191edd9a9c4cad358e282649e1106d409378bfa0960a0

@@ -8,6 +8,10 @@ The latest user reports are 60 FPS at 3 chunks, 16–32 FPS at 8 chunks and
 8–24 FPS at 16 chunks. An earlier snapshot had VBO disabled, but the fresh
 config already has it enabled and the user reports no improvement from it.
 This update preserves the current graphics choices.
+At higher game resolutions the latest report is about 25 FPS at 1080p and
+18 FPS at 1440p. The next renderer update avoids draining queued GPU reads
+when Mesa only reads an unchanged owned vertex/index buffer. Its performance
+still needs a comparison on the same world and settings.
 Other versions, mod loaders and online features require separate
 console checks. It is an independent launcher, not an embedded Qt build of PolyMC.
 

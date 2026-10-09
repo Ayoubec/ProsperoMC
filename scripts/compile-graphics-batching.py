@@ -127,7 +127,7 @@ provenance.update(version=provenance['version']+'-prosperomc-quad-batching',
     sdk_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
     runtime_archive_sha256=hashlib.sha256(runtime.read_bytes()).hexdigest(),
     local_patch={'file':'smooth-legacy-batching.patch','sha256':patch_hash,
-                 'description':'Batch legacy quads with preserved provoking vertices, reuse immutable quad indices, and publish unchanged owned draw buffers once; preserve conservative synchronization and complex-geometry fallback'},
+                 'description':'Batch legacy quads, reuse immutable indices and static buffer publication; skip synchronization only for CPU-owned read-only draw-buffer maps; preserve GPU-write and external-resource synchronization'},
     hardware_validation='pending console retest of modified draw driver')
 (modified / 'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
 print('MODIFIED_RUNTIME_ARCHIVE',provenance['runtime_archive_sha256'],flush=True)

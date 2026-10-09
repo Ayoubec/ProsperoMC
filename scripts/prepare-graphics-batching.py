@@ -116,6 +116,48 @@ for anchor in ('   transfer = calloc(1, sizeof(*transfer));',
     assert after.count(anchor) == 1
     var = 'resource' if 'transfer =' in anchor else 'buffer'
     after = after.replace(anchor, f'   {var}->buffer_published = false;\n' + anchor)
+# CPU reads of owned vertex/index data do not conflict with queued GPU reads.
+# Keep all GPU-write, exported, persistent and non-draw resources conservative.
+read_helper = '''static bool
+ps5_read_owned_draw_buffer(const struct ps5_resource *resource, unsigned usage)
+{
+   const unsigned draw_bind = PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_INDEX_BUFFER;
+   return resource && resource->base.target == PIPE_BUFFER &&
+          (resource->base.bind & draw_bind) &&
+          !(resource->base.bind & ~(draw_bind | PIPE_BIND_VERTEX_STATE)) &&
+          !resource->external_cpu_access && !resource->gpu_written &&
+          (usage & (PIPE_MAP_READ | PIPE_MAP_WRITE | PIPE_MAP_PERSISTENT |
+                    PIPE_MAP_COHERENT)) == PIPE_MAP_READ;
+}
+
+'''
+after = after.replace('static void *\nps5_transfer_map(', read_helper + 'static void *\nps5_transfer_map(', 1)
+map_wait = '''   if (base->target != PIPE_BUFFER || (usage & PIPE_MAP_READ) ||
+       !(usage & PIPE_MAP_UNSYNCHRONIZED))
+      ps5_draw_batch_drain_buffer(base);
+   else
+      ps5_invalidate_gpu_writes(resource);'''
+assert after.count(map_wait) == 1
+after = after.replace(map_wait, '''   const bool read_owned = ps5_read_owned_draw_buffer(resource, usage);
+   if (!read_owned) {
+      if (base->target != PIPE_BUFFER || (usage & PIPE_MAP_READ) ||
+          !(usage & PIPE_MAP_UNSYNCHRONIZED))
+         ps5_draw_batch_drain_buffer(base);
+      else
+         ps5_invalidate_gpu_writes(resource);
+   }''')
+after = after.replace('   resource->buffer_published = false;\n   transfer = calloc',
+                      '   if (!read_owned) resource->buffer_published = false;\n   transfer = calloc', 1)
+after = after.replace('   if ((usage & PIPE_MAP_READ) && resource->base.target == PIPE_BUFFER)\n',
+                      '   if (!read_owned && (usage & PIPE_MAP_READ) && resource->base.target == PIPE_BUFFER)\n', 1)
+unmap_wait = '''   if (resource->base.target != PIPE_BUFFER || (transfer->usage & PIPE_MAP_READ) ||
+       !(transfer->usage & PIPE_MAP_UNSYNCHRONIZED))
+      ps5_draw_batch_drain_buffer(transfer->resource);'''
+assert after.count(unmap_wait) == 1
+after = after.replace(unmap_wait, '''   if (!ps5_read_owned_draw_buffer(resource, transfer->usage) &&
+       (resource->base.target != PIPE_BUFFER || (transfer->usage & PIPE_MAP_READ) ||
+        !(transfer->usage & PIPE_MAP_UNSYNCHRONIZED)))
+      ps5_draw_batch_drain_buffer(transfer->resource);''')
 quad_helper = (root / 'scripts/graphics-quad-batch.c').read_text()
 after = after.replace('static bool\nps5_legacy_requires_split(',
     quad_helper + '\nstatic bool\nps5_legacy_requires_split(', 1)

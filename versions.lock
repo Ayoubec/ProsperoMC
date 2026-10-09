@@ -96,11 +96,11 @@ purpose = "Upstream legacy varying mapping, lowered client-array draws and EGL H
 name = "ProsperoMC legacy quad batching"
 base_source_revision = "738f94cbdf6ff1de0376dc1cd4ce1229fd640730"
 file = "artifacts/graphics-batching/smooth-legacy-batching.patch"
-sha256 = "a68ac3dbc8daa56ff2077dc7b484b7d7127407c209b24846b588c8d867f5f647"
-runtime_archive_sha256 = "9665578ed587d5392f1011f8665d9153ac19f89c735738e39054e71eaf48c0b2"
-sdk_manifest_sha256 = "bad8f45e33e11b3ca23716ac619fbdfdfbdd84e0eafaa043733816908b84c9f8"
+sha256 = "e37a0daa292a89832421060f52ecd50872b12653c44cb253fa3255e9796b2078"
+runtime_archive_sha256 = "949e2bd4b16960b2bbc9d066e49f19e7c9c3118c7a3d66f3dcc53d886a52a3b5"
+sdk_manifest_sha256 = "aeb8111595362a40e66aab441cfcd9bbf2258958c55735a91eea985c0f91864e"
 license = "GPL-3.0-or-later"
-purpose = "Batch indexed and non-indexed legacy quads with preserved provoking vertices; keep conservative fallback for complex geometry; exact generated bounds avoid redundant scans"
+purpose = "Batch legacy quads, reuse immutable indices and static buffer publication; skip synchronization only for CPU-owned read-only draw-buffer maps; preserve GPU-write and external-resource synchronization"
 
 [[local_patch]]
 name = "0672-win32u-ps5-fixed-game-window.patch"

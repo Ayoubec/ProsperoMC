@@ -88,3 +88,15 @@ worlds were preserved. Test the same world at 8/16 fancy chunks, L1/R1 and USB
 wheel hotbar changes, launcher navigation sounds/animations, and Square in
 Library/Mods to open the imports picker. A 120 Hz request falls back to 60 when
 unsupported; verify actual negotiated output rather than assuming 130 FPS.
+
+## Read-only buffer optimization
+
+The user confirms resolution changes work, with about 25 FPS at 1080p and
+18 FPS at 1440p. Fresh profiling shows many read-only vertex/index buffer maps
+that drain queued draws and invalidate static publication. The candidate
+keeps owned, CPU-written draw-buffer reads concurrent with GPU reads; writes,
+GPU-written, exported/persistent and non-draw resources retain synchronization.
+The exact predicate and map/unmap branches pass host tests, including repeated
+reads and write/GPU/export exclusions. Compare the same world, camera, render
+distance and graphics options at 1080p/1440p after deployment. Check terrain,
+inventory items and TNT for correctness. No FPS improvement is established yet.
