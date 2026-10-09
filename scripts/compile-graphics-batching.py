@@ -100,6 +100,7 @@ compiler_headers = ['src/amd/common/amdgfxregs.h','src/amd/common/sid_tables.h',
 run(['make','-C',psbc,'-f',source / 'toolchain/Makefile.opengnm-psbc-ps5','-j8',*compiler_headers],
     env=dict(os.environ,PS5_PAYLOAD_SDK=str(payload)))
 run([sys.executable,root / 'scripts/check-shader-layout-cache.py'])
+run([sys.executable,root / 'scripts/check-worker-shader-cache.py'])
 run([sys.executable,root / 'scripts/check-descriptor-retirement.py'])
 run([sys.executable,root / 'scripts/check-upstream-async.py'])
 run(['gcc','-O2',out / 'check-policy.c','-o',work / 'check-policy'])
@@ -149,7 +150,7 @@ provenance.update(version=provenance['version']+'-prosperomc-quad-batching',
     sdk_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
     runtime_archive_sha256=hashlib.sha256(runtime.read_bytes()).hexdigest(),
     local_patch={'file':'smooth-legacy-batching.patch','sha256':patch_hash,
-                 'description':'Retain legacy batching and owned-buffer fixes; recycle retired descriptors, reuse byte-verified shader layouts, ' + ('enable upstream two-worker native command preparation, ' if async_prepare else '') + 'log only batch errors, and ' + ('enable diagnostic profiling' if profile else 'disable hot-path profiling') + ' in the draw driver and native backend'},
+                 'description':'Retain legacy batching and owned-buffer fixes; recycle retired descriptors, reuse byte-verified shader layouts, ' + ('enable upstream two-worker native command preparation and worker-local byte-verified shader hits, ' if async_prepare else '') + 'log only batch errors, and ' + ('enable diagnostic profiling' if profile else 'disable hot-path profiling') + ' in the draw driver and native backend'},
     draw_profile=profile,
     async_native_prepare=async_prepare,
     native_prepare_workers=2 if async_prepare else 0,

@@ -207,3 +207,19 @@ core12/worker1 report verified affinity. GL swap counters advance at68-79FPS
 in sampled5second windows, while CPU frame-transfer sequence stops updating.
 Those counters serve different paths; no freeze is established. Chunkdistance
 andcamera for these samples are unknown, so terrain FPS gain awaits user results.
+
+Worker retest (same 1440p settings): user reports 47-77 FPS wandering, occasional
+90, 84-86 after looking back from sky, stationary90, fastmouse45-60 and
+37-65 withF3. Second wandering interval66-82. At16chunks20-23mostly22,
+F3~18; returning8chunks initially45-51. Camera/terrain differ between runs.
+Final logs artifacts/console-worker-final/session7 verify clean exit,
+no direct-memory failures, profiling0, 15,070,193 eligible checks and
+35,652 input rejects; other eligibility rejection categories0.
+This is evidence of working batching, not a per-frame GPU timing measurement.
+Follow-up worker-local shader cache removes mutex on full-byte-verified same
+pair hits. ASan/UBSan concurrent test and upstream one/two-worker testsPASS;
+compiled capabilities and archive preservationPASS. Console FPS retest pending.
+The worker-local cache candidate built and uploaded successfully. Executable
+readback plus both reports verified; win32u SHA256:
+b0d6b0a44dc28087bcd6c0b32eec41dccec4e737c3e2d34e869ba084dfe57025.
+Console FPS effect still pending same-camera 1440p8/16/back8 retest.

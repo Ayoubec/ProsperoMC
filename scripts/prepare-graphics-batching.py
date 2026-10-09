@@ -299,6 +299,50 @@ anchor = '''        prepared = runtime_shader_pair_get(&agc, direct_limit,'''
 assert native_after.count(anchor) == 1
 native_after = native_after.replace(anchor, '''        if (!prepared)
             prepared = runtime_shader_pair_get(&agc, direct_limit,''')
+# Cache entries are immutable until shutdown joins the workers and retires the
+# GPU. The common same-pair draw can therefore compare its owned bytes without
+# serializing both preparation workers through the shared insertion mutex.
+anchor = 'static pthread_mutex_t runtime_shader_mutex = PTHREAD_MUTEX_INITIALIZER;'
+assert native_after.count(anchor) == 1
+native_after = native_after.replace(anchor, '''static _Thread_local struct runtime_shader_pair *runtime_shader_pair_last;
+''' + anchor)
+anchor = '''{
+    RUNTIME_SHADER_LOCK();
+    struct runtime_shader_pair *pair = runtime_shader_pair_get_unlocked('''
+assert native_after.count(anchor) == 1
+native_after = native_after.replace(anchor, '''{
+#ifdef PS5_ASYNC_NATIVE_PREP
+    struct runtime_shader_pair *last = runtime_shader_pair_last;
+    if (last && last->vs_key == runtime_vs_package &&
+        last->ps_key == runtime_ps_package &&
+        last->vs_size == runtime_vs_package_len &&
+        last->ps_size == runtime_ps_package_len &&
+        last->primitive == runtime_primitive_type &&
+        !memcmp(last->source, runtime_vs_package, last->vs_size) &&
+        !memcmp(last->source + last->vs_size, runtime_ps_package, last->ps_size))
+        return last; /* Immutable entry; keep full mutation/address-reuse checks. */
+#endif
+    RUNTIME_SHADER_LOCK();
+    struct runtime_shader_pair *pair = runtime_shader_pair_get_unlocked(''')
+anchor = '''    RUNTIME_SHADER_UNLOCK();
+    return pair; /* Entries remain immutable until workers stop and GPU retires. */'''
+assert native_after.count(anchor) == 1
+native_after = native_after.replace(anchor, '''    RUNTIME_SHADER_UNLOCK();
+#ifdef PS5_ASYNC_NATIVE_PREP
+    runtime_shader_pair_last = pair;
+#endif
+    return pair; /* Entries remain immutable until workers stop and GPU retires. */''')
+anchor = '''static int runtime_shader_pair_clear(void)
+{
+    while (runtime_shader_pair_count)'''
+assert native_after.count(anchor) == 1
+native_after = native_after.replace(anchor, '''static int runtime_shader_pair_clear(void)
+{
+#ifdef PS5_ASYNC_NATIVE_PREP
+    /* Workers have been joined; discard the producer's last borrowed entry. */
+    runtime_shader_pair_last = NULL;
+#endif
+    while (runtime_shader_pair_count)''')
 (out / 'ps5_agc_native_runtime.c').write_bytes(native_after.encode())
 patch = ''.join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
     fromfile='a/src/gallium/ps5/ps5_screen.c', tofile='b/src/gallium/ps5/ps5_screen.c'))

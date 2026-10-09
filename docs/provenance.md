@@ -100,11 +100,26 @@ retirement still controls resource reuse. The exact upstream tests were taken
 from the verified source archive and run against the patched runtime, with
 ASan/UBSan, for one and two workers: reverse completion, ring wrap, duplicate
 results, startup/pinning failure, tessellation drain and shutdown all pass.
-CPU affinity on cores 10/12 and FPS gain still require console validation.
+Console startup receipts now verify CPU affinity on cores 10/12. The user
+reports 47-82 FPS wandering, about 90 stationary and 37-65 with F3 at
+1440p/8 chunks; 16 chunks remains around 20-23 FPS. Returning from 16 to
+8 chunks initially gives 45-51. Camera and terrain differ between observations.
 Upstream workers busy-spin while idle, so CPU usage can increase. Set
 `PROSPEROMC_ASYNC_NATIVE_PREP=0` for a synchronous diagnostic comparison;
 `PROSPEROMC_DRAW_PROFILE=1` also selects synchronous preparation because the
 upstream detailed profiling counters cannot run concurrently.
+
+The follow-up retains a single last shader-pair pointer per preparation worker.
+Shared entries are immutable after insertion and are freed only after workers
+join and GPU work retires. A matching pointer still compares the entire owned
+VS/PS package bytes, lengths, keys and topology before returning without the
+shared insertion mutex. Every miss follows the existing protected cache and
+validation path. Shutdown discards the producer's borrowed pointer too.
+The actual generated wrapper passes an ASan/UBSan two-thread check: 200,000
+byte-verified hot hits avoid locking; all 26 warmup/mutation lookups lock.
+Changed bytes, reused keys, sizes, topology and distinct thread state are
+covered. Shared-cache log counters now count searches that reach that cache;
+worker-local hits bypass those counters. Console FPS gains remain unverified.
 
 Mouse-wheel support extends the existing motion event's code field, retaining
 the deployed ntdll queue layout and validator. Patch 0671 sends a normal Windows

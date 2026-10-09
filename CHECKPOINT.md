@@ -582,3 +582,41 @@ counterisPwWineFrameBoxCPUframetransfersequence, NOTGLswap; realPW_GLcounter
 continues. Investigatedratherthanassumingrenderfreeze. Userwasinworld andchat
 commandSettime1000loggedat16952. CPU~3.2sper1s now (includesbusyworkers).
 AppcurrentlyRUNNING, neveruploadwithoutfreshclose. AwaituserFPSat8/16chunks.
+
+## Worker-local shader lookup follow-up - build running
+
+User reports strong async gain at1440p/8chunks: wandering47-77 occasional90,
+returnfromsky84-86, still90, fastmouse45-60, anotherwandering66-82, F337-65.
+16chunks20-23 mostly22, F3~18; back8chunks45-51. User nowexplicitly CLOSED
+ProsperoMC. Final full logs artifacts/console-worker-final/logs_session-7.log
+show clean shutdown, dmem failures0, ~2.14GiBstablelate-run, profile0,
+eligible15,070,193 vs inputreject35,652; descriptorhits54,140,136/misses15,768,381.
+
+Audited immutable native shader-pair cache: all hot hits still took shared
+mutex. Added single TLS last-pair pointer per worker; full key/length/topology
+and entire owned-byte comparisons retained. Cold/changed hits still mutex+
+original validation. Shutdown joinsworkers beforefree and clearsproducerTLS.
+Actual generated wrapper ASan/UBSan test:200,000 concurrent hot hits bypasslock;
+26warmup/mutationlookups lock. bytes/reusedkeys/sizes/topology/threadstatecovered.
+Automatic buildcheck added. Original upstream async testsPASS. Capabilities
+and archive-only2objects checksPASS. NoGPUownership/batching/window/settingschanges.
+
+Buildsession2399: SMOOTH_QUAD_DRIVER_BUILD_COMPLETE and HOST_WINE_TOOLS_READY;
+Wine link stillrunning. DO NOTstage untilsessionexit0. Currentconsolewin32u
+stilld02aa80a3e5c70d99828668883fb9d2e2c07048883afb687b75c577bf2b318be.
+Candidate sourcepatchc723e1981b48e267fb3630f0810062fbed6595f3337e02533ade664d72c0e0b3;
+SDKfcce2e2a16722534c64c6e18a7af616d3b4598415f0b596a68cda2c93d594b87;
+archive042a8e684d29851797387ff9a9ded7fc5dcf1159faecf7d6169bc259c41f6506.
+Next wait2399; check/stage win32u; ELFview+scopedgraphicsupload+readback; checkpoint,
+commitpush excluding3userPNGdeletions; samecamera1440p8/16F3on/offretet.
+Sharedcache logs no longer count worker-local hits; don'ttreatdecreaseasdrawdecrease.
+
+Worker-local cache build2399 completed exit0. Newwin32u
+b0d6b0a44dc28087bcd6c0b32eec41dccec4e737c3e2d34e869ba084dfe57025.
+Validated PRX status0/builttrue/noerrors, import/rawsyscall/unboundchecksPASS;
+stage validatedsource/provenance/capabilities; ELFviewgenerated. Graphics-only
+upload completed afteruserclose; executable and both reports readbackPASS.
+Java/JAR/nativeEBoot/settings/worlds/ntdll unchanged. NewworkerTLSshadercache
+FPS effectstillUNVERIFIED. Asyncsamecamera1440p8/16/back8 F3closedretetasked,
+settle30sec, leaveopenforlogs. AfteraskingtreatgameasRUNNING; freshclosebefore
+anyconsolewrite. SharedcachecountersexcludeTLSlocalhitsnow.
