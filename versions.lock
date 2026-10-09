@@ -96,9 +96,10 @@ purpose = "Upstream legacy varying mapping, lowered client-array draws and EGL H
 name = "ProsperoMC legacy quad batching"
 base_source_revision = "738f94cbdf6ff1de0376dc1cd4ce1229fd640730"
 file = "artifacts/graphics-batching/smooth-legacy-batching.patch"
-sha256 = "c723e1981b48e267fb3630f0810062fbed6595f3337e02533ade664d72c0e0b3"
-runtime_archive_sha256 = "042a8e684d29851797387ff9a9ded7fc5dcf1159faecf7d6169bc259c41f6506"
-sdk_manifest_sha256 = "fcce2e2a16722534c64c6e18a7af616d3b4598415f0b596a68cda2c93d594b87"
+sha256 = "d7ba55ad604d62db3d8d7976b53409addc0042fdfeddb579439d5206aad537ab"
+runtime_archive_sha256 = "d470ba6e6b78c1541556606c708ab5ef17903e10159458e4ab29ceba9b5f233f"
+sdk_manifest_sha256 = "f59ee9d0a360163bded6af9b5a476b4d5c034c2fee79cf1958712089f2277f9a"
+batch_timings = true
 license = "GPL-3.0-or-later"
 purpose = "Retain legacy batching and owned-buffer fixes; recycle retired descriptors, reuse byte-verified shader layouts, enable upstream two-worker native command preparation and worker-local byte-verified shader hits, log only batch errors, and disable hot-path profiling in the draw driver and native backend"
 

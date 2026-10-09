@@ -38,6 +38,7 @@ if not provenance['draw_profile']:
     assert b'[ps5-prepare-perf]' not in native
     assert b'profile=0' in driver
     assert b'ps5_agc_gate2_batch_end' in native
+    assert (b'[prosperomc-batch-time]' in native) == provenance.get('batch_timings',False)
     if provenance.get('async_native_prepare'):
         assert b'[ps5-async-prep] cpu=' in native
         assert b'pthread_create' in native and b'pthread_join' in native

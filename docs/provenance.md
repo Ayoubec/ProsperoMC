@@ -119,7 +119,18 @@ The actual generated wrapper passes an ASan/UBSan two-thread check: 200,000
 byte-verified hot hits avoid locking; all 26 warmup/mutation lookups lock.
 Changed bytes, reused keys, sizes, topology and distinct thread state are
 covered. Shared-cache log counters now count searches that reach that cache;
-worker-local hits bypass those counters. Console FPS gains remain unverified.
+worker-local hits bypass those counters. The console retest reports peaks of
+78-88 FPS at 1440p/8 chunks with 44-54 during turns; 16 chunks gives 19-30,
+mostly 24. Returning to 8 averages about 53. These manual observations do not
+isolate the cache's contribution from terrain and camera differences.
+
+The next diagnostic build enables `PROSPEROMC_BATCH_TIMINGS=1` while retaining
+both workers and all rendering paths. Producer-only clocks around batch
+begin/submit/drain/retirement/presentation generate one five-second aggregate.
+No individual draw or worker instrumentation is added. Queue time overlaps
+worker execution; GPU wait is CPU polling for retirement, not total GPU busy
+time. The exact aggregation helper passes interval, averaging and reset checks;
+source checks verify no worker/draw call sites. Default builds omit it.
 
 Mouse-wheel support extends the existing motion event's code field, retaining
 the deployed ntdll queue layout and validator. Patch 0671 sends a normal Windows

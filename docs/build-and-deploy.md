@@ -83,3 +83,13 @@ derives comparison views from this build. The uploader verifies the complete
 ELF representation, normalizing only bounded SCE version records that do not
 overlap loadable segments. Executable byte changes are rejected. This avoids
 treating the server's different reported size as a failed transfer.
+
+For root-cause measurement, build the graphics module with
+`PROSPEROMC_BATCH_TIMINGS=1 bash scripts/build-graphics-batching.sh` in WSL.
+This opt-in retains production draws, shader-cache fixes and two native workers.
+It reports aggregate producer batch timings once every five seconds; individual
+draws and worker execution are not instrumented. `queue_ms/frame` overlaps
+worker execution; `worker_wait_ms/frame` measures the remaining drain wait.
+`gpu_wait_ms/frame` measures CPU polling for confirmed retirement, rather than
+GPU busy time or a hardware timestamp. Submit, reclaim and present timings
+cover their named CPU calls. Default builds omit this instrumentation.

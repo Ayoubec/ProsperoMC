@@ -223,3 +223,17 @@ The worker-local cache candidate built and uploaded successfully. Executable
 readback plus both reports verified; win32u SHA256:
 b0d6b0a44dc28087bcd6c0b32eec41dccec4e737c3e2d34e869ba084dfe57025.
 Console FPS effect still pending same-camera 1440p8/16/back8 retest.
+
+Worker-local shader cache console retest:1440p8chunks initially78-88peak,
+44-54turning;16chunks19-30mostly24;back8peak70,low39,average53.
+NoFPSclaimfromhostcachetest; manualsameviewretet stillnotautomatedbenchmark.
+Next candidate adds producer-only batch-boundary clocks and five-second
+aggregates with currentworkers/cache/synchronization preserved. No per-draw
+or worker clocks. Queue overlapsworkers; GPU wait meansCPUretirementpolling,
+notGPUbusytime. Actualhelper report/reset/math and sourcecalls checksPASS.
+Originalupstream ASan/UBSanqueuechecks automaticinbuild; newmodulepending.
+Batch timing module uploaded and executable/bothreportsreadback verified:
+a61632e2936a064011b2d4ec0c90b15764f4b7b0e81bb9352e293e61598b83ed.
+Two workers, shader caches and graphics choices retained. This candidate is
+for measurement and makes no new FPS claim. Same-world8/16/back8 timedrun
+requested withF3closed; awaiting console measurements.

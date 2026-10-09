@@ -620,3 +620,42 @@ Java/JAR/nativeEBoot/settings/worlds/ntdll unchanged. NewworkerTLSshadercache
 FPS effectstillUNVERIFIED. Asyncsamecamera1440p8/16/back8 F3closedretetasked,
 settle30sec, leaveopenforlogs. AfteraskingtreatgameasRUNNING; freshclosebefore
 anyconsolewrite. SharedcachecountersexcludeTLSlocalhitsnow.
+
+## Producer-only batch timings - build running
+User latest b0d6 cache retest:1440p8 peak78-88,turn44-54;16 up30/low19/mostly24;
+back8 peak70/low39/avg53. Live logs artifacts/console-worker-local-cache-retest
+session2 show dmemfail0/~2.2GiB, GLswap55-78 late8 windows, 500ksharedcache
+lookups (TLSlocalhits excluded), workersstartup verified. Read beforeclose.
+User explicitCLOSED viaasyncquestioncall_df3c1c4b9a724576a55a087bb0cee77a.
+
+Ratherthanblindalteration, added PROSPEROMC_BATCH_TIMINGS opt-in build. Uses
+producer batchbegin/submit/drain/retire/present timestamps only; no draw/worker
+instrumentation. Logsaggregate perframe5sec, draws/groups/batches, queuetime
+(overlapsworkers), remainingworkerwait, submit, CPUretirementpollwait,reclaim,
+present. GPUwait NOTGPUtotalbusytime. Defaultflag0; currentcandidateenv1.
+Actualhelper/sourcecallsite check PASS. Existingupstream checksautomatic.
+Buildsession9611 running, drivercompiled/SMOOTH_QUAD_DRIVER_BUILD_COMPLETE.
+DonotstageuntilWinecomplete AND sessionexit0. CurrentPS5win32ub0d6...57025.
+Newpatchd7ba55ad604d62db3d8d7976b53409addc0042fdfeddb579439d5206aad537ab;
+SDKf59ee9d0a360163bded6af9b5a476b4d5c034c2fee79cf1958712089f2277f9a;
+archived470ba6e6b78c1541556606c708ab5ef17903e10159458e4ab29ceba9b5f233f;
+configc2d5f6abeda95a1cfaaa6c6c4884430c8c390f0fc066165f083b64453fc00ca7.
+Nextwait9611; capabilities/archiveasserttimingstring+workers/profile0;
+stage+ELFview+graphics-onlyupload+readback; checkpointcommitpush; request
+8stationary/16stationary/back8turning~20sec eachthenleaveopenandreadtimings.
+NoFPSimprovementpromisedforthisdiagnosticbuild. Needfreshcloseafteraskbeforenextwrite.
+
+Batchtiming build9611 finishedexit0. PRX imports/rawsyscall/unboundstatusPASS;
+capabilities/archivepreservation/checktimerlogsPASS. Staged win32u
+ a61632e2936a064011b2d4ec0c90b15764f4b7b0e81bb9352e293e61598b83ed.
+ELFviewgenerated;graphics-onlyupload afterexplicituserclosecomplete;
+executable+bothreportsreadbackPASS. stagebatchTimings=true,profilefalse,
+asyncNativePrepare=true,workers2. Native/JAR/Java/worlds/settings unchanged.
+Asyncretetrequest: sameworld1440p,F3closed,8terrainstationary30sec,
+16stationary30sec,back8turncamera30sec;replytestedleaveopenforlogs.
+NextREADONLYstatussessionlogslookfor[prosperomc-batch-time], align windows
+withdrawcounts/stableFPSpattern. Queueoverlapsworker time;gpuwaitCPUwaitonly;
+if sumsmallrelativeframetimeinvestigateJava/GLproduceroutsidenativebatch.
+DoNOTcallCPUwaittotalGPUbusytime. DoNOTusepairlookupsasdrawcount(TLSbypass).
+TreatconsoleRUNNING afterrequest;freshclosebeforeanybinarymutation.
+NextperformancebuildshoulddefaultPROSPEROMC_BATCH_TIMINGS=0unlessneeded.
