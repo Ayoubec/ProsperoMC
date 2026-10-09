@@ -273,3 +273,37 @@ confirmation beforemorewrites. CandidateconsoleFPSnotestablished; compare samewo
 win32u bc0f2f2b08f20c5015cbce19e7120b46d95946998ccf5d6d391582330b698205
 JAR unchanged 722679be25b99eb208fba871a1ac843150773607c937570fecce677dede36ae5
 EBOOT unchanged 06352734edb67b4aa14191edd9a9c4cad358e282649e1106d409378bfa0960a0
+
+## Lowered non-indexed batching candidate — uploaded
+
+Latest user retest: 1440p/8 chunks initially32FPS, then13–14 after moving and
+staying still. Freshlogs artifacts/console-readonly-map-retest show read-map
+phase6 average about287cycles (692423calls/198496586cycles), versus about23k
+before the previous update. That optimization worked. During slowdown input
+fallbacks rise, with3400–4700 individual submissions per interval; allother
+batch rejection categories remainzero. Existing ps5_draw_vbo_locked qualifies
+has_user_indices with index_size because Mesa retains stale flags on lowered
+non-indexed draws; ps5_multidraw_eligible incorrectly rejected that flag alone.
+Aligning the batch predicate is the targeted follow-up, with atmost16 bounded
+input diagnostic lines after10000rejects. Null/empty draws are guarded. Actual
+client-indexed, indirect, primitive-restart and unsupported formats stay guarded.
+Host test extracts realpredicate, including restrictedblitterfan/null/emptycases.
+Read-only map/unmap/publication tests, compiledBGRA capability and only-driver
+archive tests allPASS. NoJava/native/optionschanges. BothCLOSED explicitly
+confirmed byuser thisturn; do notaskagain before thiscandidate upload.
+
+Build session64531 finished successfully. Allimports/rawsyscall/unbound checks
+passed;076Winepatches and repairedntdll preserved. Stagingcompleted, win32u-only
+FTPcomparisonview refreshed (55442finished), graphics-only upload completed with
+executable readback and bothstage reports. User worlds/options/Java/native/JAR
+were untouched. Further console writes require a freshclose once test is requested.
+Sourcepatch f10b726029f9671365f3e1a10642e8e796741dcde28c06bcdb32c0b49e27801d;
+SDKmanifest af4e78238786c8f718489d3926883eee32d64ed42ba2969cfb0bb646805eb04f;
+runtimearchive38299f03c2fb372ffb80627114e276ad3bf938f4d938247d895e16c8ecc8af82.
+Rollback deployedbc0f module/patch/provenance preserved in
+artifacts/graphics-before-lowered-batching. Newwin32u:
+7ffe5791b5004342018ab7700ed1cd7da872c3c3bfad1eb585bfc763d84d2e31.
+JAR unchanged722679be25b99eb208fba871a1ac843150773607c937570fecce677dede36ae5;
+EBOOT unchanged06352734edb67b4aa14191edd9a9c4cad358e282649e1106d409378bfa0960a0.
+The next test is sameworld1440p/8chunks movement/stop FPS andvisualcorrectness;
+leave open for boundedinputfallback logs. NoFPSgain from thiscandidate claimed.

@@ -185,6 +185,31 @@ after = after.replace(scan, '''      /* Our non-indexed quad generator already g
       } else if (!ps5_index_bounds(indices, info->index_size, draws[0].count,
                                   draws[0].index_bias, &min_index, &max_index,
                                   &min_effective, &max_effective)) {''')
+# Mirror the already-correct single-draw check: stale client-index flags have
+# no meaning after Mesa lowers a draw to non-indexed vertex data.
+start = after.index('static bool\nps5_multidraw_eligible(')
+end = after.index('\nstatic ', start + 1)
+eligibility = after[start:end]
+assert eligibility.count('info->primitive_restart || info->has_user_indices ||') == 1
+eligibility = eligibility.replace('info->primitive_restart || info->has_user_indices ||',
+    'info->primitive_restart || (info->index_size && info->has_user_indices) ||')
+# Bounded diagnostics distinguish remaining input fallbacks without per-draw logs.
+anchor = '      rejects |= BITFIELD_BIT(PS5_BATCH_REJECT_INPUT - 1);'
+assert eligibility.count(anchor) == 1
+eligibility = eligibility.replace(anchor, '''   {
+      rejects |= BITFIELD_BIT(PS5_BATCH_REJECT_INPUT - 1);
+#ifdef PS5_DRAW_PROFILE
+      static unsigned input_reports;
+      if (info && draws && num_draws && context->batch_reject[0] >= 10000 && input_reports < 16) {
+         input_reports++;
+         printf("[ps5-batch-input] mode=%u index=%u user=%u restart=%u instances=%u draws=%u count=%u indirect=%u\\n",
+                info->mode, info->index_size, info->has_user_indices,
+                info->primitive_restart, info->instance_count, num_draws,
+                draws[0].count, indirect != NULL);
+      }
+#endif
+   }''')
+after = after[:start] + eligibility + after[end:]
 (out / 'ps5_screen.c').write_bytes(after.encode())
 patch = ''.join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
     fromfile='a/src/gallium/ps5/ps5_screen.c', tofile='b/src/gallium/ps5/ps5_screen.c'))

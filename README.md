@@ -9,9 +9,12 @@ The latest user reports are 60 FPS at 3 chunks, 16–32 FPS at 8 chunks and
 config already has it enabled and the user reports no improvement from it.
 This update preserves the current graphics choices.
 At higher game resolutions the latest report is about 25 FPS at 1080p and
-18 FPS at 1440p. The next renderer update avoids draining queued GPU reads
-when Mesa only reads an unchanged owned vertex/index buffer. Its performance
-still needs a comparison on the same world and settings.
+18 FPS at 1440p. After the read-only buffer update, the user measured an initial
+32 FPS at 1440p/8 chunks, falling to 13–14 after moving. Profiling confirms buffer
+reads became much faster, but thousands of draws then use individual submissions.
+The next update lets lowered non-indexed draws batch despite Mesa's retained
+client-index flag; actual indexed client data keeps its existing fallback.
+Performance still needs a comparison on the same world and settings.
 Other versions, mod loaders and online features require separate
 console checks. It is an independent launcher, not an embedded Qt build of PolyMC.
 

@@ -100,3 +100,19 @@ The exact predicate and map/unmap branches pass host tests, including repeated
 reads and write/GPU/export exclusions. Compare the same world, camera, render
 distance and graphics options at 1080p/1440p after deployment. Check terrain,
 inventory items and TNT for correctness. No FPS improvement is established yet.
+
+## Lowered draw batching follow-up
+
+The read-only update's retest at 1440p/8 chunks started near 32 FPS, then stayed
+at 13–14 after moving. Logs in artifacts/console-readonly-map-retest show average
+buffer-map work falling from about 23,000 to 287 cycles per call. At the slowdown,
+individual draw submissions increase from tens to roughly 3,400–4,700 per interval;
+batch input rejects increase while other rejection categories remain zero.
+The existing single-draw path already ignores has_user_indices when index_size
+is zero, but batching rejected the stale flag unconditionally. The follow-up
+aligns these checks and logs at most 16 remaining input fallbacks. It preserves
+checks for actual client indices, indirect draws, primitive restart and unsupported
+index formats. A host test extracts the actual eligibility predicate and exercises
+these cases, including the restricted blitter fan path and empty inputs.
+Console performance of this follow-up remains pending; test the same world at
+1440p/8 chunks, move and stop, and check terrain, items and TNT for correctness.
