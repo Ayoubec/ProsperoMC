@@ -47,4 +47,11 @@ Aggregate CPU usage also does not identify which thread limits frame rate.
 dimensions. The existing 120 Hz request is retained; actual negotiated refresh
 and the reported 60 FPS ceiling remain to be checked on the user's display.
 
+The console confirmed selection music and fixed window edges. The 1080p
+retest still produced a 720p profile; the saved settings file had no resolution
+entry. The follow-up update saves the resolution directly on selector changes
+and offers 720p, 1080p, 1440p and 2160p. Native frame capacity now covers 4K.
+These are game-render dimensions; the output presenter remains 1080p. Console
+confirmation of the new dimensions is still required.
+
 The review also checked [`d5a0ec0`](https://github.com/mpereiraesaa/prospero-win/commit/d5a0ec0195531f0b607aea548be8f014d2f9146a), published during this build. Its validation-only D3D9 command scans do not affect Minecraft’s OpenGL path and were not imported.

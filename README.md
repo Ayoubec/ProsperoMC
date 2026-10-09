@@ -25,8 +25,11 @@ Installation selects the Java major required by that version, reuses a valid
 installed Windows x64 runtime, or downloads a verified runtime when missing.
 Settings lists detected runtimes and offers Java downloads. Minecraft 1.12.2
 is the initial test case, not the application's fixed or main version.
-Settings also selects 1280×720 or 1920×1080; choose a resolution and Save
-Settings before the next launch. Higher resolution can reduce performance.
+Settings selects 1280×720, 1920×1080, 2560×1440 (2K/1440p) or
+3840×2160 (4K). Changing the resolution saves it immediately for the next
+launch; memory changes still use Save Settings. These are game-rendering
+resolutions: the current HDMI output remains 1080p, with higher game
+resolutions downscaled. Higher resolution can reduce performance.
 Game windows have edge resizing disabled on PS5.
 
 To add a modpack, copy a PolyMC/MultiMC ZIP or Modrinth `.mrpack` into

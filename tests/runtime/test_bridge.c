@@ -89,6 +89,14 @@ int main(void)
     size_t setting_bytes=fread(content,1,sizeof(content)-1,settings); fclose(settings);content[setting_bytes]=0;
     assert(strstr(content,"microsoftClientId=keep-this\n") && strstr(content,"java8=Z:"));
     assert(strstr(content,"resolution=1920x1080\n"));
+    for(int r=0;r<4;r++) {
+        const int heights[]={720,1080,1440,2160};
+        action.resolution_height=heights[r];
+        assert(pm_bridge_local(root,&action,&view)==1 && view.resolution_height==heights[r]);
+        assert(!pm_bridge_view(root,&view) && view.resolution_height==heights[r] && view.memory_mb==4096);
+        assert(!pm_bridge_request(root,&action));
+    }
+    action.resolution_height=0;
     action.memory_mb=1; assert(pm_bridge_local(root,&action,&view)==-1); action.memory_mb=0;
     strcpy(action.account_mode,"invalid"); assert(pm_bridge_local(root,&action,&view)==-1);
     snprintf(name,sizeof(name),"%s/instances",root); assert(!mkdir(name,0700));

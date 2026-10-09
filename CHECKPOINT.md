@@ -214,3 +214,31 @@ New hashes:
 win32u f003791d4e4fb39f12e54b52fb924486cce746beec6908c84a817c71bfcd2e13
 JAR 1b97a153d167a4b1ad7d0c552bdfc3f549e81dbb37f37b427adb1585173df822
 EBOOT aff64dee9d1418147d532197081435a8a259796107fe7abad040d81e59071188
+
+
+## Resolution follow-up — UPLOADED, console dimensions pending
+
+User confirms home-screen music works and window edges are fixed. 1080p still
+showed720p. Read fresh settings/profile/plan: NO resolution key; desktop/arguments
+both1280x720. No GPU allocation error involved in that launch. Resolution now
+saves immediately on Left/Right/X selector changes, with trace logging of actual
+native settings actions. Presets720/1080/1440/2160 added consistently to frontend,
+bridge validation/serialization and Java. Settings subtitle explains HDMI output
+remains1080p; larger render resolutions downscale, not native4K HDMI mode.
+Frame mailbox capacity increased to3840*2160*4, avoiding old1920x1200 drop limit.
+Wine driver already accepts up to3840x2160 and graphics caps allow16384.
+
+User explicitly BOTH CLOSED before send. Saved only requestedresolution1920x1080
+in /data/ProsperoMC/settings.properties, preserving other keys, backed up and
+readback verified. Native/JAR staged, Eboot FTP comparison refreshed; app-only
+upload/readback and bothreportsPASS, Wine/music/art/modulesunchanged. All33Java
+integrationtestsPASS (new4presetprofile/args persistence), frontend immediate-save
+navigation/guardsPASS, bridge4presetpersistencePASS. Existingoptions/worlds untouched.
+New async test asks1080F3 firstthen1440/4Kpicture/dimensions. The app may be running
+now; obtain freshcloseconfirmation before further console writes. No performance
+increase claimed; VBOalreadyenabled withnoimprovement peruser. Stilldraw-overhead
+and60Hzceiling workpending. Archivedlatest logsartifacts/console-resolution-retest.
+New hashes:
+JAR 722679be25b99eb208fba871a1ac843150773607c937570fecce677dede36ae5
+EBOOT 06352734edb67b4aa14191edd9a9c4cad358e282649e1106d409378bfa0960a0
+win32u f003791d4e4fb39f12e54b52fb924486cce746beec6908c84a817c71bfcd2e13

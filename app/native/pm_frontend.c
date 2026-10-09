@@ -27,6 +27,8 @@ static const char *loaders[] = {"vanilla","fabric","quilt","forge"};
 static const char *tabs[] = {"Home","Library","Versions","Mods","Settings","Accounts"};
 static const char *filters[] = {"All versions","Releases","Snapshots"};
 static const int java_majors[] = {8,17,21,25};
+static const int resolution_heights[] = {720,1080,1440,2160};
+static const char *resolution_labels[] = {"1280 x 720","1920 x 1080","2560 x 1440 (2K)","3840 x 2160 (4K)"};
 static const PmJavaRuntime *runtime_for_major(const PmView *v,int major) {
     const PmJavaRuntime *found=NULL;int j;
     for(j=0;j<count(v->java_count,PM_MAX_JAVA);j++) {
@@ -74,9 +76,11 @@ static void normalize(PmFrontend *f,const PmView *v) {
     }
     f->focus=bound(f->focus,0,f->screen==PM_SETTINGS?7:f->screen==PM_LIBRARY?4:f->screen==PM_VERSIONS?3:f->screen==PM_ACCOUNTS?2:1);
     f->memory_mb=bound(f->memory_mb,512,8192);
+    f->resolution_index=bound(f->resolution_index,0,3);
     if(!f->initialized_settings) {
         f->memory_mb=v->memory_mb?bound(v->memory_mb,512,8192):2048;
-        f->resolution_index=v->resolution_height==1080?1:0;
+        f->resolution_index=0;
+        for(int j=0;j<4;j++)if(v->resolution_height==resolution_heights[j])f->resolution_index=j;
         f->initialized_settings=1;
     }
 }
@@ -209,19 +213,27 @@ int pm_frontend_update(PmFrontend *f,const PmView *v,PmKey key,PmAction *a) {
         if(key==PM_KEY_DOWN) f->focus=f->focus==0?7:f->focus==7?1:f->focus<=4?5:6;
         if(key==PM_KEY_LEFT||key==PM_KEY_RIGHT) {
             delta=key==PM_KEY_RIGHT?1:-1;
-            if(f->focus==7) f->resolution_index=1-f->resolution_index;
+            if(f->focus==7) {
+                f->resolution_index=(f->resolution_index+delta+4)%4;
+                a->resolution_height=resolution_heights[f->resolution_index];
+                return action(a,"settings",NULL);
+            }
             else if(f->focus==0) f->memory_mb=bound(f->memory_mb+delta*256,512,8192);
             else if(f->focus<=4) f->focus=bound(f->focus+delta,1,4);
             else f->focus=bound(f->focus+delta,5,6);
         }
         if(key==PM_KEY_CONFIRM) {
-            if(f->focus==7) {f->resolution_index=1-f->resolution_index;return 0;}
+            if(f->focus==7) {
+                f->resolution_index=(f->resolution_index+1)%4;
+                a->resolution_height=resolution_heights[f->resolution_index];
+                return action(a,"settings",NULL);
+            }
             if(f->focus>=1&&f->focus<=4) {
                 a->java_major=java_majors[f->focus-1];return action(a,"install-java",NULL);
             }
             if(f->focus==5) return action(a,"detect-java",NULL);
             a->memory_mb=f->memory_mb;
-            a->resolution_height=f->resolution_index?1080:720;
+            a->resolution_height=resolution_heights[f->resolution_index];
             return action(a,"settings",NULL);
         }
         break;
@@ -530,14 +542,14 @@ static void mods(Canvas *c,const PmFrontend *f,const PmView *v) {
 }
 static void settings(Canvas *c,const PmFrontend *f,const PmView *v) {
     char b[256];int mb=bound(f->memory_mb,512,8192),j;
-    screen_title(c,"Launcher settings","Java is detected automatically. Minecraft downloads include the required runtime.");
+    screen_title(c,"Launcher settings","Game resolution applies next launch. HDMI output is 1080p; higher game resolutions cost performance.");
     panel(c,108,302,1704,578,0);
     panel(c,137,327,1646,100,f->focus==0);
     text(c,"Minecraft memory",168,345,30,TITLE,1330);
     small(c,"Left / right adjusts in 256 MB steps.",171,391,MUTED,1146);
     snprintf(b,sizeof(b),"%d MB",mb);text(c,b,1500,352,30,LIME,250);
     box(c,173,417,1569,4,EDGE);box(c,173,417,(mb-512)*1569/(8192-512),4,LIME);
-    snprintf(b,sizeof(b),"RESOLUTION   <  %s  >   /   applies next launch",f->resolution_index?"1920 x 1080":"1280 x 720");
+    snprintf(b,sizeof(b),"RESOLUTION   <  %s  >   /   saved on change",resolution_labels[bound(f->resolution_index,0,3)]);
     button(c,b,137,443,1646,f->focus==7,0);
     text(c,"Java runtimes",140,530,30,TITLE,980);
     small(c,"Windows 64-bit / detected in launcher data",1150,535,FAINT,630);

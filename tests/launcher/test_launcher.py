@@ -357,6 +357,20 @@ class LauncherTests(unittest.TestCase):
         for file in ("profiles/launch.profile", "profiles/launch-plan.json", "launcher-view.properties", "response.properties", "progress.properties"):
             self.assertNotIn("DO-NOT-EXPOSE", (self.root / file).read_text())
 
+    def test_resolution_presets_persist_into_game_and_desktop(self):
+        self.install()
+        self.java_fixture()
+        for resolution in ("1280x720", "1920x1080", "2560x1440", "3840x2160"):
+            self.request(command="settings", resolution=resolution)
+            self.request(command="prepare-launch", id="fixture")
+            profile=(self.root / "profiles/launch.profile").read_text()
+            args=json.loads((self.root / "profiles/launch-plan.json").read_text())["arguments"]
+            width,height=resolution.split("x")
+            self.assertIn("desktop="+resolution,profile)
+            self.assertEqual(args[args.index("--width")+1],width)
+            self.assertEqual(args[args.index("--height")+1],height)
+            self.assertEqual(props(self.root / "settings.properties")["resolution"],resolution)
+
     def test_prepare_corrupt_client_and_java_mismatch_fail(self):
         self.install()
         self.java_fixture()

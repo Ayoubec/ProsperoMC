@@ -235,7 +235,7 @@ static const PwGameProfile *pm_profile_find(const char *id)
 /* The largest desktop shown: Wine's PS5 driver defaults to 800x600
  * (WINE_PS5_DESKTOP overrides, 1920x1080 for Warcraft III); bigger frames
  * are counted and dropped. */
-enum { PW_WINE64_MAX_FRAME = 1920 * 1200 * 4, PW_WINE64_TICK_US = 16000,
+enum { PW_WINE64_MAX_FRAME = 3840 * 2160 * 4, PW_WINE64_TICK_US = 16000,
        PW_WINE64_TICKS_PER_S = 60, PW_WINE64_CLOSE_WAIT_S = 5 };
 
 enum { PAD_CREATE = 0x1u, PAD_OPTIONS = 0x8u, PAD_UP = 0x10u, PAD_RIGHT = 0x20u,
@@ -709,6 +709,8 @@ static int open_library(void)
 }
 static void pm_invoke(const PmAction *action)
 {
+    if (!strcmp(action->command,"settings"))
+        PS5LOG_LOG("PROSPEROMC settings memory=%d resolution_height=%d",action->memory_mb,action->resolution_height);
     int local=pm_bridge_local(library_root,action,&pm_view);
     if (local) {
         if (local<0) snprintf(pm_frontend.notice,sizeof(pm_frontend.notice),"Unable to save %s (errno %d)",action->command,errno);

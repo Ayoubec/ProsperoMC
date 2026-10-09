@@ -46,7 +46,13 @@ int main(void) {
     f.memory_mb=8192;assert(!press(PM_KEY_RIGHT));assert(f.memory_mb==8192);
     assert(press(PM_KEY_CONFIRM));assert(!strcmp(a.command,"settings"));assert(a.memory_mb==8192);
     assert(!press(PM_KEY_DOWN));assert(f.focus==7);
-    assert(!press(PM_KEY_RIGHT));assert(f.resolution_index==1);
+    assert(press(PM_KEY_RIGHT));assert(f.resolution_index==1 && a.resolution_height==1080 && !a.memory_mb);
+    assert(press(PM_KEY_RIGHT));assert(a.resolution_height==1440);
+    assert(press(PM_KEY_CONFIRM));assert(a.resolution_height==2160);
+    assert(press(PM_KEY_RIGHT));assert(a.resolution_height==720);
+    assert(press(PM_KEY_LEFT));assert(a.resolution_height==2160);
+    assert(press(PM_KEY_RIGHT));assert(a.resolution_height==720);
+    assert(press(PM_KEY_RIGHT));assert(a.resolution_height==1080);
     assert(!press(PM_KEY_DOWN));assert(f.focus==1);
     for(j=0;j<4;j++) {
         const int majors[]={8,17,21,25};

@@ -247,7 +247,7 @@ public final class Main {
             String k=e.getKey();
             if(k.equals("command"))continue;
             if(k.matches("java[0-9]+")||Arrays.asList("resolution", "memoryMb", "microsoftClientId", "manifestUrl", "assetsUrl", "fabricApi", "quiltApi", "graphics", "accountMode", "username", "modrinthApi", "javaApi").contains(k)) {
-                if(k.equals("resolution")&&!Arrays.asList("1280x720","1920x1080").contains(e.getValue()))throw new IOException("Choose 1280x720 or 1920x1080");
+                if(k.equals("resolution")&&!Arrays.asList("1280x720","1920x1080","2560x1440","3840x2160").contains(e.getValue()))throw new IOException("Choose 720p, 1080p, 1440p or 2160p");
                 if(k.equals("memoryMb"))memory(e.getValue());
                 if(k.equals("accountMode")&&!Arrays.asList("microsoft", "offline").contains(e.getValue()))throw new IOException("accountMode must be microsoft or offline");
                 if(k.equals("graphics")&&!Arrays.asList("opengl", "zink").contains(e.getValue()))throw new IOException("graphics must be opengl or zink");
@@ -792,7 +792,7 @@ public final class Main {
         placeholders.put("clientid", settings.getOrDefault("microsoftClientId", ""));
         placeholders.put("auth_xuid", "");
         String resolution=settings.getOrDefault("resolution","1280x720");
-        if(!Arrays.asList("1280x720","1920x1080").contains(resolution))throw new IOException("Unsupported launch resolution");
+        if(!Arrays.asList("1280x720","1920x1080","2560x1440","3840x2160").contains(resolution))throw new IOException("Unsupported launch resolution");
         String[] dimensions=resolution.split("x");
         placeholders.put("resolution_width", dimensions[0]);
         placeholders.put("resolution_height", dimensions[1]);
