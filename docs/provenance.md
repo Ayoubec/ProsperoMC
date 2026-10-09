@@ -132,6 +132,19 @@ worker execution; GPU wait is CPU polling for retirement, not total GPU busy
 time. The exact aggregation helper passes interval, averaging and reset checks;
 source checks verify no worker/draw call sites. Default builds omit it.
 
+In the completed diagnostic run, the five stable high-draw windows cover 594
+frames and average 1,483 draws/frame. Frame-weighted timings are 33.637 ms
+queue, 0.280 ms remaining worker wait, 0.448 ms submission and 0.104 ms CPU
+retirement polling. They support targeting the producer path, without claiming
+to measure total GPU busy time. The run's descriptor cache records 6,902,928
+hits and 2,656,392 misses. Before an empty-cache allocation, deferred draws now
+poll the existing FIFO retirement path without waiting. Already-completed
+batches return their private descriptors; unfinished work remains owned.
+The bounded cache, queue order, submission and GPU completion checks are
+unchanged. A host check exercises the actual gate and retirement loop for ready,
+unready, nonempty-cache, partially empty and no-inflight cases. Console effect
+on allocation misses, queue time and FPS is pending.
+
 Mouse-wheel support extends the existing motion event's code field, retaining
 the deployed ntdll queue layout and validator. Patch 0671 sends a normal Windows
 wheel event in win32u. USB notches and controller wheel bindings share this path.

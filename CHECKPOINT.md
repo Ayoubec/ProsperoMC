@@ -659,3 +659,43 @@ if sumsmallrelativeframetimeinvestigateJava/GLproduceroutsidenativebatch.
 DoNOTcallCPUwaittotalGPUbusytime. DoNOTusepairlookupsasdrawcount(TLSbypass).
 TreatconsoleRUNNING afterrequest;freshclosebeforeanybinarymutation.
 NextperformancebuildshoulddefaultPROSPEROMC_BATCH_TIMINGS=0unlessneeded.
+
+Timing run complete, user CLOSED ProsperoMC before retrieval. Full game log
+artifacts/console-batch-timings-retest/logs_session-5.log. Timers show stable
+high-draw windows t18896-18916 (consistentwith16chunktest), 594frames weighted:
+draws1483.302/frame, queue33.637ms/frame, workerwait0.280, submit0.448,
+CPUgpu-retirementpoll0.104. Queue time includes producer GL/driver/Java calls
+between draws and overlaps workers; NOT exclusive driver CPU time. GPU polling
+NOT total GPUbusytime. Strongproducer-side dominant walltime evidence.
+Enddescriptorcache: hits6,902,928 misses2,656,392 (27.8%missrate), retained768;
+cleanexit,no dmemallocfailures, batchingeligible2,919,022/inputreject696/others0.
+
+New targeted fix polls confirmed-completed FIFO entries BEFORE empty-cache
+copy allocs in deferreddraw, under existingmutex. No waiting/submission/newqueue/
+cachegrowth. Previously onlyflush boundaries reclaimed ready batches. Actual
+source gate/retireloop testsPASS ready/unready/nonempty/singlestageempty/noinflight.
+Reuse ownership + upstream ASan/UBSantestsPASS. Capabilities/archivechecksPASS.
+Build64346 running; driverdone/HOST_WINE_TOOLS_READY; DO NOTstageuntilexit0.
+CurrentPS5modulea61632e2936a064011b2d4ec0c90b15764f4b7b0e81bb9352e293e61598b83ed.
+Newsourcepatchc075a8acfab2e1725c68cca2288f8785dca1eba526ed5d3a2b8ab54417222a9a;
+SDK0998a1203128c3b1caba082ada5c048fbb30da8ba07e7b7dc85c9c8bb3dc8e1f;
+archivef2b19b5daa13dd29ab0bf06a3e6c3ee1a89f396f8e68131adc76ae90e4beb19d;
+configc2d5f6abeda95a1cfaaa6c6c4884430c8c390f0fc066165f083b64453fc00ca7.
+Timingflag1 retained for measured comparison; worker2/profile0/TLSshadercache
+unchanged. Nextwait64346 stage/ELFview/scopedgraphicsupload/readback/checkpoint/
+commitpush (exclude3userPNGdeletes). Requestsame1440p8/16/back8~30sec each;
+FPS+queuetime+descriptorallocationmissratio. Needfreshcloseafterrequestbeforewrite.
+
+Ready-descriptor build64346 completed exit0/WIN32U_GRAPHICS_BUILD_COMPLETE.
+Verifiedimports/rawsyscall/unbound/status0 andstage/capabilities/archive;
+newwin32u9d2b8f1534f0d371c19e840c7990724500d6067230a1ceed00efbc77a1cbfb56.
+ELFview/scopedgraphicsupload/readback(executable+bothreports)PASS. UserCLOSED
+beforechanges. Native/JAR/world/options/Java preserved. Timing1/profile0/workers2.
+Asyncretetasked: sameworld1440pF3closed8then16~30sec each, FPSstill+turning,
+thenSAVEQUITandCLOSE app to get final descriptor counter. HardwareeffectUNVERIFIED.
+Nextretrieve3logs and[prosperomc-batch-time]+[ps5-descriptor-reuse]. Compare
+queueperdraw/frame vs baseline33.637ms/1483draws high16, allocationmissratio
+baseline27.8%; normalizeforview/drawcount/time. Currenttimersremainoptin1.
+AssumegameRUNNINGuntilreplyconfirmsclosed; do notwriteconsolebinarywithoutfreshclose.
+Ifmissesimprovebutqueuepersameworkloadunchanged, targetGLproducer/driver cost
+with sparse sampling, not another blanket GPU/presenter/worker change.

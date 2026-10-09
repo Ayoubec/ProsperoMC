@@ -237,3 +237,15 @@ a61632e2936a064011b2d4ec0c90b15764f4b7b0e81bb9352e293e61598b83ed.
 Two workers, shader caches and graphics choices retained. This candidate is
 for measurement and makes no new FPS claim. Same-world8/16/back8 timedrun
 requested withF3closed; awaiting console measurements.
+
+Timing run received after user closed app. Five high-draw windows (594frames,
+~1483draws/frame) average queue33.637ms/frame, workerwait0.280, submit0.448,
+CPUretirementpoll0.104. Producer-side queuing dominates; these are not total
+GPUbusy/exclusiveCPU measurements. Descriptorcachehits6,902,928/misses2,656,392.
+Follow-up reclaims already-completed FIFO descriptors before empty-cache
+allocation, without waiting or changing cache bounds/queuedwork. Sourcegate
+and retirement-loop cases PASS; effect on FPS/queuetime/misses awaits retest.
+Ready-descriptor reuse module uploaded and executable+bothreports verified:
+9d2b8f1534f0d371c19e840c7990724500d6067230a1ceed00efbc77a1cbfb56.
+Retains the coarse counters and two workers. FPS/queue-time/miss-rate effect
+awaits same-world8/16 still/turning retest followed by clean close.

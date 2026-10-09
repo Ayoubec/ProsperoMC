@@ -103,6 +103,7 @@ run([sys.executable,root / 'scripts/check-shader-layout-cache.py'])
 run([sys.executable,root / 'scripts/check-worker-shader-cache.py'])
 run([sys.executable,root / 'scripts/check-batch-timings.py'])
 run([sys.executable,root / 'scripts/check-descriptor-retirement.py'])
+run([sys.executable,root / 'scripts/check-descriptor-ready-reuse.py'])
 run([sys.executable,root / 'scripts/check-upstream-async.py'])
 run(['gcc','-O2',out / 'check-policy.c','-o',work / 'check-policy'])
 with (out / 'policy-check.log').open('w') as log:
@@ -154,7 +155,7 @@ provenance.update(version=provenance['version']+'-prosperomc-quad-batching',
     sdk_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
     runtime_archive_sha256=hashlib.sha256(runtime.read_bytes()).hexdigest(),
     local_patch={'file':'smooth-legacy-batching.patch','sha256':patch_hash,
-                 'description':'Retain legacy batching and owned-buffer fixes; recycle retired descriptors, reuse byte-verified shader layouts, ' + ('enable upstream two-worker native command preparation and worker-local byte-verified shader hits, ' if async_prepare else '') + 'log only batch errors, and ' + ('enable diagnostic profiling' if profile else 'disable hot-path profiling') + ' in the draw driver and native backend'},
+                 'description':'Retain legacy batching and owned-buffer fixes; reclaim ready FIFO descriptors without waiting before empty-cache allocation, recycle retired descriptors, reuse byte-verified shader layouts, ' + ('enable upstream two-worker native command preparation and worker-local byte-verified shader hits, ' if async_prepare else '') + 'log only batch errors, and ' + ('enable diagnostic profiling' if profile else 'disable hot-path profiling') + ' in the draw driver and native backend'},
     draw_profile=profile,
     batch_timings=batch_timings,
     async_native_prepare=async_prepare,
