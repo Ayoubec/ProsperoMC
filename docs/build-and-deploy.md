@@ -9,7 +9,8 @@ ProsperoMC.cmd build-send
 This builds the Java launcher and native PS5 app, stages their checksums, and
 sends an app update to `192.168.1.111:2121`. Close Minecraft and ProsperoMC and
 start the PS5 FTP server before sending. The update preserves console worlds,
-mods, settings, Java installations and the Wine prefix. Repaired Wine/OpenGL
+mods, settings, Java installations and the Wine prefix. The update includes
+the loader icon/backgrounds and embedded launcher artwork. Repaired Wine/OpenGL
 modules already in the distribution are retained. Changed app modules are
 verified before publication; unchanged modules are skipped.
 

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "pm_font.h"
+#include "pm_art.h"
 
 #define BASE 0x06090a
 #define PANEL 0x101c17
@@ -308,34 +309,29 @@ static void chip(Canvas *c,const char *s,int x,int y,int accent) {
 }
 
 static void terrain(Canvas *c,int x,int y,int w,int h) {
-    int row,col,v,by,bh;
-    for(row=0;row<h;row++) box(c,x,y+row,w,1,mix(0x14322e,0x44765e,(unsigned)(row*100/h)));
-    /* Quiet block landscape, built directly into the native framebuffer. */
-    box(c,x+w-162,y+64,58,58,0xb8c99c);box(c,x+w-153,y+72,58,58,0x9eb987);
-    for(col=0;col<w/32+1;col++) {
-        v=(col*13+col*col*7)%9;
-        by=y+h-150-v*13;
-        int width=bound(w-col*32,0,32);
-        box(c,x+col*32,by,width,y+h-by,0x315343);
-        box(c,x+col*32,by,width,14,0x507954);
+    int xx,yy,left=sx(c,x),top=sy(c,y),right=sx(c,x+w),bottom=sy(c,y+h);
+    if(right<=left||bottom<=top)return;
+    for(yy=bound(top,0,c->t->height);yy<bound(bottom,0,c->t->height);yy++) {
+        unsigned row=(unsigned)((int64_t)(yy-top)*PM_WORLD_H/(bottom-top));
+        for(xx=bound(left,0,c->t->width);xx<bound(right,0,c->t->width);xx++) {
+            unsigned col=(unsigned)((int64_t)(xx-left)*PM_WORLD_W/(right-left));
+            uint16_t v=pm_world_pixels[row*PM_WORLD_W+col];
+            unsigned r=v>>11,g=(v>>5)&63,b=v&31;
+            px(c,xx,yy,((r*255/31)<<16)|((g*255/63)<<8)|(b*255/31),255);
+        }
     }
-    for(col=0;col<w/48+1;col++) {
-        int width=bound(w-col*48,0,48);
-        v=(col*col*17+col*31)%7;by=y+h-104-v*13;bh=y+h-by;
-        box(c,x+col*48,by,width,bh,0x24382b);box(c,x+col*48,by,width,17,0x83a159);
-        for(row=1;row<bh/24;row++) box(c,x+col*48+(row%2)*6,by+row*24,bound(width-(row%2)*6,0,24),5,0x314730);
-    }
-    box(c,x+w-298,y+h-330,24,180,0x435139);
-    box(c,x+w-356,y+h-338,136,52,0x426745);
-    box(c,x+w-337,y+h-378,97,58,0x527b49);
-    box(c,x+w-316,y+h-403,58,42,0x729357);
-    box(c,x+74,y+h-217,18,90,0x49553a);
-    box(c,x+44,y+h-240,80,49,0x385b3a);
-    box(c,x+59,y+h-265,48,44,0x507545);
-    for(row=0;row<h;row++) {
-        unsigned a=(unsigned)(160*(h-row)/h);
-        int xx,yy=sy(c,y+row);
-        for(xx=sx(c,x);xx<sx(c,x+w);xx++) px(c,xx,yy,0x0e1b16,a/2);
+}
+static void logo(Canvas *c,int x,int y,int size) {
+    int xx,yy,left=sx(c,x),top=sy(c,y),right=sx(c,x+size),bottom=sy(c,y+size);
+    if(right<=left||bottom<=top)return;
+    for(yy=bound(top,0,c->t->height);yy<bound(bottom,0,c->t->height);yy++) {
+        unsigned row=(unsigned)((int64_t)(yy-top)*PM_LOGO_H/(bottom-top));
+        for(xx=bound(left,0,c->t->width);xx<bound(right,0,c->t->width);xx++) {
+            unsigned col=(unsigned)((int64_t)(xx-left)*PM_LOGO_W/(right-left));
+            uint16_t v=pm_logo_pixels[row*PM_LOGO_W+col];
+            unsigned r=v>>11,g=(v>>5)&63,b=v&31;
+            px(c,xx,yy,((r*255/31)<<16)|((g*255/63)<<8)|(b*255/31),255);
+        }
     }
 }
 static void cube(Canvas *c,int x,int y,int size,int variant) {
@@ -350,7 +346,7 @@ static void cube(Canvas *c,int x,int y,int size,int variant) {
 
 static void header(Canvas *c,const PmFrontend *f,const PmView *v) {
     int j,x=578,issue=strstr(v->status,"error")!=NULL||strstr(v->status,"fail")!=NULL;
-    cube(c,86,55,46,0);
+    logo(c,78,47,64);
     text(c,"PROSPERO",150,53,30,TITLE,260);text(c,"MC",358,53,30,LIME,70);
     small(c,"JAVA EDITION / PS5",151,92,FAINT,330);
     for(j=0;j<PM_SCREEN_COUNT;j++) {

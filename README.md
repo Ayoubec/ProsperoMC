@@ -8,6 +8,8 @@ The user reports 30–60 FPS at 2 chunks and 9–40 FPS at 10 chunks on low grap
 settings. Other versions, mod loaders and online features require separate
 console checks. It is an independent launcher, not an embedded Qt build of PolyMC.
 
+![Native launcher UI preview](assets/generated/launcher-preview.png)
+
 The main flow is to choose a release or snapshot in Versions and download it.
 Installation selects the Java major required by that version, reuses a valid
 installed Windows x64 runtime, or downloads a verified runtime when missing.

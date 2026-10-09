@@ -68,3 +68,11 @@ Logs in artifacts/console-batching-success confirm the same saved New World
 loads, the player joins, all three dimensions save and view distance changes.
 This passes the vanilla 1.12.2 single-player gate at the tested 2-chunk preset;
 higher-distance pacing and other versions/loaders still need work.
+
+On October 9, the first flat-quad batching update (win32u ba5edcc...) passes
+actual console testing for TNT: the user reports 30 FPS during explosions,
+previously 0.5 FPS. Open to LAN now reports port 61238 and permits changing
+world game mode. The adapter warning is caught; no game crash follows. A PC
+status connection was refused, so joining from another device is not verified.
+The same retest reports about 25 FPS at 6 chunks and 10 FPS at 10 chunks.
+The indexed-quad/known-generated-bounds follow-up is under build/test.

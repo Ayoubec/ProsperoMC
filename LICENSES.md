@@ -4,6 +4,8 @@ Repository-owned ProsperoMC application code is GPL-3.0-or-later. The original n
 
 PolyMC was consulted as a behavior and format reference. Its Qt application is not packaged. ProsperoEden supplies visual direction only; any reused font files carry their original OFL notice.
 
+The PS5-only Netty 4.1.9 compatibility overlay contains one modified class under Apache-2.0 and included component notices. Its license is bundled from launcher/resources/META-INF/NETTY-LICENSE.txt. The original Netty JAR remains local Minecraft dependency data.
+
 The local supplied Java 8 is Adoptium Temurin under GPL-2.0 with Classpath Exception and component notices. Those notices must remain beside the staged runtime. Minecraft files imported from the user's local installation are local build data and are not source-control or public release content. Account databases from that installation are excluded.
 
 A runtime package must preserve its original SOURCES.txt, THIRD_PARTY.md and LICENSES directory. Source archives and compiled dependencies are pinned in versions.lock. Host fixture success and native cross-compilation are not a console compatibility claim.

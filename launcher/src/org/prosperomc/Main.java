@@ -676,6 +676,9 @@ public final class Main {
         Path java=javaFor(major), game=d.resolve(".minecraft"), natives=d.resolve("natives"), launcher=root.resolve("launcher/prosperomc-launcher.jar");
         if(!Files.isRegularFile(launcher))throw new IOException("Launcher JAR missing from root/launcher; stage the app first");
         List<Path> cp=installer.libraries(meta, natives, false);
+        if(root.toString().replace('\\','/').equalsIgnoreCase("Z:/data/ProsperoMC")
+                &&major==8&&"1.12.2".equals(Json.text(meta,"id")))
+            cp.add(0,NettyCompat.prepare(root,cp));
         Path client=FilesUtil.safe(root, Json.text(meta, "_clientPath"));
         if(!Files.isRegularFile(client))throw new IOException("Client JAR missing");
         Map<String, Object> ds=meta.containsKey("downloads")?Json.obj(meta.get("downloads")):Collections.<String, Object>emptyMap();

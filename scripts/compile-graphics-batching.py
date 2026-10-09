@@ -37,7 +37,9 @@ def extract(archive, target, expected):
 
 payload = work / 'sdk'
 config = (ci / 'runtime-config.txt').read_text()
-source_ready = (build / 'build.ninja').is_file() and (payload / 'bin/prospero-clang').is_file() and (source / 'src/gallium/ps5/ps5_screen.c').is_file() and (psbc / 'libpsbc/psbc_compile.h').is_file() and (source / 'src/gallium/ps5/ps5_screen.c').read_bytes() == (out / 'ps5_screen.c').read_bytes() and 'flat_input_vertex_valid' in (psbc / 'libpsbc/psbc_compile.h').read_text()
+source_ready = (build / 'build.ninja').is_file() and (payload / 'bin/prospero-clang').is_file() and (source / 'src/gallium/ps5/ps5_screen.c').is_file() and (psbc / 'libpsbc/psbc_compile.h').is_file() and 'flat_input_vertex_valid' in (psbc / 'libpsbc/psbc_compile.h').read_text()
+if source_ready:
+    shutil.copy2(out / 'ps5_screen.c', source / 'src/gallium/ps5/ps5_screen.c')
 if not source_ready:
     extract(ci / 'sources/ps5-opengl.tar', work / 'gl-source', provenance['source_archives']['ps5-opengl.tar'])
     original_source = next((work / 'gl-source').rglob('src/gallium/ps5/ps5_screen.c')).parents[3]
@@ -120,12 +122,12 @@ for path in sorted((modified / 'sdk').rglob('*')):
         lines.append(hashlib.sha256(path.read_bytes()).hexdigest()+'  '+path.relative_to(modified / 'sdk').as_posix())
 manifest.write_text('\n'.join(lines)+'\n')
 patch_hash = hashlib.sha256((out / 'smooth-legacy-batching.patch').read_bytes()).hexdigest()
-provenance.update(version=provenance['version']+'-prosperomc-smooth-batching',
+provenance.update(version=provenance['version']+'-prosperomc-quad-batching',
     original_sdk_manifest_sha256=provenance['sdk_manifest_sha256'],
     sdk_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
     runtime_archive_sha256=hashlib.sha256(runtime.read_bytes()).hexdigest(),
     local_patch={'file':'smooth-legacy-batching.patch','sha256':patch_hash,
-                 'description':'Batch smooth legacy geometry; preserve flat/unknown interpolation splitting'},
+                 'description':'Batch indexed and non-indexed legacy quads with preserved provoking vertices; keep conservative fallback for complex geometry'},
     hardware_validation='pending console retest of modified draw driver')
 (modified / 'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
 print('MODIFIED_RUNTIME_ARCHIVE',provenance['runtime_archive_sha256'],flush=True)

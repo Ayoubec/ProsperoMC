@@ -1,4 +1,4 @@
-"""Prepare a conservative smooth-quad batching patch against verified CI source."""
+"""Batch legacy quads against verified CI source, preserving flat colors."""
 from pathlib import Path
 import difflib
 import hashlib
@@ -54,6 +54,37 @@ assert after.count('context->legacy_primitive_conversion = true;') == 1
 after = after.replace('context->legacy_primitive_conversion = true;', '''/* Smooth inputs need no per-triangle provoking-vertex override.
        * Keep their converted index buffer in one draw and allow batching. */
       context->legacy_primitive_conversion = split;''')
+after = after.replace('#include "indices/u_primconvert.h"',
+    '#include "indices/u_primconvert.h"\n#include "indices/u_indices.h"')
+after = after.replace('   bool legacy_primitive_conversion;',
+    '   bool legacy_primitive_conversion;\n   bool legacy_batch_quads;')
+quad_helper = (root / 'scripts/graphics-quad-batch.c').read_text()
+after = after.replace('static bool\nps5_legacy_requires_split(',
+    quad_helper + '\nstatic bool\nps5_legacy_requires_split(', 1)
+draw_anchor = '''   if (info && (info->mode == MESA_PRIM_QUADS ||'''
+assert after.count(draw_anchor) == 1
+after = after.replace(draw_anchor, '''   if (ps5_draw_quads_batch(base, info, drawid_offset, indirect, draws, num_draws))
+      return;
+
+''' + draw_anchor)
+after = after.replace('if (context->legacy_primitive_conversion && info && draws &&',
+    'if (context->legacy_primitive_conversion && !context->legacy_batch_quads && info && draws &&')
+after = after.replace('if (!context->legacy_primitive_conversion &&',
+    'if ((!context->legacy_primitive_conversion || context->legacy_batch_quads) &&')
+scan = '''      if (!ps5_index_bounds(indices, info->index_size, draws[0].count,
+                            draws[0].index_bias, &min_index, &max_index,
+                            &min_effective, &max_effective)) {'''
+assert after.count(scan) == 1
+after = after.replace(scan, '''      /* Our non-indexed quad generator already gives exact bounds. External
+       * indexed data retains the complete validation scan. */
+      if (context->legacy_batch_quads && info->index_bounds_valid &&
+          draws[0].index_bias == 0 && info->min_index <= info->max_index &&
+          info->max_index < UINT_MAX) {
+         min_index = min_effective = info->min_index;
+         max_index = max_effective = info->max_index;
+      } else if (!ps5_index_bounds(indices, info->index_size, draws[0].count,
+                                  draws[0].index_bias, &min_index, &max_index,
+                                  &min_effective, &max_effective)) {''')
 (out / 'ps5_screen.c').write_bytes(after.encode())
 patch = ''.join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
     fromfile='a/src/gallium/ps5/ps5_screen.c', tofile='b/src/gallium/ps5/ps5_screen.c'))

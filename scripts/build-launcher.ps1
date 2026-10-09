@@ -14,4 +14,6 @@ if ($LASTEXITCODE -ne 0) { throw "Java compilation failed" }
 $archive = Join-Path $Output "prosperomc-launcher.jar"
 & $jar "-J-Djava.io.tmpdir=$Output" --create --file $archive --main-class org.prosperomc.Main -C $classes .
 if ($LASTEXITCODE -ne 0) { throw "JAR creation failed" }
+& $jar "-J-Djava.io.tmpdir=$Output" --update --file $archive -C (Join-Path $repo "launcher/resources") .
+if ($LASTEXITCODE -ne 0) { throw "Launcher resource staging failed" }
 Write-Output $archive

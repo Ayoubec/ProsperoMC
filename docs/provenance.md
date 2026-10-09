@@ -32,14 +32,17 @@ supported. This build also includes the upstream legacy varying mapping,
 lowered client-array draw acceptance and EGL HUD fixes committed after SDK
 1.0.1. The artifact was checked against GitHub's published SHA-256 before use.
 The console now renders the logo, menus, pointer and a single-player world;
-the user confirms movement. Acceptable frame rate and saved-world reopening
-remain under test.
+the user confirms movement and saved-world reopening. Higher-distance frame
+pacing remains under test.
 Other Wine modules stay from the verified release.
 
 The performance candidate modifies only the runtime's `ps5_screen.o` against
-that pinned CI source. Smooth legacy geometry stays in a converted indexed
-draw and may use existing batching; flat/unknown interpolation, geometry
-shaders, transform feedback and active occlusion keep the original split path.
+that pinned CI source. Indexed and non-indexed quads use Mesa's index translator/generator to preserve
+the first or last provoking vertex across both triangles, then use one indexed
+draw and existing batching even for flat shading. Restart/complex
+geometry retains the conservative conversion path; smooth converted geometry
+also uses batching. Geometry shaders, transform feedback and active occlusion
+are excluded from the new quad path.
 The source patch is staged in `WINE_PATCHES/smooth-legacy-batching.patch` and
 recorded in `versions.lock` and the stage report. Every other runtime object
 and the compiled shader compiler library remain byte-identical to the CI SDK.
@@ -47,6 +50,23 @@ Host policy and compiled texture-capability checks pass. The console retest
 loads the saved vanilla 1.12.2 world; the user reports 30–60 FPS at 2 chunks
 and 9–40 FPS at 10 chunks on low settings. This does not establish performance
 for other Minecraft versions or graphics configurations.
+
+The October 9 quad update addresses remaining per-triangle GUI/particle work;
+the first console retest reports TNT at 30 FPS instead of 0.5 FPS. Higher
+chunk-distance performance remains limited (about 25 FPS at 6, 10 FPS at 10).
+A follow-up batches indexed quads and removes redundant scans only for
+internally generated indices with exact known bounds; its retest is pending.
+The actual generated Mesa quad indices
+pass first/last provoking-color and winding checks. Only the draw-driver object
+changes; the existing shader compiler and resource synchronization remain.
+
+For PS5 Java 8 and 1.12.2 only, a single-class Netty overlay lets its existing
+adapter fallback handle Java's GetIfTable Error. The original library remains
+unchanged, the original class hash is pinned, and the overlay carries Netty's
+license. A real Java 8/Netty test reproduces the adapter Error and verifies a
+TCP listener/request/reply. Console world sharing now opens without crashing
+and reports a port.
+Cross-device joining remains unverified (one PC status connection was refused).
 
 The supplied Windows runtime is Eclipse Adoptium Temurin JRE 8.0.504+1, x64.
 Its license/notices are retained when copied into the local data package.

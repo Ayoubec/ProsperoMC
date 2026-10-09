@@ -72,7 +72,8 @@ if __name__ == '__main__':
             raise ValueError('Existing title executable is missing from deployment manifest')
         if args.app_update:
             names = ['launcher/prosperomc-launcher.jar','win/wine/lib/wine/x86_64-unix/ntdll.prx',
-                     'win/wine/lib/wine/x86_64-unix/win32u.prx','WINE_SOURCES.txt','STAGE-REPORT.json','eboot.bin']
+                     'win/wine/lib/wine/x86_64-unix/win32u.prx','WINE_SOURCES.txt','STAGE-REPORT.json','eboot.bin',
+                     'sce_sys/icon0.png','sce_sys/pic0.dds','sce_sys/pic1.dds']
             names += [p.relative_to(title).as_posix() for p in sorted((title / 'WINE_PATCHES').glob('*.patch'))]
             deploy.ensure_directory(ftp,deploy.TITLE_ROOT+'/WINE_PATCHES')
             publish(ftp,deploy.DATA_ROOT,data,['launcher/prosperomc-launcher.jar','STAGE-REPORT.json'],True)
