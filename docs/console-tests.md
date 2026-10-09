@@ -76,3 +76,15 @@ world game mode. The adapter warning is caught; no game crash follows. A PC
 status connection was refused, so joining from another device is not verified.
 The same retest reports about 25 FPS at 6 chunks and 10 FPS at 10 chunks.
 The indexed-quad/known-generated-bounds follow-up is under build/test.
+
+## October 9 controls, modpacks and buffer reuse update
+The previous renderer measured 60 FPS at 4 low-setting chunks, about 21 at 8
+fancy/fullscreen chunks and 8 at 16. The new module caches immutable quad indices
+and publication of unchanged owned draw buffers; its console FPS is pending.
+Controller wheel edges, CPU-edit publication, cached-pattern winding/provoking
+semantics, native frontend and all 32 Java launcher integration checks pass.
+An app-only update has been uploaded with verified readback; user settings and
+worlds were preserved. Test the same world at 8/16 fancy chunks, L1/R1 and USB
+wheel hotbar changes, launcher navigation sounds/animations, and Square in
+Library/Mods to open the imports picker. A 120 Hz request falls back to 60 when
+unsupported; verify actual negotiated output rather than assuming 130 FPS.

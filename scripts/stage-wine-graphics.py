@@ -48,10 +48,14 @@ if not backup.exists():
     shutil.copy2(module, backup)
 shutil.copy2(build / 'win32u.prx', module)
 notice = title / 'WINE_SOURCES.txt'
+wheel = root / 'vendor/prospero-win/wine/patches/0671-win32u-ps5-mouse-wheel.patch'
+wheel_built = wheel.name in report['patches']
+if wheel_built:
+    shutil.copy2(wheel,title / 'WINE_PATCHES' / wheel.name)
 text = notice.read_text().replace('all other Wine modules remain from v0.1.1.', 'other Wine modules remain from v0.1.1 except the graphics repair below.')
 marker = '\nProsperoMC BGRA texture graphics repair:\n'
 text = text.split(marker)[0] + marker + (
-    '  win32u.prx rebuilt from the above Wine revision with the same 73 patches.\n'
+    '  win32u.prx rebuilt from the above Wine revision with ' + str(len(report['patches'])) + ' patches.\n'
     '  OpenGL SDK ' + provenance['version'] + ': https://github.com/blackbearreloaded/ps5-opengl\n'
     '  Source commit ' + provenance['runtime_source_commit'] + '\n'
     '  Baseline official source snapshots/SDK verified against the published artifact and manifest.\n'
@@ -60,6 +64,7 @@ text = text.split(marker)[0] + marker + (
     '  Compiled capability check retains BGRA rendering and RGBA sampling/rendering.\n' +
     ('  CI 738f94c additionally includes upstream legacy varyings, lowered client draw and HUD fixes.\n'
      if provenance['runtime_source_commit'].startswith('738f94c') else '') +
+    ('  Local mouse-wheel patch WINE_PATCHES/' + wheel.name + '; SHA-256 ' + digest(wheel) + '\n' if wheel_built else '') +
     ('  Local modification: ' + local_patch['description'] + '.\n'
      '  Source patch WINE_PATCHES/' + local_patch['file'] + '; SHA-256 ' + local_patch['sha256'] + '\n'
      '  Reproduce modified driver with scripts/prepare-graphics-batching.py then scripts/build-graphics-batching.sh.\n'
@@ -74,6 +79,8 @@ for path in (title / 'STAGE-REPORT.json', title / 'prosperomc/STAGE-REPORT.json'
         'sdkManifestSha256': provenance['sdk_manifest_sha256'], 'consoleVerified': False}
     if local_patch:
         stage['wine']['graphicsFix']['localPatch'] = local_patch
+    if wheel_built:
+        stage['wine']['graphicsFix']['wheelPatchSha256'] = digest(wheel)
     path.write_text(json.dumps(stage, indent=2) + '\n')
 spec = importlib.util.spec_from_file_location('deploy', root / 'scripts/deploy-ps5.py')
 deploy = importlib.util.module_from_spec(spec)

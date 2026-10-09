@@ -40,6 +40,16 @@ for name in selected:
         assert((x[b]-x[a])*(y[c]-y[a])-(y[b]-y[a])*(x[c]-x[a])>0);
     }}
 ''')
+    body.append(f'''    {{
+        uint32_t cached[384],fresh[384];
+        {name}(0,384,cached);
+        for(unsigned vertices=4;vertices<=256;vertices+=4) {{
+            unsigned count=vertices/4*6;
+            {name}(0,count,fresh);
+            for(unsigned k=0;k<count;k++)assert(cached[k]==fresh[k]);
+        }}
+    }}
+''')
 for name in translators:
     input_type,output_type=re.search(r'quads_(uint\d+)2(uint\d+)_',name).groups()
     provoking=0 if '_first2last_' in name else 3

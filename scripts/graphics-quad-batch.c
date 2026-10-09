@@ -37,6 +37,47 @@ ps5_draw_quads_batch(struct pipe_context *base,
    const unsigned mask = base->screen->caps.supported_prim_modes &
                          ~BITFIELD_BIT(MESA_PRIM_QUADS);
    const unsigned provoking = context->rasterizer->flatshade_first ? PV_FIRST : PV_LAST;
+   /* Terrain draws start at zero. Keep one immutable pattern per provoking
+    * convention, growing only when a larger chunk needs it (at most 12 MiB).
+    * Deferred draws retain their own references when a cache entry grows. */
+   if (!info->index_size && !draws[0].start && vertices <= (1u << 20)) {
+      unsigned slot = provoking == PV_FIRST ? 0 : 1;
+      unsigned capacity = context->quad_index_vertices[slot];
+      struct pipe_resource *cached = context->quad_index_cache[slot];
+      if (capacity < vertices || !cached) {
+         capacity = util_next_power_of_two(MAX2(vertices, 256u));
+         u_index_generator(mask, MESA_PRIM_QUADS, 0, capacity, provoking, PV_LAST,
+                           &mode, &index_size, &index_count, &generate);
+         if (!generate || mode != MESA_PRIM_TRIANGLES) return false;
+         struct pipe_resource templ = {0};
+         templ.target = PIPE_BUFFER; templ.format = PIPE_FORMAT_R8_UNORM;
+         templ.bind = PIPE_BIND_INDEX_BUFFER; templ.usage = PIPE_USAGE_IMMUTABLE;
+         templ.width0 = index_count * index_size;
+         templ.height0 = templ.depth0 = templ.array_size = 1;
+         struct pipe_resource *replacement = base->screen->resource_create(base->screen, &templ);
+         if (!replacement) return false;
+         generate(0, index_count, ((struct ps5_resource *)replacement)->data);
+         pipe_resource_reference(&context->quad_index_cache[slot], NULL);
+         context->quad_index_cache[slot] = replacement;
+         context->quad_index_vertices[slot] = capacity;
+         context->quad_index_size[slot] = index_size;
+         cached = replacement;
+      }
+      struct pipe_draw_info converted = *info;
+      struct pipe_draw_start_count_bias draw = draws[0];
+      converted.mode = MESA_PRIM_TRIANGLES;
+      converted.index_size = context->quad_index_size[slot];
+      converted.index.resource = cached; converted.has_user_indices = false;
+      converted.index_bounds_valid = true; converted.min_index = 0;
+      converted.max_index = vertices - 1;
+      draw.start = 0; draw.count = vertices / 4u * 6u; draw.index_bias = 0;
+      context->legacy_primitive_conversion = context->legacy_batch_quads = true;
+      context->legacy_flat_input_vertex = 2;
+      base->draw_vbo(base, &converted, drawid_offset, NULL, &draw, 1);
+      context->legacy_batch_quads = context->legacy_primitive_conversion = false;
+      context->legacy_flat_input_vertex = -1;
+      return true;
+   }
    if (info->index_size) {
       if (u_index_translator(mask, MESA_PRIM_QUADS, info->index_size, vertices,
                             provoking, PV_LAST, PR_DISABLE,

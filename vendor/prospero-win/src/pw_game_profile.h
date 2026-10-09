@@ -71,7 +71,7 @@ typedef enum PwGameView { PW_GAME_VIEW_WINDOW = 0, PW_GAME_VIEW_DESKTOP } PwGame
 typedef enum PwGameInputMode { PW_GAME_INPUT_KEYBOARD = 0, PW_GAME_INPUT_XINPUT } PwGameInputMode;
 typedef enum PwGameStick { PW_GAME_STICK_NONE = 0, PW_GAME_STICK_LEFT, PW_GAME_STICK_RIGHT } PwGameStick;
 typedef enum PwGameBindKind { PW_GAME_BIND_UNSET = 0, PW_GAME_BIND_NONE, PW_GAME_BIND_KEY,
-                              PW_GAME_BIND_MOUSE } PwGameBindKind;
+                              PW_GAME_BIND_MOUSE, PW_GAME_BIND_WHEEL } PwGameBindKind;
 
 typedef struct PwGameBinding {
     uint32_t mask;      /* the DualSense button (scePadRead bit) */

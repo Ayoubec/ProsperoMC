@@ -272,6 +272,39 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(props(self.root / "instances/imported/instance.properties")["loader"], "fabric")
         self.request(command="install", id="imported")
 
+    def test_modrinth_pack_overrides_and_client_environment(self):
+        pack = self.base / "sample.mrpack"
+        manifest = {"formatVersion": 1, "game": "minecraft", "name": "Client Pack",
+                    "dependencies": {"minecraft": "1.12.2", "forge": "14.23.5.2859"},
+                    "files": [{"path": "mods/server-only.jar", "env": {"client": "unsupported"}}]}
+        pack.write_bytes(zipped({"modrinth.index.json": json.dumps(manifest),
+                                 "overrides/config/test.cfg": b"base",
+                                 "client-overrides/config/test.cfg": b"client",
+                                 "server-overrides/config/test.cfg": b"server",
+                                 "overrides/launcher_accounts.json": b"PRIVATE"}))
+        self.request(command="import-pack", id="pack", source=pack)
+        game = self.root / "instances/pack/.minecraft"
+        self.assertEqual((game / "config/test.cfg").read_bytes(), b"client")
+        self.assertFalse((game / "mods/server-only.jar").exists())
+        self.assertFalse((game / "launcher_accounts.json").exists())
+        self.assertEqual(props(game.parent / "instance.properties")["loader"], "forge")
+
+    def test_modrinth_pack_rejects_bad_paths_hashes_and_unknown_loaders(self):
+        pack = self.base / "invalid.mrpack"
+        manifest = {"formatVersion": 1, "game": "minecraft", "name": "Bad Pack",
+                    "dependencies": {"minecraft": "1.12.2"},
+                    "files": [{"path": "../outside.jar"}]}
+        for entry in ({"path": "../outside.jar"}, {"path": "mods/bad.jar", "hashes": {"sha1": "bad"}}):
+            manifest["files"] = [entry]
+            pack.write_bytes(zipped({"modrinth.index.json": json.dumps(manifest)}))
+            self.request(ok=False, command="import-pack", id="bad", source=pack)
+            self.assertFalse((self.root / "instances/bad").exists())
+        manifest["dependencies"]["neoforge"] = "1.0"
+        manifest["files"] = []
+        pack.write_bytes(zipped({"modrinth.index.json": json.dumps(manifest)}))
+        self.request(ok=False, command="import-pack", id="bad", source=pack)
+        self.assertFalse((self.root / "instances/bad").exists())
+
     def test_pack_zip_traversal_and_unsupported_components(self):
         pack = self.base / "evil.zip"
         pack.write_bytes(zipped({"../../escape.txt": b"BAD"}))

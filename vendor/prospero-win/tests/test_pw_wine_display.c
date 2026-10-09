@@ -113,6 +113,13 @@ static void test_inputs(void)
     assert(pw_wine_game_inputs(&input, R1 | L1, 0, events, 1) == 1 && events[0].code == 'Z');
     assert(pw_wine_game_inputs(&input, 0, 0, events, 8) == 0);
     assert(pw_wine_game_inputs(NULL, L1, 0, events, 8) == 0 && pw_wine_game_inputs(&input, L1, 0, NULL, 8) == 0);
+    static const char wheel[]="[input]\nl1=wheel_up\nr1=wheel_down\n";
+    pw_game_input_init(&input);
+    assert(pw_game_input_parse((const uint8_t *)wheel,sizeof(wheel)-1,&input)==PW_OK);
+    assert(pw_wine_game_inputs(&input,L1|R1,0,events,8)==2);
+    assert(events[0].type==PW_WINE_INPUT_MOUSE_MOVE && events[0].code==PW_WINE_MOUSE_WHEEL && events[0].y==120);
+    assert(events[1].code==PW_WINE_MOUSE_WHEEL && events[1].y==-120);
+    assert(pw_wine_game_inputs(&input,0,L1|R1,events,8)==0);
 }
 
 static void test_pointer(void)

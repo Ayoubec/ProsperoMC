@@ -784,6 +784,24 @@ static PmKey pm_keyboard_key(uint32_t vk)
     }
 }
 /* The native UI remains on screen while the headless Java worker runs. */
+static void pm_click(PmKey key)
+{
+    if(key==PM_KEY_NONE || audio_port<0)return;
+    unsigned grains=key==PM_KEY_CONFIRM?4:2, phase=0;
+    unsigned frequency=key==PM_KEY_BACK?640:key==PM_KEY_CONFIRM?1040:800;
+    int16_t samples[PW_AUDIO_PS5_GRAIN*2];
+    for(unsigned g=0;g<grains;g++) {
+        for(unsigned i=0;i<PW_AUDIO_PS5_GRAIN;i++) {
+            unsigned n=g*PW_AUDIO_PS5_GRAIN+i,total=grains*PW_AUDIO_PS5_GRAIN;
+            phase=(phase+frequency)%PW_AUDIO_PS5_RATE;
+            int wave=(int)(phase<PW_AUDIO_PS5_RATE/2?phase:PW_AUDIO_PS5_RATE-phase)*4-PW_AUDIO_PS5_RATE;
+            int envelope=(int)(n<total/2?n:total-1-n);
+            int16_t value=(int16_t)((wave*1000/PW_AUDIO_PS5_RATE)*envelope/(int)(total/2));
+            samples[i*2]=samples[i*2+1]=value;
+        }
+        if(audio_ops.output(audio_port,samples)<0)break;
+    }
+}
 static void run_launcher(void)
 {
     static PwVideoOutPs5 video; static PwPadPs5 pad; static PwHidPs5 hid;
@@ -792,6 +810,10 @@ static void run_launcher(void)
     uint8_t *frame=mmap(NULL,frame_bytes,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
     int video_status=pw_videoout_ps5_open(&video),pad_status=pw_pad_ps5_platform_ops(&pad_ops);
     int hid_status;
+    uint64_t previous_frame=now_ns();
+    uint64_t repeat_at=0;uint32_t held_navigation=0;
+    if(audio_port<0 && pw_audio_ps5_platform_ops(&audio_ops)==PW_OK)
+        (void)pw_audio_ps5_open_port(&audio_ops,&audio_port);
     if (pad_status==PW_OK) pad_status=pw_pad_ps5_open(&pad,&pad_ops,pad_open_map,sizeof(pad_open_map)/sizeof(pad_open_map[0]));
     {
         int32_t user=pad_status==PW_OK ? pad.user_id : -1;
@@ -818,7 +840,13 @@ static void run_launcher(void)
             snprintf(action.command,sizeof(action.command),"catalog");
             pm_invoke(&action);
         }
-        if (pad_status==PW_OK && pw_pad_ps5_read(&pad)==PW_OK) key=pm_pad_key(pad.core.pressed_edges);
+        if (pad_status==PW_OK && pw_pad_ps5_read(&pad)==PW_OK) {
+            key=pm_pad_key(pad.core.pressed_edges);
+            uint32_t held=pad.core.previous_buttons&(PAD_UP|PAD_DOWN|PAD_LEFT|PAD_RIGHT);
+            uint64_t now=now_ns();
+            if(held!=held_navigation){held_navigation=held;repeat_at=now+350000000u;}
+            else if(held && key==PM_KEY_NONE && now>=repeat_at){key=pm_pad_key(held);repeat_at=now+80000000u;}
+        }
         if (hid.ops.load_module) {
             PwHidPs5Poll poll;
             if (hid_status!=PW_OK && tick%(5*PW_WINE64_TICKS_PER_S)==0) hid_status=pw_hid_ps5_retry(&hid);
@@ -826,7 +854,11 @@ static void run_launcher(void)
             for (size_t i=0;i<poll.count;i++)
                 if (poll.events[i].kind==PW_HID_EVENT_KEY && poll.events[i].down) key=pm_keyboard_key(poll.events[i].code);
         }
-        if (pm_frontend_update(&pm_frontend,&pm_view,key,&action)) pm_invoke(&action);
+        uint64_t frame_now=now_ns();
+        pm_frontend_tick(&pm_frontend,(unsigned)((frame_now-previous_frame)/1000000));previous_frame=frame_now;
+        int invoke=pm_frontend_update(&pm_frontend,&pm_view,key,&action);
+        pm_click(key);
+        if(invoke)pm_invoke(&action);
         if (video_status==PW_OK && frame!=MAP_FAILED) {
             const PwPresentTarget target={frame,1920,1080,1920*4u,frame_bytes};
             const PwPresentView view={frame,target.width,target.height,target.stride,(uint32_t)frame_bytes};
@@ -1278,6 +1310,13 @@ int main(int argc, char **argv)
             if (hid_status != PW_OK && tick % (5 * PW_WINE64_TICKS_PER_S) == 0)
                 hid_status = pw_hid_ps5_retry(&hid);
             pw_hid_ps5_poll(&hid, &poll);
+            if (poll.wheel) {
+                /* Bound malformed HID deltas before multiplying by Windows' notch size. */
+                int32_t notches=poll.wheel>100?100:poll.wheel<-100?-100:poll.wheel;
+                input=(PwWineInput){PW_WINE_INPUT_MOUSE_MOVE,PW_WINE_MOUSE_WHEEL,0,
+                                   notches*PW_WINE_WHEEL_DELTA,0};
+                if (post_input(&input)==0) posted++; else refused++;
+            }
             /* Wine keeps the pointer's position; the title sends motion. */
             if (poll.dx || poll.dy) {
                 input = (PwWineInput){ PW_WINE_INPUT_MOUSE_MOVE, 0, poll.dx, poll.dy, 0 };

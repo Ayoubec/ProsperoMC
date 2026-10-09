@@ -67,8 +67,13 @@ static void load(const char *path) {
 int main(int argc,char **argv) {
     PmFrontend f;PwPresentTarget t;FILE *fp;int x,y;
     if(argc<3) {fprintf(stderr,"Usage: render output.ppm screen-number [launcher-view.properties|--empty]\n");return 2;}
-    fixture();if(argc>3) {if(!strcmp(argv[3],"--empty")) memset(&view,0,sizeof(view));else load(argv[3]);}
+    fixture();if(argc>3) {if(!strcmp(argv[3],"--empty")) memset(&view,0,sizeof(view));else if(strcmp(argv[3],"--packs"))load(argv[3]);}
     pm_frontend_init(&f);f.screen=(PmScreen)atoi(argv[2]);
+    if(argc>3 && !strcmp(argv[3],"--packs")) {
+        f.pack_picker=1;view.pack_count=2;
+        strcpy(view.packs[0].name,"My Forge 1.12.2.zip");strcpy(view.packs[1].name,"Forest adventures.mrpack");
+    }
+    for(int frame=0;frame<10;frame++)pm_frontend_tick(&f,100);
     t.width=1920;t.height=1080;t.stride=t.width*4;t.bytes=(uint64_t)t.stride*t.height;
     t.pixels=(unsigned char*)calloc(1,(size_t)t.bytes);if(!t.pixels) return 2;
     pm_frontend_render(&f,&view,&t);

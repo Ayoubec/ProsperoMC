@@ -4,7 +4,16 @@ root = Path(__file__).resolve().parent.parent
 release = root / '.deps/source/prospero-win-8086243da85fae62206a98af322dc746fe5f7a6d'
 # The existing adapter supplies archive verification and exactly 73 Wine patches.
 exec((root / 'scripts/prepare-wine-fpfix.py').read_text(), {'__file__': str(root / 'scripts/prepare-wine-fpfix.py')})
+wheel_patch = '0671-win32u-ps5-mouse-wheel.patch'
+(release / 'wine/patches' / wheel_patch).write_bytes(
+    (root / 'vendor/prospero-win/wine/patches' / wheel_patch).read_bytes())
 text = (release / 'tools/build_prosperomc_ntdll.sh').read_text()
+text = text.replace('\n# The PS5 OpenGL SDK', '''
+if ! grep -qx '0671-win32u-ps5-mouse-wheel.patch' "$tree/.prosperomc-patched"; then
+    git -C "$tree" apply "$patches/0671-win32u-ps5-mouse-wheel.patch" || fail "wheel patch does not apply"
+    echo '0671-win32u-ps5-mouse-wheel.patch' >> "$tree/.prosperomc-patched"
+fi
+# The PS5 OpenGL SDK''', 1)
 text = text.replace('TARGETS="dlls/ntdll/ntdll.so"', 'TARGETS="dlls/win32u/win32u.so"')
 text = text.replace('for step in "dlls/ntdll/ntdll.so|$heap $dmem";', 'for step in "dlls/win32u/win32u.so|";')
 start = text.index('    link_prx ntdll dlls/ntdll/ntdll.so')

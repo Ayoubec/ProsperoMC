@@ -67,6 +67,13 @@ int main(void) {
     f.focus=1;assert(!press(PM_KEY_CONFIRM));assert(f.notice[0]);
     strcpy(view.account_mode,"microsoft");assert(press(PM_KEY_CONFIRM));assert(!strcmp(a.command,"auth-device"));
     f.focus=2;assert(press(PM_KEY_CONFIRM));assert(!strcmp(a.command,"auth-poll"));
+    f.screen=PM_LIBRARY;assert(press(PM_KEY_SECONDARY));assert(f.pack_picker && !strcmp(a.command,"scan-packs"));
+    assert(!press(PM_KEY_CONFIRM));assert(f.pack_picker && f.notice[0]);
+    view.pack_count=1;strcpy(view.packs[0].name,"My pack.mrpack");strcpy(view.packs[0].source,"Z:\\data\\ProsperoMC\\imports\\My pack.mrpack");
+    assert(press(PM_KEY_CONFIRM));assert(!f.pack_picker && !strcmp(a.command,"import-pack"));
+    assert(!strcmp(a.source,view.packs[0].source));
+    pm_frontend_tick(&f,50);assert(f.focus_ms==50);
+    pm_frontend_tick(&f,1000);assert(f.focus_ms==150);
     /* Out-of-range indices/counts are normalized before any array read. */
     view.instance_count=PM_MAX_INSTANCES+999;view.version_count=PM_MAX_VERSIONS+999;view.mod_count=PM_MAX_MODS+999;view.java_count=PM_MAX_JAVA+999;
     for(screen=0;screen<PM_SCREEN_COUNT;screen++) {

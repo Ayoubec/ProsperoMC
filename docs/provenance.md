@@ -55,10 +55,27 @@ The October 9 quad update addresses remaining per-triangle GUI/particle work;
 the first console retest reports TNT at 30 FPS instead of 0.5 FPS. Higher
 chunk-distance performance remains limited (about 25 FPS at 6, 10 FPS at 10).
 A follow-up batches indexed quads and removes redundant scans only for
-internally generated indices with exact known bounds; its retest is pending.
+internally generated indices with exact known bounds. The user reports 60 FPS
+at 4 low-setting chunks, about 21 at 8 fancy/fullscreen chunks and 8 at 16.
+The next update reuses immutable quad patterns and caches publication of owned
+draw buffers. CPU map/subdata callbacks invalidate that publication; persistent,
+exported and GPU-written buffers retain per-use flushing. Hardware retest is
+required for any performance claim about this new module.
 The actual generated Mesa quad indices
 pass first/last provoking-color and winding checks. Only the draw-driver object
 changes; the existing shader compiler and resource synchronization remain.
+
+Mouse-wheel support extends the existing motion event's code field, retaining
+the deployed ntdll queue layout and validator. Patch 0671 sends a normal Windows
+wheel event in win32u. USB notches and controller wheel bindings share this path.
+The application requests 120 Hz through upstream patch 0722 and declares the
+upstream HFR `attribute3=0x80040`; the SDK retains its 60 Hz fallback.
+See the [upstream display metadata documentation](https://github.com/blackbearreloaded/ps5-opengl/blob/main/integration/SDL2/README.md).
+
+Modrinth pack import follows the [official format definition](https://support.modrinth.com/en/articles/8802351-modrinth-modpack-format-mrpack),
+with client filtering, SHA1/SHA512 verification and layered overrides. Optional
+client files are included and can subsequently be disabled in Mods. Unsupported
+loader dependencies fail explicitly, and incomplete instance imports are removed.
 
 For PS5 Java 8 and 1.12.2 only, a single-class Netty overlay lets its existing
 adapter fallback handle Java's GetIfTable Error. The original library remains

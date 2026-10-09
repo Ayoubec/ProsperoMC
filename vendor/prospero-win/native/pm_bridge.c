@@ -172,6 +172,30 @@ static void view_property(void *context, const char *key, const char *value)
         else if (!strcmp(field,"detail")) copy(item->detail,sizeof(item->detail),value);
     }
 }
+static int scan_packs(const char *root,PmView *view)
+{
+    char folder[768],full[1024]; DIR *dir; struct dirent *e;
+    view->pack_count=0;
+    if(path(folder,sizeof(folder),root,"imports") || !(dir=opendir(folder)))return 1;
+    while((e=readdir(dir))) {
+        size_t n=strlen(e->d_name);struct stat st;
+        if(n<5 || n>=PM_TEXT || strchr(e->d_name,'\n') || strchr(e->d_name,'\r') ||
+           (strcmp(e->d_name+n-4,".zip") && (n<7 || strcmp(e->d_name+n-7,".mrpack"))) ||
+           view->pack_count>=PM_MAX_INSTANCES ||
+           snprintf(full,sizeof(full),"%s/%s",folder,e->d_name)>=(int)sizeof(full) ||
+           lstat(full,&st) || !S_ISREG(st.st_mode))continue;
+        PmPack *pack=&view->packs[view->pack_count];
+        if(windows(pack->source,sizeof(pack->source),full))continue;
+        copy(pack->name,sizeof(pack->name),e->d_name);view->pack_count++;
+    }
+    closedir(dir);
+    for(int i=1;i<view->pack_count;i++) {
+        PmPack p=view->packs[i];int j=i;
+        while(j>0 && strcmp(view->packs[j-1].name,p.name)>0){view->packs[j]=view->packs[j-1];j--;}
+        view->packs[j]=p;
+    }
+    return 1;
+}
 int pm_bridge_view(const char *root, PmView *view)
 {
     char name[768]; int status;
@@ -187,6 +211,7 @@ int pm_bridge_view(const char *root, PmView *view)
     (void)properties(name,view_property,view);
     path(name,sizeof(name),root,"settings.properties");
     (void)properties(name,view_property,view);
+    (void)scan_packs(root,view);
     return status;
 }
 static int value_safe(const char *value) { return !strchr(value,'\n') && !strchr(value,'\r'); }
@@ -197,6 +222,18 @@ static int write_property(FILE *file, const char *key, const char *value)
 }
 int pm_bridge_request(const char *root, const PmAction *action)
 {
+    PmAction resolved;
+    if(!strcmp(action->command,"import-pack") && !action->id[0]) {
+        char candidate[768];struct stat st;unsigned n;
+        resolved=*action;
+        for(n=1;n<10000;n++) {
+            snprintf(resolved.id,sizeof(resolved.id),"pack-%04u",n);
+            snprintf(candidate,sizeof(candidate),"%s/instances/%s",root,resolved.id);
+            if(lstat(candidate,&st) && errno==ENOENT)break;
+        }
+        if(n==10000)return -1;
+        action=&resolved;
+    }
     static const char *const commands[] = {"catalog","create","create-install","install","install-java","detect-java","import","prepare-launch","mods","mod-toggle","mod-add","settings","auth-device","auth-poll","clone","export","import-pack"};
     char name[768], temporary[768]; FILE *file; int allowed = 0, failed = 0;
     for (size_t i=0; i<sizeof(commands)/sizeof(commands[0]); i++) allowed |= !strcmp(action->command,commands[i]);
@@ -428,6 +465,12 @@ static int local_mods(const char *root, const PmAction *action, PmView *view)
 }
 int pm_bridge_local(const char *root, const PmAction *action, PmView *view)
 {
+    if(!strcmp(action->command,"scan-packs")) {
+        int result=scan_packs(root,view);
+        copy(view->status,sizeof(view->status),"ready");
+        snprintf(view->detail,sizeof(view->detail),"Found %d modpacks in /data/ProsperoMC/imports",view->pack_count);
+        return result;
+    }
     if (!strcmp(action->command,"settings")) return local_settings(root,action,view);
     if (!strcmp(action->command,"mods") || !strcmp(action->command,"mod-toggle")) return local_mods(root,action,view);
     return 0;

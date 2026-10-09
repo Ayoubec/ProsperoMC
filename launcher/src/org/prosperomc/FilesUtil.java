@@ -76,8 +76,11 @@ final class FilesUtil {
         return p;
     }
     static String sha1(Path p)throws IOException {
+        return hash(p,"SHA-1");
+    }
+    static String hash(Path p,String algorithm)throws IOException {
         try {
-            MessageDigest d=MessageDigest.getInstance("SHA-1");
+            MessageDigest d=MessageDigest.getInstance(algorithm);
             try(InputStream in=Files.newInputStream(p)) {
                 byte[] b=new byte[65536];
                 int n;

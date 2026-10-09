@@ -1,0 +1,20 @@
+From: ProsperoMC contributors
+Subject: [PATCH] win32u: forward PS5 wheel ticks through the existing input queue
+
+Mouse-motion code 0 keeps its existing meaning; code 1 sends a Windows wheel
+event. The queue accepts motion events already, so ntdll needs no ABI change.
+
+--- a/dlls/win32u/ps5drv.c
++++ b/dlls/win32u/ps5drv.c
+@@ -569,3 +569,10 @@
+         case 2:
+-            move_cursor( hwnd, event.x, event.y );
++            if (event.code == 1)
++            {
++                INPUT wheel = {.type = INPUT_MOUSE};
++                wheel.mi.dwFlags = MOUSEEVENTF_WHEEL;
++                wheel.mi.mouseData = event.y;
++                NtUserSendHardwareInput( hwnd, 0, &wheel, 0 );
++            }
++            else move_cursor( hwnd, event.x, event.y );
+             break;

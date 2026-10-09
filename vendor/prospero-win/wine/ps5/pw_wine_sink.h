@@ -31,6 +31,9 @@ typedef struct PwWineInput {
     int32_t x,y;        /* MOUSE_MOVE: relative motion in desktop pixels */
     uint32_t down;      /* KEY, MOUSE_BUTTON: 1 pressed, 0 released */
 } PwWineInput;
+/* Mouse-move code 1 carries vertical wheel ticks in y (120 per notch).
+ * Code 0 remains relative motion. This keeps the deployed ntdll queue ABI. */
+enum { PW_WINE_MOUSE_WHEEL = 1, PW_WINE_WHEEL_DELTA = 120 };
 
 /* The console's output format: interleaved left,right 16-bit frames at
  * 48 kHz, played PW_WINE_AUDIO_GRAIN frames at a time. */

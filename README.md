@@ -4,8 +4,10 @@ Minecraft Java launcher for homebrew-enabled PS5, rebuilt on [prospero-win](http
 
 This project is under development and uses Windows x64 Java through Wine.
 Vanilla 1.12.2 now loads saved worlds on the tested PS5, with movement and audio.
-The user reports 30–60 FPS at 2 chunks and 9–40 FPS at 10 chunks on low graphics
-settings. Other versions, mod loaders and online features require separate
+The user reports 60 FPS at 4 chunks on low graphics, about 21 FPS at 8 chunks
+and 8 FPS at 16 chunks with fancy graphics and fullscreen. These measurements
+predate the new static-buffer/index reuse update, which needs a console retest.
+Other versions, mod loaders and online features require separate
 console checks. It is an independent launcher, not an embedded Qt build of PolyMC.
 
 ![Native launcher UI preview](assets/generated/launcher-preview.png)
@@ -15,6 +17,20 @@ Installation selects the Java major required by that version, reuses a valid
 installed Windows x64 runtime, or downloads a verified runtime when missing.
 Settings lists detected runtimes and offers Java downloads. Minecraft 1.12.2
 is the initial test case, not the application's fixed or main version.
+
+To add a modpack, copy a PolyMC/MultiMC ZIP or Modrinth `.mrpack` into
+`/data/ProsperoMC/imports` over FTP. In Library or Mods, press Square, choose
+the pack, and press X. Select the new instance to install its game and loader
+dependencies. Each pack keeps its own mods, configuration and worlds. Fabric,
+Quilt and Forge 1.12.2 manifests are supported; modern Forge/NeoForge and
+CurseForge manifests are still unsupported. Modrinth files are verified against
+both SHA1 and SHA512, and client overrides take precedence over shared overrides.
+
+L1/R1 cycle the hotbar, and USB mouse-wheel ticks are forwarded to the game.
+The display profile requests 120 Hz with the upstream SDK's 60 Hz fallback;
+actual refresh depends on the console/display accepting the mode. Minecraft's
+own FPS and VSync settings are preserved. The launcher has focus transitions,
+animated progress feedback, held-D-pad scrolling and quiet navigation sounds.
 
 ## Build and use
 

@@ -48,7 +48,17 @@ static int next_version(const PmFrontend *f,const PmView *v,int from,int delta) 
 
 void pm_frontend_init(PmFrontend *f) {
     if(!f) return;
-    memset(f,0,sizeof(*f)); f->memory_mb=2048;f->version_filter=1;
+    memset(f,0,sizeof(*f)); f->memory_mb=2048;f->version_filter=1;f->underline_x=583;
+}
+static int text_width(const char *s,int size);
+void pm_frontend_tick(PmFrontend *f,unsigned ms) {
+    int x=583;
+    if(!f)return;
+    ms=ms>100?100:ms;
+    f->animation_ms+=ms;f->focus_ms=f->focus_ms+ms>180?180:f->focus_ms+ms;
+    for(int j=0;j<(int)f->screen && j<PM_SCREEN_COUNT;j++)x+=text_width(tabs[j],26)+53;
+    int d=x-f->underline_x,step=(int)ms*3;
+    f->underline_x+=bound(d,-step,step);
 }
 
 static void normalize(PmFrontend *f,const PmView *v) {
@@ -87,6 +97,23 @@ int pm_frontend_update(PmFrontend *f,const PmView *v,PmKey key,PmAction *a) {
     n=count(v->instance_count,PM_MAX_INSTANCES);
     i=n?&v->instances[f->selected_instance]:NULL;
     if(key==PM_KEY_NONE) return 0;
+    f->focus_ms=0;
+    if(key==PM_KEY_PREVIOUS_TAB||key==PM_KEY_NEXT_TAB)f->pack_picker=0;
+    if(f->pack_picker) {
+        n=count(v->pack_count,PM_MAX_INSTANCES);
+        f->selected_pack=bound(f->selected_pack,0,n?n-1:0);
+        if(key==PM_KEY_BACK||key==PM_KEY_SECONDARY) {f->pack_picker=0;return 0;}
+        if(key==PM_KEY_UP||key==PM_KEY_DOWN)f->selected_pack=bound(f->selected_pack+(key==PM_KEY_DOWN?1:-1),0,n?n-1:0);
+        if(key==PM_KEY_REFRESH)return action(a,"scan-packs",NULL);
+        if(key==PM_KEY_CONFIRM) {
+            if(v->busy)return unavailable(f,"An operation is already in progress.");
+            if(!n)return unavailable(f,"Copy a PolyMC .zip or Modrinth .mrpack to /data/ProsperoMC/imports, then refresh.");
+            copy(a->source,sizeof(a->source),v->packs[f->selected_pack].source);
+            f->pack_picker=0;f->screen=PM_LIBRARY;
+            return action(a,"import-pack",NULL);
+        }
+        return 0;
+    }
     if(key==PM_KEY_PREVIOUS_TAB||key==PM_KEY_NEXT_TAB) {
         f->screen=(PmScreen)((f->screen+(key==PM_KEY_NEXT_TAB?1:PM_SCREEN_COUNT-1))%PM_SCREEN_COUNT);
         f->focus=0; f->notice[0]=0;
@@ -117,7 +144,7 @@ int pm_frontend_update(PmFrontend *f,const PmView *v,PmKey key,PmAction *a) {
             if(f->focus==0) f->selected_instance=bound(f->selected_instance+delta,0,n?n-1:0);
             else f->focus=bound(f->focus+delta,1,4);
         }
-        if(key==PM_KEY_SECONDARY) {f->screen=PM_VERSIONS;f->focus=0;return 0;}
+        if(key==PM_KEY_SECONDARY) {f->pack_picker=1;return action(a,"scan-packs",NULL);}
         if(key==PM_KEY_CONFIRM) {
             if(!i) {f->screen=PM_VERSIONS;f->focus=0;return 0;}
             if(f->focus<=1) return action(a,i->installed?"prepare-launch":"install",i);
@@ -169,7 +196,7 @@ int pm_frontend_update(PmFrontend *f,const PmView *v,PmKey key,PmAction *a) {
             copy(a->enabled,sizeof(a->enabled),v->mods[f->selected_mod].enabled?"false":"true");
             return action(a,"mod-toggle",i);
         }
-        if(key==PM_KEY_SECONDARY&&i) return action(a,"mods",i);
+        if(key==PM_KEY_SECONDARY) {f->pack_picker=1;return action(a,"scan-packs",NULL);}
         break;
     case PM_SETTINGS:
         if(key==PM_KEY_SECONDARY) {
@@ -212,7 +239,7 @@ int pm_frontend_update(PmFrontend *f,const PmView *v,PmKey key,PmAction *a) {
 }
 
 /* CPU draw primitives. Work in 1080p design coordinates; targets may vary. */
-typedef struct Canvas { const PwPresentTarget *t; } Canvas;
+typedef struct Canvas { const PwPresentTarget *t; unsigned focus_alpha; } Canvas;
 static uint32_t mix(uint32_t a,uint32_t b,unsigned alpha) {
     unsigned r=((a>>16&255)*(255-alpha)+(b>>16&255)*alpha)/255;
     unsigned g=((a>>8&255)*(255-alpha)+(b>>8&255)*alpha)/255;
@@ -231,7 +258,11 @@ static int sy(Canvas *c,int y) {return (int)((int64_t)y*c->t->height/1080);}
 static void box(Canvas *c,int x,int y,int w,int h,uint32_t rgb) {
     int left=bound(sx(c,x),0,c->t->width),top=bound(sy(c,y),0,c->t->height);
     int right=bound(sx(c,x+w),0,c->t->width),bottom=bound(sy(c,y+h),0,c->t->height),xx,yy;
-    for(yy=top;yy<bottom;yy++) for(xx=left;xx<right;xx++) px(c,xx,yy,rgb,255);
+    uint32_t pixel=rgb|0xff000000u;
+    for(yy=top;yy<bottom;yy++) {
+        uint8_t *p=c->t->pixels+(size_t)yy*c->t->stride+(size_t)left*4;
+        for(xx=left;xx<right;xx++,p+=4)memcpy(p,&pixel,4);
+    }
 }
 static void roundbox(Canvas *c,int x,int y,int w,int h,int rad,uint32_t rgb) {
     int xx,yy,dx,dy,left=sx(c,x),top=sy(c,y),right=sx(c,x+w),bottom=sy(c,y+h);
@@ -246,7 +277,7 @@ static void roundbox(Canvas *c,int x,int y,int w,int h,int rad,uint32_t rgb) {
     }
 }
 static void panel(Canvas *c,int x,int y,int w,int h,int focused) {
-    roundbox(c,x,y,w,h,20,focused?LIME:EDGE);
+    roundbox(c,x,y,w,h,20,focused?mix(EDGE,LIME,c->focus_alpha):EDGE);
     roundbox(c,x+2,y+2,w-4,h-4,18,focused?FOCUS:PANEL);
 }
 static int text_width(const char *s,int size) {
@@ -298,7 +329,7 @@ static void controller_symbol(Canvas *c,char shape,int x,int y) {
     }
 }
 static void button(Canvas *c,const char *s,int x,int y,int w,int focused,int primary) {
-    roundbox(c,x,y,w,66,12,focused?LIME:primary?0x527444:EDGE);
+    roundbox(c,x,y,w,66,12,focused?mix(EDGE,LIME,c->focus_alpha):primary?0x527444:EDGE);
     if(!primary) roundbox(c,x+2,y+2,w-4,62,10,focused?FOCUS:ROW);
     text(c,s,x+(w-text_width(s,24))/2,y+17,24,primary?0x111b14:focused?TITLE:TEXT,w-20);
 }
@@ -351,7 +382,7 @@ static void header(Canvas *c,const PmFrontend *f,const PmView *v) {
     small(c,"JAVA EDITION / PS5",151,92,FAINT,330);
     for(j=0;j<PM_SCREEN_COUNT;j++) {
         int w=text_width(tabs[j],26)+34;
-        if(f->screen==(PmScreen)j) {roundbox(c,x-12,54,w,51,13,ROW);box(c,x+5,109,w-33,3,LIME);}
+        if(f->screen==(PmScreen)j) {roundbox(c,x-12,54,w,51,13,ROW);box(c,f->underline_x,109,w-33,3,LIME);}
         text(c,tabs[j],x+4,65,26,f->screen==(PmScreen)j?TITLE:MUTED,w-10);x+=w+19;
     }
     box(c,84,145,1752,1,EDGE);
@@ -359,16 +390,16 @@ static void header(Canvas *c,const PmFrontend *f,const PmView *v) {
     small(c,v->busy?"WORKING":issue?"ISSUE":"READY",1713,59,v->busy||issue?WARN:MUTED,134);
 }
 static void footer(Canvas *c,const PmFrontend *f,const PmView *v) {
-    const char *hint=f->screen==PM_MODS?"Toggle mod":f->screen==PM_VERSIONS?"Download version":f->screen==PM_SETTINGS?"Apply / download":"Select";
+    const char *hint=f->pack_picker?"Import pack":f->screen==PM_MODS?"Toggle mod":f->screen==PM_VERSIONS?"Download version":f->screen==PM_SETTINGS?"Apply / download":"Select";
     box(c,84,961,1752,1,EDGE);
     small(c,"L1 / R1  Navigate",88,990,TEXT,300);
     controller_symbol(c,'X',438,990);small(c,hint,478,990,TEXT,285);
-    controller_symbol(c,'O',783,990);small(c,"Home",823,990,TEXT,220);
+    controller_symbol(c,'O',783,990);small(c,f->pack_picker?"Back":"Home",823,990,TEXT,220);
     controller_symbol(c,'T',1047,990);
     small(c,f->screen==PM_SETTINGS?"Detect Java":"Refresh",1086,990,TEXT,330);
-    if(f->screen==PM_SETTINGS||f->screen==PM_VERSIONS) {
+    if(f->screen==PM_SETTINGS||f->screen==PM_VERSIONS||f->screen==PM_MODS||f->screen==PM_LIBRARY) {
         controller_symbol(c,'S',1510,990);
-        small(c,f->screen==PM_SETTINGS?"Runtime info":"Filter",1550,990,TEXT,295);
+        small(c,f->pack_picker?"Back":f->screen==PM_SETTINGS?"Runtime info":f->screen==PM_VERSIONS?"Filter":"Modpacks",1550,990,TEXT,295);
     } else small(c,"D-PAD / ARROWS",1510,990,FAINT,335);
     if(f->notice[0]) {
         roundbox(c,114,896,1692,48,12,0x40392c);
@@ -378,6 +409,10 @@ static void footer(Canvas *c,const PmFrontend *f,const PmView *v) {
         if(v->busy&&v->progress_total>0) {
             box(c,114,940,1692,4,EDGE);
             box(c,114,940,(int)((int64_t)1692*bound(v->progress_done,0,v->progress_total)/v->progress_total),4,LIME);
+        }
+        else if(v->busy) {
+            int x=(int)(f->animation_ms%1600)*1400/1600;
+            box(c,114,940,1692,4,EDGE);box(c,114+x,940,292,4,LIME);
         }
     }
 }
@@ -479,7 +514,7 @@ static void mods(Canvas *c,const PmFrontend *f,const PmView *v) {
         text(c,"No mods in this instance.",150,428,36,TITLE,1512);
         small(c,"Place compatible .jar files in the instance's mods folder, then refresh.",150,496,MUTED,1570);
         small(c,"Choose Fabric, Quilt or legacy Forge for a modded instance.",150,543,FAINT,1570);
-        small(c,"Add mod files and import modpacks through the host launcher CLI.",150,638,FAINT,1570);
+        small(c,"Press Square to import a modpack as a separate instance.",150,638,FAINT,1570);
     }
     for(j=start;j<n&&j<start+6;j++) {
         int y=378+(j-start)*77;
@@ -542,14 +577,31 @@ static void accounts(Canvas *c,const PmFrontend *f,const PmView *v) {
     button(c,"CHECK SIGN-IN",710,749,530,f->focus==2,0);
 }
 
+static void packs(Canvas *c,const PmFrontend *f,const PmView *v) {
+    int n=count(v->pack_count,PM_MAX_INSTANCES),sel=bound(f->selected_pack,0,n?n-1:0),start=sel>4?sel-4:0;
+    screen_title(c,"Import a modpack","PolyMC / MultiMC .zip and Modrinth .mrpack become separate instances.");
+    panel(c,108,302,1704,578,0);
+    if(!n) {
+        text(c,"Bring your own modpack.",150,379,38,TITLE,1500);
+        small(c,"Copy the pack to /data/ProsperoMC/imports using FTP.",150,450,MUTED,1500);
+        small(c,"Press Triangle to scan, then select a pack with X.",150,507,FAINT,1500);
+    }
+    for(int j=start;j<n && j<start+5;j++) {
+        int y=327+(j-start)*88;
+        panel(c,130,y,1660,76,j==sel);
+        text(c,v->packs[j].name,159,y+23,28,TITLE,1580);
+    }
+    small(c,"After import, select the instance to download its game and loader dependencies.",150,830,MUTED,1600);
+}
 void pm_frontend_render(const PmFrontend *frontend,const PmView *v,const PwPresentTarget *target) {
     PmFrontend f;Canvas c;int y;
     if(!frontend||!v||!target||!target->pixels||!target->width||!target->height||target->width>16384||target->height>16384) return;
     if(target->stride<(uint64_t)target->width*4||target->bytes<(uint64_t)target->stride*target->height) return;
-    c.t=target;f=*frontend;normalize(&f,v);
+    c.t=target;f=*frontend;normalize(&f,v);c.focus_alpha=140+bound((int)f.focus_ms,0,180)*115/180;
     for(y=0;y<1080;y++) box(&c,0,y,1920,1,mix(BASE,0x112016,(unsigned)(y*26/1080)));
     header(&c,&f,v);
-    switch(f.screen) {
+    if(f.pack_picker)packs(&c,&f,v);
+    else switch(f.screen) {
     case PM_HOME:home(&c,&f,v);break;
     case PM_LIBRARY:library(&c,&f,v);break;
     case PM_VERSIONS:versions(&c,&f,v);break;

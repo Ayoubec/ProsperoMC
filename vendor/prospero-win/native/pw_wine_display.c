@@ -74,6 +74,11 @@ static size_t add_edges(const PwGameInput *input, uint32_t edges, uint32_t down,
 {
     for (size_t i = 0; i < PW_GAME_BUTTON_COUNT && used < max; i++) {
         const PwGameBinding *b = &input->bindings[i];
+        if ((edges & b->mask) && b->kind == PW_GAME_BIND_WHEEL) {
+            if (down) out[used++] = (PwWineInput){PW_WINE_INPUT_MOUSE_MOVE,
+                PW_WINE_MOUSE_WHEEL,0,b->code?PW_WINE_WHEEL_DELTA:-PW_WINE_WHEEL_DELTA,0};
+            continue;
+        }
         if (!(edges & b->mask) || (b->kind != PW_GAME_BIND_KEY && b->kind != PW_GAME_BIND_MOUSE))
             continue;
         out[used].type = b->kind == PW_GAME_BIND_KEY ? PW_WINE_INPUT_KEY : PW_WINE_INPUT_MOUSE_BUTTON;

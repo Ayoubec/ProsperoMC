@@ -19,6 +19,7 @@ typedef struct PmInstance {
 } PmInstance;
 typedef struct PmVersion { char id[64], type[32]; int java; } PmVersion;
 typedef struct PmMod { char name[PM_TEXT]; int enabled; } PmMod;
+typedef struct PmPack { char name[PM_TEXT], source[512]; } PmPack;
 typedef struct PmJavaRuntime {
     int major, valid;
     char version[64], path[512], detail[PM_TEXT];
@@ -28,6 +29,7 @@ typedef struct PmView {
     PmInstance instances[PM_MAX_INSTANCES]; int instance_count;
     PmVersion versions[PM_MAX_VERSIONS]; int version_count;
     PmMod mods[PM_MAX_MODS]; int mod_count;
+    PmPack packs[PM_MAX_INSTANCES]; int pack_count;
     PmJavaRuntime java_runtimes[PM_MAX_JAVA]; int java_count;
     int memory_mb, busy, progress_done, progress_total;
     char java_path[512], username[PM_TEXT];
@@ -58,10 +60,14 @@ typedef struct PmFrontend {
     int selected_instance, selected_version, selected_mod, selected_java;
     int focus, memory_mb, loader_index, version_filter;
     int initialized_settings;
+    int pack_picker, selected_pack;
+    unsigned animation_ms, focus_ms;
+    int underline_x;
     char notice[PM_TEXT];
 } PmFrontend;
 
 void pm_frontend_init(PmFrontend *frontend);
+void pm_frontend_tick(PmFrontend *frontend, unsigned elapsed_ms);
 /* Returns 1 only for a backend command; caller invokes it and reloads PmView. */
 int pm_frontend_update(PmFrontend *frontend, const PmView *view,
                        PmKey key, PmAction *action);

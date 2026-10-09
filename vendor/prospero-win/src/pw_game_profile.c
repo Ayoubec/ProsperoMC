@@ -66,6 +66,9 @@ static int hex_digit(uint8_t c)
 static int binding(const uint8_t *v, size_t n, PwGameBinding *out)
 {
     if (is(v, n, "none")) { out->kind = PW_GAME_BIND_NONE; out->code = 0; return PW_OK; }
+    if (is(v,n,"wheel_up") || is(v,n,"wheel_down")) {
+        out->kind=PW_GAME_BIND_WHEEL; out->code=is(v,n,"wheel_up")?1:0; return PW_OK;
+    }
     if (is(v, n, "mouse_left") || is(v, n, "mouse_right") || is(v, n, "mouse_middle")) {
         out->kind = PW_GAME_BIND_MOUSE;
         out->code = is(v, n, "mouse_left") ? 0 : is(v, n, "mouse_right") ? 1 : 2;

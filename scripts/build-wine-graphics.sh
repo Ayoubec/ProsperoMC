@@ -34,6 +34,9 @@ fi
 mkdir -p "$task_work/graphics-sdk"
 cp -a "$graphics_prefix/." "$task_work/graphics-sdk/"
 export PROSPEROMC_NTDLL_IMPORT="$project/artifacts/wine-fpfix/ntdll.shared.elf"
+if [[ -f "$project/.deps/archives/freetype-2.13.3.tar.xz" ]]; then
+    export PROSPERO_FREETYPE_TARBALL="$project/.deps/archives/freetype-2.13.3.tar.xz"
+fi
 export PROSPEROMC_OPENGL_REVISION=${PROSPEROMC_OPENGL_REVISION:-db752da4c89380af228497b5b6852163a4e61069}
 bash "$release/tools/build_prosperomc_graphics.sh" \
     --source "$task_work/source" --host-tools "$task_work/host" \

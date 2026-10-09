@@ -57,7 +57,65 @@ after = after.replace('context->legacy_primitive_conversion = true;', '''/* Smoo
 after = after.replace('#include "indices/u_primconvert.h"',
     '#include "indices/u_primconvert.h"\n#include "indices/u_indices.h"')
 after = after.replace('   bool legacy_primitive_conversion;',
-    '   bool legacy_primitive_conversion;\n   bool legacy_batch_quads;')
+    '   bool legacy_primitive_conversion;\n   bool legacy_batch_quads;\n'
+    '   struct pipe_resource *quad_index_cache[2];\n'
+    '   unsigned quad_index_vertices[2], quad_index_size[2];')
+after = after.replace('   bool external_cpu_access;',
+    '   bool external_cpu_access;\n   bool buffer_published;')
+destroy = '   ps5_context_profile_report(context);\n   for (index = 0; index < PS5_COMPUTE_BUFFER_SLOTS; ++index)'
+assert after.count(destroy) == 1
+after = after.replace(destroy,
+    '   for (unsigned q = 0; q < 2; ++q)\n'
+    '      pipe_resource_reference(&context->quad_index_cache[q], NULL);\n' + destroy)
+# Owned buffers cannot change without a driver write callback. Never cache
+# raw-pointer/persistent mappings, GPU-written buffers or foreign aliases.
+publication = '''static void
+ps5_publish_draw_buffer(struct ps5_batch_flush_cache *batch, unsigned slot,
+                        struct ps5_resource *buffer, size_t offset, size_t bytes)
+{
+   if (buffer->base.target != PIPE_BUFFER || buffer->external_cpu_access ||
+       buffer->gpu_written) {
+      ps5_flush_batch_backing(NULL, slot, buffer->data + offset, bytes);
+      return;
+   }
+   if (!buffer->buffer_published) {
+      ps5_flush_gpu_data(buffer->data, buffer->allocation_size);
+      buffer->buffer_published = true;
+   }
+   (void)batch;
+}
+
+'''
+after = after.replace('static void\nps5_flush_texture_backing(', publication + 'static void\nps5_flush_texture_backing(', 1)
+old = '''         ps5_flush_batch_backing(
+            vertex_resource->external_cpu_access ? NULL : flush_cache,
+            2 + PS5_MAX_TEXTURE_UNITS + binding,
+            (const void *)(vertex_address + binding_begin[binding]),
+            binding_bytes[binding] - binding_begin[binding]);'''
+assert after.count(old) == 1
+after = after.replace(old, '''         ps5_publish_draw_buffer(flush_cache,
+            2 + PS5_MAX_TEXTURE_UNITS + binding, vertex_resource,
+            vertex_buffer->buffer_offset + binding_begin[binding],
+            binding_bytes[binding] - binding_begin[binding]);''')
+old = '''      ps5_flush_batch_backing(
+         index_resource->external_cpu_access ? NULL : flush_cache,'''
+assert after.count(old) == 1
+old += '''
+         2 + PS5_MAX_TEXTURE_UNITS + PIPE_MAX_ATTRIBS,
+         index_resource->data + index_offset,
+         (size_t)draws[0].count * info->index_size);'''
+assert after.count(old) == 1
+after = after.replace(old, '''      ps5_publish_draw_buffer(flush_cache,
+         2 + PS5_MAX_TEXTURE_UNITS + PIPE_MAX_ATTRIBS, index_resource,
+         index_offset, (size_t)draws[0].count * info->index_size);''')
+after = after.replace('      buffer->texture_publication_epoch = 0;',
+    '      buffer->buffer_published = false;\n      buffer->texture_publication_epoch = 0;', 1)
+# UNSYNCHRONIZED CPU writes bypass drain, but must invalidate publication too.
+for anchor in ('   transfer = calloc(1, sizeof(*transfer));',
+               '   memcpy(buffer->data + offset, data, size);'):
+    assert after.count(anchor) == 1
+    var = 'resource' if 'transfer =' in anchor else 'buffer'
+    after = after.replace(anchor, f'   {var}->buffer_published = false;\n' + anchor)
 quad_helper = (root / 'scripts/graphics-quad-batch.c').read_text()
 after = after.replace('static bool\nps5_legacy_requires_split(',
     quad_helper + '\nstatic bool\nps5_legacy_requires_split(', 1)

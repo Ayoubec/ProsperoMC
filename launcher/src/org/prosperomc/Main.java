@@ -405,6 +405,10 @@ public final class Main {
         Files.createDirectories(stage);
         try {
             FilesUtil.unzip(Paths.get(required("source")), stage, new HashSet<String>(Arrays.asList("accounts.json", "launcher_accounts.json", "launcher_profiles.json", "account.json", "auth.properties", "auth-pending.json", "launch-plan.json")));
+            if(Files.isRegularFile(stage.resolve("modrinth.index.json"))) {
+                importModrinth(stage,dest,i);
+                return;
+            }
             Path pack=stage;
             if(!Files.isRegularFile(pack.resolve("mmc-pack.json"))) {
                 try(DirectoryStream<Path> ds=Files.newDirectoryStream(stage)) {
@@ -454,9 +458,68 @@ public final class Main {
             FilesUtil.deleteTree(dest);
             throw e;
         }
+        catch(RuntimeException e) {
+            FilesUtil.deleteTree(dest);
+            throw new IOException("Invalid pack manifest: "+e.getMessage(),e);
+        }
         finally {
             FilesUtil.deleteTree(stage);
         }
+    }
+    void importModrinth(Path pack,Path dest,String i)throws IOException {
+        Map<String,Object> manifest=installer.json(pack.resolve("modrinth.index.json"));
+        if(!(manifest.get("formatVersion") instanceof Number)||((Number)manifest.get("formatVersion")).doubleValue()!=1||!"minecraft".equals(Json.text(manifest,"game")))
+            throw new IOException("Unsupported Modrinth pack format or game");
+        Map<String,Object> deps=Json.obj(manifest.get("dependencies"));
+        String v=id(Json.text(deps,"minecraft")),loader="vanilla",lv="";
+        for(String key:deps.keySet()) {
+            if(key.equals("minecraft"))continue;
+            if(!loader.equals("vanilla"))throw new IOException("Pack has multiple mod loaders");
+            if(key.equals("fabric-loader"))loader="fabric";
+            else if(key.equals("quilt-loader"))loader="quilt";
+            else if(key.equals("forge")&&v.equals("1.12.2"))loader="forge";
+            else throw new IOException("Unsupported pack dependency: "+key+" (Forge currently requires 1.12.2)");
+            lv=id(Json.text(deps,key));
+        }
+        String name=request.getOrDefault("name",Json.text(manifest,"name"));validateName(name);
+        Path game=dest.resolve(".minecraft");Files.createDirectories(game.resolve("mods"));
+        List<Object> files=Json.arr(manifest.get("files"));
+        if(files.size()>10000)throw new IOException("Too many modpack files");
+        Set<Path> seen=new HashSet<Path>();long total=0;
+        for(Object entry:files) {
+            Map<String,Object> file=Json.obj(entry);
+            Path target=FilesUtil.safe(game,Json.text(file,"path"));
+            if(!seen.add(target)||FilesUtil.privateFile(target.getFileName().toString()))throw new IOException("Invalid or duplicate pack file");
+            if(file.containsKey("env")) {
+                String client=Json.text(Json.obj(file.get("env")),"client");
+                if(client.equals("unsupported"))continue;
+                if(!client.equals("required")&&!client.equals("optional"))throw new IOException("Invalid pack client environment");
+            }
+            Map<String,Object> hashes=Json.obj(file.get("hashes"));
+            String sha=Json.text(hashes,"sha1"),sha512=Json.text(hashes,"sha512");
+            if(!sha.matches("[a-fA-F0-9]{40}")||!sha512.matches("[a-fA-F0-9]{128}"))throw new IOException("Missing or malformed pack hashes");
+            Object sizeValue=file.get("fileSize");
+            if(!(sizeValue instanceof Number))throw new IOException("Invalid pack file size");
+            long size=((Number)sizeValue).longValue();total+=size;
+            if(((Number)sizeValue).doubleValue()!=size||size<0||size>2L*1024*1024*1024||total>4L*1024*1024*1024)throw new IOException("Pack download size limit");
+            IOException failure=new IOException("No allowed download for "+target.getFileName());boolean downloaded=false;
+            for(Object address:Json.arr(file.get("downloads"))) {
+                URL url=new URL(Json.str(address));
+                if(!url.getProtocol().equals("https")||url.getUserInfo()!=null||
+                    !Arrays.asList("cdn.modrinth.com","github.com","raw.githubusercontent.com","gitlab.com").contains(url.getHost().toLowerCase(Locale.ROOT)))continue;
+                try {
+                    FilesUtil.download(url.toString(),target,sha,size);
+                    if(!FilesUtil.hash(target,"SHA-512").equalsIgnoreCase(sha512))throw new IOException("Pack SHA512 mismatch");
+                    downloaded=true;break;
+                }catch(IOException e){failure=e;Files.deleteIfExists(target);}
+            }
+            if(!downloaded)throw failure;
+        }
+        for(String folder:Arrays.asList("overrides","client-overrides"))
+            if(Files.isDirectory(pack.resolve(folder)))FilesUtil.copyTree(pack.resolve(folder),game);
+        Map<String,String> m=stringMap("id",i,"name",name,"version",v,"loader",loader,"loaderVersion",lv,"installed","false");
+        FilesUtil.properties(dest.resolve("instance.properties"),m);writePolyMC(dest,m);
+        message="Modrinth pack imported; select its instance to install game and loader dependencies";
     }
     void modSearch()throws IOException {
         String q=required("query"), base=settings.getOrDefault("modrinthApi", "https://api.modrinth.com/v2");
@@ -776,7 +839,7 @@ public final class Main {
         }
         if(argline.length()>32768)throw new IOException("Minecraft command line exceeds Windows/runtime 32768-character limit");
         String graphics=settings.getOrDefault("graphics", "opengl");
-        String text="[application]\nid=minecraft\nname=Minecraft Java\nexecutable="+windows(java)+"\nworking_directory="+windows(game)+"\narguments="+argline+"\nprefix=minecraft\nruntime=wine-wow64\narchitecture=pe64\ngraphics="+graphics+"\n[display]\ndesktop=1280x720\nview=window\nscaling=fit\n[input]\nmode=keyboard\nmouse=right_stick\ncross=space\ncircle=escape\nsquare=e\ntriangle=q\nl1=1\nr1=2\nl2=mouse_right\nr2=mouse_left\nup=w\ndown=s\nleft=a\nright=d\noptions=escape\n";
+        String text="[application]\nid=minecraft\nname=Minecraft Java\nexecutable="+windows(java)+"\nworking_directory="+windows(game)+"\narguments="+argline+"\nprefix=minecraft\nruntime=wine-wow64\narchitecture=pe64\ngraphics="+graphics+"\n[display]\ndesktop=1280x720\nview=window\nscaling=fit\nrefresh=120\n[input]\nmode=keyboard\nmouse=right_stick\ncross=space\ncircle=escape\nsquare=e\ntriangle=q\nl1=wheel_up\nr1=wheel_down\nl2=mouse_right\nr2=mouse_left\nup=w\ndown=s\nleft=a\nright=d\noptions=escape\n";
         FilesUtil.write(root.resolve("profiles/launch.profile"), text);
         FilesUtil.restrict(root.resolve("profiles/launch.profile"));
         writePolyMC(d, m);
