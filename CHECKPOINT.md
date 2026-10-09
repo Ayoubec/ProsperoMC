@@ -339,3 +339,39 @@ Latestupstreamcommit008a3c3b4d285199601d75624208d8e8e18ad2a7 checkedviaGitHub;
 latest5commits areissue/release/template changes, no runtimeupdate applied.
 Nexttest: menu/text/item rendering, menuFPS, same1440p8chunkworldF3FPS after
 movementandstop; leaveopenforlogs. Afteraskingtestneedfreshclosebeforemorewrites.
+
+## Deferred multi-draw candidate — uploaded
+
+Userstripretest:1440p8chunks43–55FPS still,32–57walking; F3drops13–22.
+16chunks7–22,10~20,lookdown/sky60. Screenshot actual2560x1440 andVBOenabled.
+User explicitlyBOTHCLOSED thisturn. Freshlogs artifacts/console-strip-batching-retest
+showeligible6812366,input8474,otherrejectszero;4014 multi-draw-batched linesin
+last512KB. Definite oldpathwait:ps5_try_multi_draw_batch enterssubmit_lock then
+callsbatch_end pergroup; nativebatch_end retiresallpending withwait1. RootdrawVbo
+triesdeferred (onlynum_draws1) thenthissyncmulti path. Targetedguardnow dispatches
+eligible num_draws>1 viaexisting Mesa util_draw_multi BEFOREsync/deferredattempt;
+childrenuseexistingdeferredqueue/fences/resource+descriptorretention. No newqueue,
+capacitychanges, native/Java/settings changes. Legacyconversionexcludedunless
+alreadyqualifiedquadbatch; indirect/ineligible groups useoldpaths.
+
+Actualroutingblock plusverifiedMesahelper testsPASS IDs (includingemptydraw),
+guardcases; existingnative-strip/readmap/publication checksPASS. Buildsession74183
+finishedsuccessfully. Rollback910c module/patch/provenance preserved
+in artifacts/graphics-before-deferred-multidraw. Patch:
+af938a3b9827e4225cbe4478cf448b6550a7e5af5a6ea012958185a1f60bc901.
+CompiledBGRAcapability/archivechecksPASS; onlyps5_screen.o changed. Moduleimport/
+rawsyscall/unboundchecksPASS, ntDLL/76Winepatches preserved. Staged, FTPview
+79485completed. Usernoticedrapid slightflicker ondirectmonitor vs capturecard;
+confirmedgamewasrunningagain, sohelduploadthenuserexplicitlyclosed. Scoped
+graphics-onlyupload/readback thencompleted successfully; bothreportsverified.
+Module2d25202c18f36607991424ce613ef3aed7c86619d425acb0fc6543ee8bbf8a20;
+SDKmanifest867d47117e86c4e2bdb571d800cc152d7180ec9cf6d74b574ea89776518c2223;
+runtimearchived3b3ed13d7ad4f324bb7e988f58815dd2ea39d5afcfd4bb7f4e57778a4806392.
+No gainclaimed yet. Aftertestrequestmustgetfreshclosebeforemoreconsolewrites.
+
+Flickerclassification asyncquestion pending: brightnesspulse vs tearing vsblack/
+oldframe flashes; VRR/AdaptiveSyncstatusunknown. Readonlylivegameoptions show
+renderDistance10,fullscreentrue,enableVsyncfalse,useVbotrue. Nooptionchangesmade.
+Inspectednativependingflip-marker gate; thiscandidate doesnotalterpresenter.
+Need FPS/visualretest1440p8/16chunks plusF3on/off andflickerclassification; do not
+claimflickerfixed orblindlyforce60Hz/VSync withoutunderstandingobservedartifact.

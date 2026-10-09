@@ -12,12 +12,13 @@ At higher game resolutions the latest report is about 25 FPS at 1080p and
 18 FPS at 1440p. After the read-only buffer update, the user measured an initial
 32 FPS at 1440p/8 chunks, falling to 13–14 after moving. Profiling confirms buffer
 reads became much faster, but thousands of draws then use individual submissions.
-The lowered-draw correction raised the user's settled report to 24–30 FPS,
-with about 35 while flying. Main-menu diagnostics then exposed thousands of
-non-indexed triangle strips using separate submissions. The next correction
-allows those strips into the existing native queue, whose draw packets already
-preserve strip topology. Indexed strips keep their previous path.
-Vanilla 1.12.2 itself limits the main menu to 30 FPS. The strip correction's
+The strip correction's latest 1440p report reaches 43–55 FPS still and 32–57
+while walking at 8 chunks, but opening F3 can reduce it to 13–22. At 16 chunks
+the report remains 7–22 FPS; looking down or at the sky reaches 60.
+The next correction keeps eligible multi-draw groups in the existing deferred
+queue instead of synchronously retiring each group. This targets the repeated
+waits seen in the text/terrain draw path without adding another queue.
+Vanilla 1.12.2 itself limits the main menu to 30 FPS. The multi-draw correction's
 performance still needs console checks; stable 60 FPS at 16 chunks is not verified.
 Other versions, mod loaders and online features require separate
 console checks. It is an independent launcher, not an embedded Qt build of PolyMC.

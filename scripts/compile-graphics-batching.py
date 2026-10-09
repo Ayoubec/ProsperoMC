@@ -127,7 +127,7 @@ provenance.update(version=provenance['version']+'-prosperomc-quad-batching',
     sdk_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
     runtime_archive_sha256=hashlib.sha256(runtime.read_bytes()).hexdigest(),
     local_patch={'file':'smooth-legacy-batching.patch','sha256':patch_hash,
-                 'description':'Batch legacy quads, lowered non-indexed triangles and native non-indexed strips; reuse immutable indices and static publication, and avoid synchronization for CPU-owned read-only draw-buffer maps; retain indexed/GPU-write/export guards'},
+                 'description':'Keep eligible multi-draw groups in the existing deferred queue; batch legacy quads and non-indexed triangles/strips; reuse immutable indices and static publication; retain indexed/GPU-write/export guards'},
     hardware_validation='pending console retest of modified draw driver')
 (modified / 'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
 print('MODIFIED_RUNTIME_ARCHIVE',provenance['runtime_archive_sha256'],flush=True)

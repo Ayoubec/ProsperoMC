@@ -216,6 +216,21 @@ eligibility = eligibility.replace(anchor, '''   {
 #endif
    }''')
 after = after[:start] + eligibility + after[end:]
+# Expand eligible groups through Mesa's existing single-draw dispatcher. The
+# deferred queue retains descriptors/resources until actual GPU retirement;
+# the older multi-draw path instead calls batch_end and waits after every group.
+anchor = '''#ifdef PS5_DEFERRED_DRAW_BATCH
+   if ((!context->legacy_primitive_conversion || context->legacy_batch_quads) &&'''
+assert after.count(anchor) == 1
+after = after.replace(anchor, '''#ifdef PS5_DEFERRED_DRAW_BATCH
+   /* Keep eligible multi-draw groups in the existing deferred queue. */
+   if (num_draws > 1 && info && draws && !indirect &&
+       (!context->legacy_primitive_conversion || context->legacy_batch_quads) &&
+       ps5_multidraw_eligible(context, info, indirect, draws, num_draws)) {
+      util_draw_multi(base, info, drawid_offset, indirect, draws, num_draws);
+      return;
+   }
+   if ((!context->legacy_primitive_conversion || context->legacy_batch_quads) &&''')
 (out / 'ps5_screen.c').write_bytes(after.encode())
 patch = ''.join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
     fromfile='a/src/gallium/ps5/ps5_screen.c', tofile='b/src/gallium/ps5/ps5_screen.c'))

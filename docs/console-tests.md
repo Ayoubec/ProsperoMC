@@ -137,3 +137,25 @@ The local 1.12.2 client bytecode's bib.k() returns30 when no world is loaded and
 a GUI is open, otherwise the configured limit. This is the game's menu cap;
 removing it is not part of this driver correction. Its source artifact is kept
 locally as artifacts/minecraft-1.12.2-main-bytecode.txt, not redistributed.
+
+## Deferred multi-draw groups
+
+The strip update's user retest at1440p/8 chunks reaches43–55 FPS still,32–57
+while walking and13–22 withF3 open. At16 chunks it remains7–22, at10 about20,
+and looking at sky/down reaches60. The screenshot confirms actual2560x1440.
+Freshlogs artifacts/console-strip-batching-retest show virtually all normal draws
+eligible (6.81million), inputrejects8474, and no shader/framebuffer/depth/vertex/
+texture rejects or GPU failures. In the retained tail,4014 lines report completed
+multi-draw groups. The old ps5_try_multi_draw_batch takes a submission lock and
+calls native batch_end for each group; batch_end retires all pending work with
+wait=1 before returning. Individual deferred draws already retain resources and
+descriptor snapshots until completion, but group calls bypass that path.
+
+The candidate dispatches eligible groups through Mesa's existing util_draw_multi
+before entering the old synchronous path. Each subdraw therefore uses the same
+deferred queue as ordinary draws; its capacity, retirement fences and CPU-write
+dependencies remain unchanged. Legacy split conversion, indirect and ineligible
+groups retain their existing paths. The routing test extracts the actual block
+and pinned Mesa helper, verifying draw IDs, zero-count subdraws, and fallback
+guards. Existing topology and publication checks pass. Check the same scene with
+F3 on/off, inventory, terrain and TNT before claiming an FPS improvement.
