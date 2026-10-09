@@ -191,3 +191,12 @@ full byte verification against the cache's owned snapshot. Actual matching,
 parser, stage-validation and routing tests pass, including mutated and malformed
 packages. The module rebuild, compiled capabilities and archive checks pass;
 FTP executable contents and both reports verified. Gain awaits console retest.
+
+
+Shader-cache retest:1440p8chunks 29-40 wandering,43-44still,fastmouse27-41,
+F3~32;16chunks16-23. Nextmodule enables the pinned upstream two-worker native
+preparation mode, retaining shader/resource fixes and GPU retirement ownership.
+Exact upstream queue/preflight tests pass underASan/UBSan for1/2workers, including
+reverse completion, startup/affinity failures, ring wrap andshutdown. Production
+capabilities/archive/importchecks pass. Graphics-onlyupload andELF/bothreport
+readback verified. Console worker startup/affinity andFPS gain await retest.

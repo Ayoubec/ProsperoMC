@@ -101,6 +101,7 @@ run(['make','-C',psbc,'-f',source / 'toolchain/Makefile.opengnm-psbc-ps5','-j8',
     env=dict(os.environ,PS5_PAYLOAD_SDK=str(payload)))
 run([sys.executable,root / 'scripts/check-shader-layout-cache.py'])
 run([sys.executable,root / 'scripts/check-descriptor-retirement.py'])
+run([sys.executable,root / 'scripts/check-upstream-async.py'])
 run(['gcc','-O2',out / 'check-policy.c','-o',work / 'check-policy'])
 with (out / 'policy-check.log').open('w') as log:
     run([work / 'check-policy'],stdout=log)
@@ -111,8 +112,11 @@ flags = shlex.split('\n'.join(config.splitlines()[1:]))
 prefix = '/home/runner/work/ps5-opengl/ps5-opengl'
 flags = [f.replace(prefix+'/build/mesa-ps5-probe',str(build)).replace(prefix,str(source)) for f in flags]
 profile = os.environ.get('PROSPEROMC_DRAW_PROFILE', '0') == '1'
+async_prepare = os.environ.get('PROSPEROMC_ASYNC_NATIVE_PREP', '1') == '1' and not profile
 if not profile:
     flags = [f for f in flags if not f.startswith('-DPS5_DRAW_PROFILE')]
+if async_prepare:
+    flags += ['-DPS5_ASYNC_NATIVE_PREP=1','-DPS5_NATIVE_PREP_WORKERS=2']
 (out / 'runtime-config.txt').write_text(shlex.join(flags)+'\n')
 cache_id = hashlib.sha256((out / 'ps5_screen.c').read_bytes()+(ci / 'sdk/lib/libpsbc.ps5.a').read_bytes()).hexdigest()
 (work / 'shader-cache-build-id.h').write_text('#define PS5_SHADER_CACHE_BUILD_ID "'+cache_id+'"\n')
@@ -122,7 +126,8 @@ run([payload / 'bin/prospero-clang',*flags,'-I'+str(build / 'src/compiler'),'-in
 # configuration to the draw driver and retain the original entry-point rename.
 run([payload / 'bin/prospero-clang',*flags,'-I'+str(build / 'src/compiler'),
      '-I'+str(source / 'src/platform'),'-Wno-error=unused-function',
-     '-Dmain=ps5_agc_gate2_run','-DAGC_TRIANGLE_SUBMIT=1','-DAGC_RUNTIME_PACKAGES=1',
+     '-Dmain='+('ps5_agc_gate2_run_sync' if async_prepare else 'ps5_agc_gate2_run'),
+     '-DAGC_TRIANGLE_SUBMIT=1','-DAGC_RUNTIME_PACKAGES=1',
      '-c',source / 'src/platform/ps5_agc_runtime_backend.c',
      '-o',work / 'ps5_agc_runtime_backend.o'])
 modified.mkdir(parents=True, exist_ok=True)
@@ -144,8 +149,10 @@ provenance.update(version=provenance['version']+'-prosperomc-quad-batching',
     sdk_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
     runtime_archive_sha256=hashlib.sha256(runtime.read_bytes()).hexdigest(),
     local_patch={'file':'smooth-legacy-batching.patch','sha256':patch_hash,
-                 'description':'Retain legacy batching and owned-buffer fixes; recycle retired descriptors, reuse byte-verified shader section layouts, log only batch errors, and ' + ('enable diagnostic profiling' if profile else 'disable hot-path profiling') + ' in the draw driver and native backend'},
+                 'description':'Retain legacy batching and owned-buffer fixes; recycle retired descriptors, reuse byte-verified shader layouts, ' + ('enable upstream two-worker native command preparation, ' if async_prepare else '') + 'log only batch errors, and ' + ('enable diagnostic profiling' if profile else 'disable hot-path profiling') + ' in the draw driver and native backend'},
     draw_profile=profile,
+    async_native_prepare=async_prepare,
+    native_prepare_workers=2 if async_prepare else 0,
     runtime_config_sha256=hashlib.sha256((out / 'runtime-config.txt').read_bytes()).hexdigest(),
     hardware_validation='pending console retest of modified draw driver')
 (modified / 'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')

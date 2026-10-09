@@ -4,11 +4,12 @@ Minecraft Java launcher for homebrew-enabled PS5, rebuilt on [prospero-win](http
 
 This project is under development and uses Windows x64 Java through Wine.
 Vanilla 1.12.2 now loads saved worlds on the tested PS5, with movement and audio.
-Performance remains under development. After the production descriptor/profile
-fix, the user reports 25-45 FPS wandering and 44-56 still at 1440p/8 chunks.
-F3 gives 16-32 FPS, and 16 chunks gives 13-23 FPS. The next renderer update
-reuses validated shader layouts instead of reparsing unchanged packages per
-draw; its gain needs a console retest. Stable 60 FPS at 16 chunks is unverified.
+Performance remains under development. The shader-layout cache retest reports
+29-40 FPS wandering, about 43-44 still and 32 with F3 at 1440p/8 chunks;
+16 chunks gives 16-23 FPS. The next build uses upstream's existing two-worker
+native command preparation so OpenGL translation can overlap command building.
+Its performance and hardware affinity still require a console test. Stable
+60 FPS at 16 chunks is unverified.
 FreeSync off resolved the reported bright-area flicker. With the monitor set to
 120 Hz, the user reaches about 120 FPS looking at the sky. Vanilla 1.12.2 limits
 its main menu to 30 FPS. Current game graphics choices are preserved.

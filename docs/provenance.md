@@ -90,6 +90,22 @@ The real generated matching and routing code passes 10,000 warm-cache draws
 without parsing, plus mutation, malformed-ELF, stage and topology tests. The
 performance gain from this follow-up still requires a console retest.
 
+The shader-layout retest reports 29-40 FPS wandering, about 43-44 still and
+32 with F3 at 1440p/8 chunks; 16 chunks remains 16-23. The next build enables
+the pinned upstream `PS5_ASYNC_NATIVE_PREP` implementation with two workers,
+using its required `ps5_agc_gate2_run_sync` entry point. The producer snapshots
+draw inputs and retains their resources; workers prepare commands, and the
+producer collects results in draw order before submission. Existing GPU
+retirement still controls resource reuse. The exact upstream tests were taken
+from the verified source archive and run against the patched runtime, with
+ASan/UBSan, for one and two workers: reverse completion, ring wrap, duplicate
+results, startup/pinning failure, tessellation drain and shutdown all pass.
+CPU affinity on cores 10/12 and FPS gain still require console validation.
+Upstream workers busy-spin while idle, so CPU usage can increase. Set
+`PROSPEROMC_ASYNC_NATIVE_PREP=0` for a synchronous diagnostic comparison;
+`PROSPEROMC_DRAW_PROFILE=1` also selects synchronous preparation because the
+upstream detailed profiling counters cannot run concurrently.
+
 Mouse-wheel support extends the existing motion event's code field, retaining
 the deployed ntdll queue layout and validator. Patch 0671 sends a normal Windows
 wheel event in win32u. USB notches and controller wheel bindings share this path.

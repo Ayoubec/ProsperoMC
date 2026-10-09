@@ -89,6 +89,8 @@ for path in (title / 'STAGE-REPORT.json', title / 'prosperomc/STAGE-REPORT.json'
     if 'draw_profile' in provenance:
         stage['wine']['graphicsFix']['drawProfile'] = provenance['draw_profile']
         stage['wine']['graphicsFix']['runtimeConfigSha256'] = provenance['runtime_config_sha256']
+        stage['wine']['graphicsFix']['asyncNativePrepare'] = provenance.get('async_native_prepare',False)
+        stage['wine']['graphicsFix']['nativePrepareWorkers'] = provenance.get('native_prepare_workers',0)
     if local_patch:
         stage['wine']['graphicsFix']['localPatch'] = local_patch
     if wheel_built:

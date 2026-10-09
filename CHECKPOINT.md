@@ -516,3 +516,58 @@ verified. Newwin32u:
 Native/JAR/Java/ntdll/worlds/options unchanged. Async retest asked for same
 1440p8chunks withF3off/on, then16chunks, settled30seconds, leaveopenforlogs.
 NoFPScandidategain claimed; usermustfreshclosebeforefurtherconsolemutation.
+
+
+## Upstream two-worker native preparation - build running
+
+Shader-cache retest:1440p8chunks wandering29-35 occasional40, returnfromsky35-40,
+still43/44,fastmouse27-41,wandering35-38,F3~32;16chunks16-23mostly17/19.
+MinecraftwasleftOPEN; read-onlylive logs saved artifacts/console-shader-cache-retest
+(game4, prepare3, previouslauncher2). Noallocationfailures;~34pairentrieshotcache,
+no evidenceof43FPSimposedcap;sky120. User thenexplicitlyCLOSEDbothapps viaasync
+questioncall_v5k1MylO0JGYoR7DLkgDkN8w; canupload oncebuildchecksfinish.
+
+Audited pinned upstream PS5_ASYNC_NATIVE_PREP code:producer snapshotsdraw/backend
+andowns scanoutinit;two nativeworkers preparecommands oncores10/12. Results
+collected strictlyindraworder;resourceownership staysuntilGPUretirement. Nonew
+scheduler implemented. Nativepair/workcachemutexes areenabled byupstreamflag;
+detailed profiling mustbeoff for2workers. Workerbusyspinning meansCPUusagecanrise.
+Compilationdefaults nowasync2 forproduction;profile diagnosticbuilds remainsync.
+PROSPEROMC_ASYNC_NATIVE_PREP=0 supports synchronouscomparison builds.
+
+New scripts/check-upstream-async.py verifies original sourcearchiveSHA, extracts
+UNMODIFIED upstream test_async_preflight.py andtest_async_native_draw.py, runs
+thoseagainst OURgeneratednative sourceunderASan/UBSan. Both1/2workersPASS:
+stateownership,reversedcompletion,ringwrap,dupresult,startup/pin failure,
+orderedappend,tessellationdrain,shutdown. Shadercache/descriptor tests automatic
+incompile recipe. CompiledBGRAandarchiveonly2objects checksPASS;archiveasserts
+actualobjectworkerstartup+pthreadsymbols. Native/JAR/game settingsunchanged.
+
+Firstbuild18015 failedbeforeWine dueentrypoint redefinition: asyncwrapperalready
+namesps5_agc_gate2_run, mainmustberenamedps5_agc_gate2_run_sync. Fixedconditional
+compilerdefinition. Secondbuild78187 drivercomplete/HOST_WINE_TOOLS_READY,
+Winebuildstillrunning. DoNOTstageuntilfinished. Current PS5 win32u remains
+859f900e191e97780b1110d546043e87fbddba820fb12db676d727a52b306719.
+New SDKmanifest/archive hashes:
+60f5c11c4043fd3a46f23e8074323f3968d4c28c4f935a8920841888376e3b39
+9a2afa07eba8681ced0b0b1d9ca3fa9b02a0f79e319db05f3a164f3bd5714bb2
+Sourcepatch unchangedf5c0bf8e0c3e8ce98ba926c7a6745ab0a8a740f81fa06dcb8b788ca7705bd505;
+worker code isoriginalpinnedsource, activatedbyflags. versions.lock/README/
+provenancedocs updatedpendingcandidate. Next:wait78187, imports/raw-syscall/
+unboundchecks; stage+ELFview onlywin32u;scopedgraphicsupload/readback;checkpoint/
+commitpush;retest same1440p8/16,F3on/offandverifylive[ps5-async-prep] cpu10/12
+startupreceipts. Do notpromiseFPSorclaimworkersrunningbeforeconsoletest.
+Afteraskinguserretestfreshclosebeforefurtherconsolewrites.
+
+
+Secondworkerbuild78187 completedfully(exit0). Win32ureportstatus0, builttrue,
+no unresolved/errors/titleunbound/rawsyscalls. Module staged successfully;
+ELFview onlywin32urefreshed. Scopedgraphics-onlyupload andexecutable+bothreports
+readbackPASS. Newmodule:
+d02aa80a3e5c70d99828668883fb9d2e2c07048883afb687b75c577bf2b318be
+Stage graphicsFix asyncNativePrepare=true,nativePrepareWorkers=2,drawProfile=false.
+NoJava/JAR/native/world/optionschanges. UserexplicitCLOSEDbeforeuploadthisturn.
+Asyncretestquestionasked: sameworld1440p8then16chunks,F3on/off,settle30seconds,
+leaveopenforliveworkerstartup receipts. Needread[ps5-async-prep] cpu=10/12,
+verified1,worker0/1 beforeclaimingbothworkersrunning. FPSgainunverified.
+Afterrequesttreatgameasrunning;freshclosebeforeanyfurtherconsolewrites.

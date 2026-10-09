@@ -28,7 +28,8 @@ a=members(before/'libps5_opengl_core33.a');b=members(after/'libps5_opengl_core33
 assert a.keys()==b.keys()
 assert [name for name in a if a[name]!=b[name]]==['ps5_screen.o','ps5_agc_runtime_backend.o']
 assert hashlib.sha256((before/'libpsbc.ps5.a').read_bytes()).digest()==hashlib.sha256((after/'libpsbc.ps5.a').read_bytes()).digest()
-if not json.loads((root/'.deps/graphics-sdk-batching/provenance.json').read_text())['draw_profile']:
+provenance=json.loads((root/'.deps/graphics-sdk-batching/provenance.json').read_text())
+if not provenance['draw_profile']:
     driver=(root/'artifacts/graphics-batching/ps5_screen.o').read_bytes()
     native=(root/'artifacts/graphics-batching/ps5_agc_runtime_backend.o').read_bytes()
     assert hashlib.sha256(driver).hexdigest()==b['ps5_screen.o']
@@ -37,6 +38,9 @@ if not json.loads((root/'.deps/graphics-sdk-batching/provenance.json').read_text
     assert b'[ps5-prepare-perf]' not in native
     assert b'profile=0' in driver
     assert b'ps5_agc_gate2_batch_end' in native
+    if provenance.get('async_native_prepare'):
+        assert b'[ps5-async-prep] cpu=' in native
+        assert b'pthread_create' in native and b'pthread_join' in native
 message='PASS: only draw driver and native runtime backend changed; every other runtime object and compiler library remains from verified CI SDK'
 (root/'artifacts/graphics-batching/archive-check.log').write_text(message+'\n')
 print(message)
