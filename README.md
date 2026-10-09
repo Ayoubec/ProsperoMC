@@ -12,9 +12,13 @@ At higher game resolutions the latest report is about 25 FPS at 1080p and
 18 FPS at 1440p. After the read-only buffer update, the user measured an initial
 32 FPS at 1440p/8 chunks, falling to 13–14 after moving. Profiling confirms buffer
 reads became much faster, but thousands of draws then use individual submissions.
-The next update lets lowered non-indexed draws batch despite Mesa's retained
-client-index flag; actual indexed client data keeps its existing fallback.
-Performance still needs a comparison on the same world and settings.
+The lowered-draw correction raised the user's settled report to 24–30 FPS,
+with about 35 while flying. Main-menu diagnostics then exposed thousands of
+non-indexed triangle strips using separate submissions. The next correction
+allows those strips into the existing native queue, whose draw packets already
+preserve strip topology. Indexed strips keep their previous path.
+Vanilla 1.12.2 itself limits the main menu to 30 FPS. The strip correction's
+performance still needs console checks; stable 60 FPS at 16 chunks is not verified.
 Other versions, mod loaders and online features require separate
 console checks. It is an independent launcher, not an embedded Qt build of PolyMC.
 

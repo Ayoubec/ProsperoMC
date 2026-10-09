@@ -307,3 +307,35 @@ JAR unchanged722679be25b99eb208fba871a1ac843150773607c937570fecce677dede36ae5;
 EBOOT unchanged06352734edb67b4aa14191edd9a9c4cad358e282649e1106d409378bfa0960a0.
 The next test is sameworld1440p/8chunks movement/stop FPS andvisualcorrectness;
 leave open for boundedinputfallback logs. NoFPSgain from thiscandidate claimed.
+
+## Menu strips — uploaded, awaiting console retest
+
+User reports lowered-draw fix settles24–30FPS at1440p/8chunks, about35flying,
+butmainmenu16–20FPS. Read artifacts/console-lowered-batching-retest; inputrejects
+fell sharply. User completed30sec mainmenu test and explicitlyCLOSEDProsperoMC.
+Freshmenulogs artifacts/console-menu-batching-retest session5 show mode5,index0,
+count4strips; ~3400–3500singles perprofilinginterval. Otherrejectcategorieszero.
+Verified pinned native source fromSDKtar supports primitive6TRISTRIP and queues
+perdrawpreparedcommands withtopology, shadercachekeys includeprimitive. Candidate
+onlyadmits non-indexedstrips in ps5_multidraw_eligible. Indexedstrips, restart,
+indirect, attachmentfeedback andotherguards remainunchanged. Exactpredicate+
+nativevalidator tests andread-only/publication regressionsPASS. Firsthosttest
+neededstdintheader; repaired, latesttestPASS andbuildsession65121finished.
+Rollback7ffe/patch/
+provenance in artifacts/graphics-before-strip-batching. Candidatepatch
+e98b54f8b965aa47735399ac3b6e2d5cd8344149179de57cc4c3f69001a03e53.
+Localjavap ofclientbib.k() confirmsvanilla's menu30FPScap; nogamebytecodeedited.
+NoFPSpromiseat16chunks, noJava/native/settings changes. CompiledBGRA/archive
+checksPASS; onlyps5_screen.o changed, otherobjects/PSBCunchanged. Staging/imports/
+rawsyscall/unboundchecksPASS; ntdll1c86 and76Winepatches retained. FTPcomparison
+refreshed; graphics-onlyupload andexecutable/bothreportsreadbackPASS. Module:
+910c698b7a3437ee878062be2e92a4241cb791df5bbf604e252be28c6a85ae56.
+SDKmanifest87d824fed6dc73bafb7111d7a4a41e2517f6f98a27a88790fd4526dd16da3570;
+runtimearchive ddae0d067b8b1ed82c1478a1add4d051bc019aa11d0af5b0fae28cafe0b76089.
+Native/JAR remain06352734/722679be. Nativepresentationlog shows15–16calls per
+~0.51sec inmenu, near30; user's16–20counter maymeasure differenttiming. Need
+compareF3worldFPS vsdebugoverlay without fakingFPS; nooverlaycodechanged.
+Latestupstreamcommit008a3c3b4d285199601d75624208d8e8e18ad2a7 checkedviaGitHub;
+latest5commits areissue/release/template changes, no runtimeupdate applied.
+Nexttest: menu/text/item rendering, menuFPS, same1440p8chunkworldF3FPS after
+movementandstop; leaveopenforlogs. Afteraskingtestneedfreshclosebeforemorewrites.

@@ -116,3 +116,24 @@ index formats. A host test extracts the actual eligibility predicate and exercis
 these cases, including the restricted blitter fan path and empty inputs.
 Console performance of this follow-up remains pending; test the same world at
 1440p/8 chunks, move and stop, and check terrain, items and TNT for correctness.
+
+## Menu triangle-strip submissions
+
+The lowered-draw retest reports 24–30 FPS settled at 1440p/8 chunks and about35
+while flying. The remaining main-menu slowdown is 16–20 FPS. In the dedicated
+menu run (artifacts/console-menu-batching-retest), bounded input diagnostics
+report mode5/non-indexed/count4 strips. Native single-submit calls stay around
+3,400–3,500 per profiling interval; batch shader/framebuffer/depth/vertex/texture
+rejects remainzero. The verified native runtime accepts hardware TRISTRIP6,
+links packages using each draw's topology, and queues the complete draw packet.
+The candidate admits non-indexed strips to the existing deferred path, preserving
+index, restart, indirect and attachment-feedback guards. Tests extract both the
+actual batch input predicate and native draw-state validator from pinned source.
+Read-map/publication regression checks also pass. Actual strip rendering still
+needs console verification, including menu text/buttons/panorama, terrain, clouds,
+inventory items and TNT. No world FPS gain is claimed before that test.
+
+The local 1.12.2 client bytecode's bib.k() returns30 when no world is loaded and
+a GUI is open, otherwise the configured limit. This is the game's menu cap;
+removing it is not part of this driver correction. Its source artifact is kept
+locally as artifacts/minecraft-1.12.2-main-bytecode.txt, not redistributed.

@@ -193,6 +193,12 @@ eligibility = after[start:end]
 assert eligibility.count('info->primitive_restart || info->has_user_indices ||') == 1
 eligibility = eligibility.replace('info->primitive_restart || info->has_user_indices ||',
     'info->primitive_restart || (info->index_size && info->has_user_indices) ||')
+# The native queue records each draw's topology and already supports strips.
+# Menu diagnostics show non-indexed strips falling back to synchronous singles.
+anchor = '(info->mode != MESA_PRIM_TRIANGLES &&'
+assert eligibility.count(anchor) == 1
+eligibility = eligibility.replace(anchor, '''(info->mode != MESA_PRIM_TRIANGLES &&
+        !(info->mode == MESA_PRIM_TRIANGLE_STRIP && !info->index_size) &&''')
 # Bounded diagnostics distinguish remaining input fallbacks without per-draw logs.
 anchor = '      rejects |= BITFIELD_BIT(PS5_BATCH_REJECT_INPUT - 1);'
 assert eligibility.count(anchor) == 1
