@@ -15,6 +15,8 @@ assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == provenance['source_a
 with tarfile.open(snapshot) as archive:
     entry = next(m for m in archive.getmembers() if m.name.endswith('/src/gallium/ps5/ps5_screen.c'))
     before = archive.extractfile(entry).read().decode()
+    entry = next(m for m in archive.getmembers() if m.name.endswith('/src/platform/ps5_agc_native_runtime.c'))
+    native_before = archive.extractfile(entry).read().decode()
 
 # Mesa's gathered interpolation masks distinguish smooth inputs from explicit
 # flat inputs. Unknown information always keeps the original correctness path.
@@ -238,8 +240,70 @@ after = after.replace(anchor, '''   /* Successful terrain groups must not synchr
       fprintf(stderr, "[ps5-gallium] multi-draw-batched draws=%u result=%d\\n",
               num_draws, context->last_draw_status);''')
 (out / 'ps5_screen.c').write_bytes(after.encode())
+native_after = native_before
+# Existing pair-cache byte comparisons cover pointer reuse and mutation. Save
+# the validated section layout alongside the owned bytes, then check that cache
+# BEFORE rescanning the ELF section names/validating both headers each draw.
+anchor = '''    void *vertex, *pixel;
+} runtime_shader_pairs[2048];'''
+assert native_after.count(anchor) == 1
+native_after = native_after.replace(anchor, '''    void *vertex, *pixel;
+    const uint8_t *vs_header, *vs_code, *ps_header, *ps_code;
+    size_t vs_header_size, vs_code_size, ps_header_size, ps_code_size;
+} runtime_shader_pairs[2048];''')
+anchor = '''    if (runtime_shader_pair_count == sizeof(runtime_shader_pairs) / sizeof(runtime_shader_pairs[0])) {'''
+assert native_after.count(anchor) == 1
+native_after = native_after.replace(anchor, '''    /* NULL API requests lookup only: no unvalidated package may enter cache. */
+    if (!agc)
+        return NULL;
+''' + anchor)
+anchor = '''    memcpy(p.source + p.vs_size, runtime_ps_package, p.ps_size);'''
+assert native_after.count(anchor) == 1
+native_after = native_after.replace(anchor, anchor + '''
+    p.vs_header = p.source + (vs_header - runtime_vs_package);
+    p.vs_code = p.source + (vs_code - runtime_vs_package);
+    p.ps_header = p.source + p.vs_size + (ps_header - runtime_ps_package);
+    p.ps_code = p.source + p.vs_size + (ps_code - runtime_ps_package);
+    p.vs_header_size = vs_header_size;
+    p.vs_code_size = vs_code_size;
+    p.ps_header_size = ps_header_size;
+    p.ps_code_size = ps_code_size;''')
+anchor = '''    if (shader_sections(VS_PACKAGE, VS_PACKAGE_LEN,'''
+assert native_after.count(anchor) == 1
+native_after = native_after.replace(anchor, '''    int shader_packages_cached = 0;
+#if defined(PS5_NATIVE_TITLE_RUNTIME) && defined(PS5_MULTIDRAW_BATCH) && \\
+    !defined(AGC_RUNTIME_DIAGNOSTICS) && !defined(AGC_TRIANGLE_NEGATIVE_PACKAGE)
+    if (!runtime_hs_package) {
+        prepared = runtime_shader_pair_get(NULL, 0,
+            NULL, 0, NULL, 0, NULL, 0, NULL, 0);
+        if (prepared) {
+            vs_header = prepared->vs_header; vs_header_size = prepared->vs_header_size;
+            vs_code = prepared->vs_code; vs_code_size = prepared->vs_code_size;
+            ps_header = prepared->ps_header; ps_header_size = prepared->ps_header_size;
+            ps_code = prepared->ps_code; ps_code_size = prepared->ps_code_size;
+            shader_packages_cached = 1;
+        }
+    }
+#endif
+    if (!shader_packages_cached && (shader_sections(VS_PACKAGE, VS_PACKAGE_LEN,''')
+anchor = '''                        &ps_code, &ps_code_size) != 0) {'''
+assert native_after.count(anchor) == 1
+native_after = native_after.replace(anchor, '''                        &ps_code, &ps_code_size) != 0)) {''')
+anchor = '''    if (validate_shader_header(vs_header, vs_header_size, vs_code_size, 2) ||
+        validate_shader_header(ps_header, ps_header_size, ps_code_size, 1)) {'''
+assert native_after.count(anchor) == 1
+native_after = native_after.replace(anchor, '''    if (!shader_packages_cached &&
+        (validate_shader_header(vs_header, vs_header_size, vs_code_size, 2) ||
+         validate_shader_header(ps_header, ps_header_size, ps_code_size, 1))) {''')
+anchor = '''        prepared = runtime_shader_pair_get(&agc, direct_limit,'''
+assert native_after.count(anchor) == 1
+native_after = native_after.replace(anchor, '''        if (!prepared)
+            prepared = runtime_shader_pair_get(&agc, direct_limit,''')
+(out / 'ps5_agc_native_runtime.c').write_bytes(native_after.encode())
 patch = ''.join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
     fromfile='a/src/gallium/ps5/ps5_screen.c', tofile='b/src/gallium/ps5/ps5_screen.c'))
+patch += ''.join(difflib.unified_diff(native_before.splitlines(True), native_after.splitlines(True),
+    fromfile='a/src/platform/ps5_agc_native_runtime.c', tofile='b/src/platform/ps5_agc_native_runtime.c'))
 (out / 'smooth-legacy-batching.patch').write_bytes(patch.encode())
 (out / 'check-policy.c').write_text('''#include <assert.h>
 #include <stdbool.h>

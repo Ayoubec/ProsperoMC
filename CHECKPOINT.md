@@ -465,3 +465,54 @@ Once requested treat the app as potentially running: need fresh close before
 any further console mutation. Read-only logs remain authorized. The current
 native/graphics source, artifacts and staged modules all match (no stale
 experimental SDK now). Preserve three pre-existing deleted artwork source PNGs.
+
+
+## Shader-layout cache follow-up - build running
+
+User confirms launcher mouse works. Production retest, same1440p settings:
+wandering25-35 then33-45FPS, stationary44-56, fastmouse~33, F3 16-32,
+16chunks13-23; sky120 thenterrain33 (no return-to-terrain10FPS persistence
+in this retest). User explicitly closed ProsperoMC; scope allows replacement.
+Fresh read-only diagnostics: artifacts/console-production-retest, game session1.
+Receipt confirms profile0, descriptorhits10801992/misses4658247, cache retained768;
+no allocation failures. Pair cache nearshutdown:5200000lookups,5199964hot hits,
+35entries,~1.23MB. Nearly every native draw still parses/validates both shader
+packages BEFORE checking the paircache. This is redundant even on a cachehit.
+
+Prepared sourcepatch now includes native runtime as well as driver. Native pair
+stores validated section pointers/sizes inside its OWNED package snapshot.
+Lookup-only call (NULL API) retains full pointer/size/topology/byte comparisons
+and cannot allocate an unvalidated entry. Main tries this lookup before parsing;
+only byte-identical cachehits skip parse/header validation. Mutation/addressreuse
+still takes original path. Hull/tessellation, diagnostic and negative-package
+paths retain existing parsing. GPU batches, submit, flush and retirement logic
+are unchanged. No ASYNC_NATIVE_PREP enabled. Native two-worker mode exists in
+upstream source but is experimental, busy-spins and pins cores10/12; do not
+blindly enable it. Root command-generation costs remain another possible target.
+
+Generated actual lookup/layout-assignment/main-routing plus actual ELF parser/
+header validation tests PASS:10000 warm draws dozero parses/validations, mutated
+VS/PS bytes, malformed ELF, wrongstage andtopologychanges runoriginalguards.
+Descriptor ownership testPASS. CompiledBGRA andarchiveonly2objectchecksPASS.
+Buildsession3403 is still buildingWine afterdrivercomplete/HOST_WINE_TOOLS_READY.
+Do notstage until it completes. No newmodule uploaded yet. Current PS5win32u
+still5ef251df23c2e00f85478c54a2cd7015d8a12b2e5b7449323579991e6b52a11b;
+EBOOT5c1c679ed0c75e64329a0387830f06db285569b24b15cf898c52dde588314759.
+Newsourcepatchf5c0bf8e0c3e8ce98ba926c7a6745ab0a8a740f81fa06dcb8b788ca7705bd505;
+SDKd86909d374d310fac2fe0603f67271356e40d1daaed477f629a6113671352352;
+archiveb0012defb867050d2f7cd1aeec698c4e4a39bf768c3257bb78abfb394d8e3e53.
+README/versions/provenance pending edits reflect follow-up. Automatic build
+checks added for shadercache anddescriptorretirement. Next: wait3403, stage
+win32u, ELFcomparisonviewonlywin32u, scopedgraphicsupload+readback, checkpoint,
+commit/push, samecameraF3on/off8/16chunkretest. Freshclose after requestingtest.
+
+
+Shader-cache build3403 completed successfully; WIN32U_GRAPHICS_BUILD_COMPLETE.
+PRX status/imports/rawsyscall/unbound checksPASS. Stage validationPASS; source
+patch/provenance/compiledcapability hashesmatch. Win32u-onlyELFcomparisonview
+finished. Scopedgraphics-onlyupload completed andexecutable+bothreports readback
+verified. Newwin32u:
+859f900e191e97780b1110d546043e87fbddba820fb12db676d727a52b306719
+Native/JAR/Java/ntdll/worlds/options unchanged. Async retest asked for same
+1440p8chunks withF3off/on, then16chunks, settled30seconds, leaveopenforlogs.
+NoFPScandidategain claimed; usermustfreshclosebeforefurtherconsolemutation.

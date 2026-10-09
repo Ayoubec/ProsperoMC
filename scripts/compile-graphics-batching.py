@@ -89,6 +89,7 @@ if source_ready:
     cross = work / 'prospero.ini'
     if not cross.exists():
         cross.write_text((payload / 'toolchain/prospero.ini').read_text().replace('@DIRNAME@',str(payload / 'toolchain')).replace('[target_machine]','[host_machine]'))
+shutil.copy2(out / 'ps5_agc_native_runtime.c',source / 'src/platform/ps5_agc_native_runtime.c')
 
 targets = subprocess.check_output(['ninja','-C',str(build),'-t','targets','all'],text=True)
 headers = [line.partition(': ')[0] for line in targets.splitlines() if line.partition(': ')[0].endswith('.h')]
@@ -98,6 +99,8 @@ compiler_headers = ['src/amd/common/amdgfxregs.h','src/amd/common/sid_tables.h',
     'src/compiler/nir/nir_intrinsics_indices.h']
 run(['make','-C',psbc,'-f',source / 'toolchain/Makefile.opengnm-psbc-ps5','-j8',*compiler_headers],
     env=dict(os.environ,PS5_PAYLOAD_SDK=str(payload)))
+run([sys.executable,root / 'scripts/check-shader-layout-cache.py'])
+run([sys.executable,root / 'scripts/check-descriptor-retirement.py'])
 run(['gcc','-O2',out / 'check-policy.c','-o',work / 'check-policy'])
 with (out / 'policy-check.log').open('w') as log:
     run([work / 'check-policy'],stdout=log)
@@ -115,8 +118,8 @@ cache_id = hashlib.sha256((out / 'ps5_screen.c').read_bytes()+(ci / 'sdk/lib/lib
 (work / 'shader-cache-build-id.h').write_text('#define PS5_SHADER_CACHE_BUILD_ID "'+cache_id+'"\n')
 run([payload / 'bin/prospero-clang',*flags,'-I'+str(build / 'src/compiler'),'-include',work / 'shader-cache-build-id.h',
      '-I'+str(source / 'src/platform'),'-c',source / 'src/gallium/ps5/ps5_screen.c','-o',work / 'ps5_screen.o'])
-# The backend includes the native runtime. Match its profiling configuration to
-# the draw driver, using the verified source and the original entry-point rename.
+# The backend includes the patched native runtime. Match its profiling
+# configuration to the draw driver and retain the original entry-point rename.
 run([payload / 'bin/prospero-clang',*flags,'-I'+str(build / 'src/compiler'),
      '-I'+str(source / 'src/platform'),'-Wno-error=unused-function',
      '-Dmain=ps5_agc_gate2_run','-DAGC_TRIANGLE_SUBMIT=1','-DAGC_RUNTIME_PACKAGES=1',
@@ -141,7 +144,7 @@ provenance.update(version=provenance['version']+'-prosperomc-quad-batching',
     sdk_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
     runtime_archive_sha256=hashlib.sha256(runtime.read_bytes()).hexdigest(),
     local_patch={'file':'smooth-legacy-batching.patch','sha256':patch_hash,
-                 'description':'Retain legacy batching and owned-buffer fixes; recycle retired synchronous descriptors, log only batch errors, and ' + ('enable diagnostic profiling' if profile else 'disable hot-path profiling') + ' in the draw driver and native backend'},
+                 'description':'Retain legacy batching and owned-buffer fixes; recycle retired descriptors, reuse byte-verified shader section layouts, log only batch errors, and ' + ('enable diagnostic profiling' if profile else 'disable hot-path profiling') + ' in the draw driver and native backend'},
     draw_profile=profile,
     runtime_config_sha256=hashlib.sha256((out / 'runtime-config.txt').read_bytes()).hexdigest(),
     hardware_validation='pending console retest of modified draw driver')

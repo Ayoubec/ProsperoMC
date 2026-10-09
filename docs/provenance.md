@@ -45,7 +45,7 @@ also uses batching. Geometry shaders, transform feedback and active occlusion
 are excluded from the new quad path.
 The source patch is staged in `WINE_PATCHES/smooth-legacy-batching.patch` and
 recorded in `versions.lock` and the stage report. The production update also
-recompiles `ps5_agc_runtime_backend.o` from the unchanged verified source with
+recompiles `ps5_agc_runtime_backend.o` from the verified source with
 `PS5_DRAW_PROFILE` disabled, matching the draw driver. All other runtime objects
 and the compiled shader compiler library remain byte-identical to the CI SDK.
 Host policy and compiled texture-capability checks pass. The console retest
@@ -78,6 +78,17 @@ groups no longer write a log line each time. Per-draw and cache profiling is
 disabled in both compiled objects; errors and lifecycle receipts remain enabled.
 Set `PROSPEROMC_DRAW_PROFILE=1` when building a diagnostic renderer. These are
 verified code-path fixes; their FPS gain still requires a console retest.
+
+The production retest reports 25-45 FPS while wandering and 44-56 while still
+at 1440p/8 chunks; F3 lowers this to 16-32 and 16 chunks gives 13-23. Native
+logs confirm profiling is off and 5,199,964 of 5,200,000 shader-pair lookups hit
+the hot cache. The next patch checks that existing byte-verified cache before
+parsing and validating the packages, and stores the validated section layout
+inside its owned package snapshot. Changed/reused package bytes still undergo
+original parsing and validation; no GPU ownership or batching logic changes.
+The real generated matching and routing code passes 10,000 warm-cache draws
+without parsing, plus mutation, malformed-ELF, stage and topology tests. The
+performance gain from this follow-up still requires a console retest.
 
 Mouse-wheel support extends the existing motion event's code field, retaining
 the deployed ntdll queue layout and validator. Patch 0671 sends a normal Windows

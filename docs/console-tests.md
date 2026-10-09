@@ -181,3 +181,13 @@ retirement ownership, input and resource-publication checks pass. New graphics
 and native launcher executables were uploaded and their executable contents
 verified over FTP. Launcher mouse selection/scrolling and stick navigation pass
 host checks. Console FPS gain and device behavior await the user's retest.
+
+
+Production retest: launcher mouse confirmed working; 1440p/8 chunks gives
+25-45 FPS wandering and 44-56 still, F3 16-32, 16 chunks 13-23. Sky reaches120
+and returning to terrain gives33. The native cache logs 5,199,964 hot hits from
+5,200,000 lookups. Follow-up skips redundant shader package parsing only after
+full byte verification against the cache's owned snapshot. Actual matching,
+parser, stage-validation and routing tests pass, including mutated and malformed
+packages. The module rebuild, compiled capabilities and archive checks pass;
+FTP executable contents and both reports verified. Gain awaits console retest.
