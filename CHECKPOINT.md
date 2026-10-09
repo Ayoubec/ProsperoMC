@@ -375,3 +375,11 @@ renderDistance10,fullscreentrue,enableVsyncfalse,useVbotrue. Nooptionchangesmade
 Inspectednativependingflip-marker gate; thiscandidate doesnotalterpresenter.
 Need FPS/visualretest1440p8/16chunks plusF3on/off andflickerclassification; do not
 claimflickerfixed orblindlyforce60Hz/VSync withoutunderstandingobservedartifact.
+
+Flickeranswer: slight veryrapid pulsevisibleonbright sky/sand, especially~20FPS,
+no tearing; monitorFreeSyncON. Refresh-relatedbrightnessflicker isahypothesis,
+notconfirmed. UsercomparisonFreeSyncoff requestedbeforefurtherpresenterchanges.
+Currentmodule2d25202uploaded/readbackverified; sourcecommitted/pushed0739bf5.
+NeedretestFPSwithF3on/offand8/16chunks plusflickerwithFreeSyncoff; leavegameopen
+forfreshlogs. Latestclosurewasexplicitafteruserreopenedmidbuild. Afternewtest
+requesttreatgamepotentiallyrunning; requirefreshclosebeforeanyfurtherwrites.
