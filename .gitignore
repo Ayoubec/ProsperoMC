@@ -5,8 +5,20 @@
 .local/
 .deps/
 .env
+.env.*
+!.env.example
+accounts.json
+auth.json
+tokens.json
+accounts.properties
+artifacts/
+game-data/
+imports/
 __pycache__/
 *.pyc
+*.hprof
+hs_err_pid*
+replay_pid*
 build/
 dist/
 **/bin/
@@ -21,3 +33,6 @@ dist/
 *.sprx
 *.prx
 *.pkg
+*.jar
+launcher_accounts.json
+launcher_profiles.json

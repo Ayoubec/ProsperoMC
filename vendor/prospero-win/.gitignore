@@ -1,0 +1,14 @@
+.deps/
+build/
+dist/
+release/
+dev.conf
+__pycache__/
+
+# Windows binaries are never inputs to this repository. Games, third-party
+# DLLs and any staged sample are read from a private path at build time.
+*.exe
+*.dll
+*.ocx
+*.sys
+*.mui

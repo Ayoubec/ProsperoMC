@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prospero-win.invalid/schema/wine-runtime-manifest/1",
+  "title": "prospero-win staged i386 Wine runtime manifest",
+  "description": "Identity of one staged Wine PE runtime: the pinned source revision, the normalised build environment and the exact bytes of every selected module. tools/validate_wine_runtime.py is the reference validator; the fields here are the contract it enforces.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "wine", "target", "build", "modules", "distribution_sha256"],
+  "properties": {
+    "schema": {
+      "const": "prospero-win-wine-runtime-manifest/1"
+    },
+    "wine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "version", "source_url", "clean"],
+      "properties": {
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "description": "Exact Wine revision the modules were built from."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Wine's own version string, e.g. \"Wine version 11.17\"."
+        },
+        "source_url": {
+          "type": "string",
+          "description": "Where a second developer obtains that revision."
+        },
+        "clean": {
+          "const": true,
+          "description": "The build refuses a dirty checkout, so this is always true."
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["architecture", "pe_magic", "library"],
+      "properties": {
+        "architecture": {"const": "i386"},
+        "pe_magic": {"const": "pe32"},
+        "subsystem": {"type": "string"},
+        "library": {
+          "type": "string",
+          "pattern": "^[a-z0-9._/-]+$",
+          "description": "Path of the staging library inside the distribution."
+        }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["configure", "environment", "tools"],
+      "properties": {
+        "configure": {
+          "type": "string",
+          "description": "Exact configure arguments used for the out-of-tree build."
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["LC_ALL", "TZ", "SOURCE_DATE_EPOCH"],
+          "properties": {
+            "LC_ALL": {"type": "string"},
+            "TZ": {"type": "string"},
+            "SOURCE_DATE_EPOCH": {"type": "string"}
+          }
+        },
+        "tools": {
+          "type": "object",
+          "additionalProperties": {"type": "string"},
+          "description": "Version line of every tool that can change the bytes."
+        }
+      }
+    },
+    "modules": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Sorted by canonical name; names must be unique and lowercase.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "path", "size", "sha256", "pe_machine"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,62}\\.dll$"
+          },
+          "path": {
+            "type": "string",
+            "description": "Relative, traversal-free path inside the distribution."
+          },
+          "size": {"type": "integer", "minimum": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "pe_machine": {
+            "const": 332,
+            "description": "IMAGE_FILE_MACHINE_I386."
+          },
+          "pe_magic": {"const": 267, "description": "PE32 optional header magic."},
+          "subsystem": {"type": "string"}
+        }
+      }
+    },
+    "distribution_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 over the sorted \"name<TAB>size<TAB>sha256\\n\" lines of the module list, so the aggregate identity is reproducible from the manifest alone."
+    }
+  }
+}

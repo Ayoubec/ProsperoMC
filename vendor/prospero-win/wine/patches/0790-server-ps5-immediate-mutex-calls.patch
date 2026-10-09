@@ -1,0 +1,355 @@
+From: Codex <codex@localhost>
+Subject: [PATCH] server, ntdll: opt-in immediate mutex calls in process
+
+For an immediately available ordinary mutex, use its authoritative server
+object under the existing server lock without request-union marshalling or
+select waiter allocation. Try the lock once; every ineligible operation
+falls back without changing mutex state. Preserve native signal masking,
+handle access, object references, ownership lists, recursion and abandonment.
+
+Default off: enable WINE_PS5_MUTEX_FAST=1 or a prefix-local pw_mutex_fast
+file containing 1, with client-thread requests enabled.
+This leaves the accepted 0770 gate and lock implementation unchanged.
+Advisory non-mutex hints skip at most 63 calls before rechecking, and only
+select the ordinary wait path. Immediate operations take one monotonic
+watchdog timestamp; the server loop keeps its existing shared-time cadence.
+Performance and complete Wine/PS5 compatibility require owner validation.
+
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 340cbfb..86f8a96 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -320,6 +320,46 @@ ULONGLONG ps5_now_us(void)
+ #ifdef WINE_INPROCESS_SERVER
+ /* the in-process server runs some requests on the calling thread */
+ static int (*call_server_direct)( unsigned int tid, client_ptr_t teb, struct __server_request_info *req );
++static int (*try_server_mutex)( unsigned int tid, client_ptr_t teb, obj_handle_t handle,
++                                int release, unsigned int *status, unsigned int *prev_count );
++/* Advisory only: a full handle observed to have another type skips the
++ * optimization and takes the ordinary wait. It never answers a syscall,
++ * retains an object or stores ownership. A stale entry can only lose speed. */
++static unsigned long long nonmutex_hints[64];
++
++/* At most 63 skips after the last observation, then probe again. This also
++ * bounds lost optimization after concurrent close/reuse races. One failed
++ * CAS probes rather than waiting; the hint is never synchronization state. */
++static int server_skip_fast_mutex( obj_handle_t handle )
++{
++    unsigned long long *slot = &nonmutex_hints[(handle >> 2) % ARRAY_SIZE(nonmutex_hints)];
++    unsigned long long hint = __atomic_load_n( slot, __ATOMIC_RELAXED );
++    if (!handle || (unsigned int)hint != handle || !(hint >> 32)) return 0;
++    return __atomic_compare_exchange_n( slot, &hint, hint - (1ull << 32), 0,
++                                        __ATOMIC_RELAXED, __ATOMIC_RELAXED );
++}
++
++/* The console launcher has no arbitrary environment override. A prefix-local
++ * switch is read once during connection; an explicit environment value wins. */
++static int server_mutex_fast_enabled(void)
++{
++    const char *env = getenv( "WINE_PS5_MUTEX_FAST" );
++    char *path;
++    FILE *file;
++    int enabled = 0, value, end;
++
++    if (env) return !strcmp( env, "1" );
++    if (asprintf( &path, "%s/pw_mutex_fast", config_dir ) == -1) return 0;
++    if ((file = fopen( path, "r" )))
++    {
++        value = fgetc( file );
++        end = fgetc( file );
++        enabled = value == '1' && (end == EOF || (end == '\n' && fgetc( file ) == EOF)) && !ferror( file );
++        fclose( file );
++    }
++    free( path );
++    return enabled;
++}
+
+ /* the TEB this thread gave the server in init_thread or init_process_done */
+ static inline client_ptr_t inprocess_teb(void)
+@@ -331,6 +371,63 @@ static inline client_ptr_t inprocess_teb(void)
+ }
+ #endif
+
++void server_clear_fast_mutex_hint( HANDLE handle )
++{
++#ifdef WINE_INPROCESS_SERVER
++    obj_handle_t h = wine_server_obj_handle( handle );
++    if (!try_server_mutex) return;
++    __atomic_store_n( &nonmutex_hints[(h >> 2) % ARRAY_SIZE(nonmutex_hints)], 0, __ATOMIC_RELAXED );
++#endif
++}
++
++static void server_clear_fast_mutex_hints(void)
++{
++#ifdef WINE_INPROCESS_SERVER
++    unsigned int i;
++    if (!try_server_mutex) return;
++    for (i = 0; i < ARRAY_SIZE(nonmutex_hints); i++)
++        __atomic_store_n( &nonmutex_hints[i], 0, __ATOMIC_RELAXED );
++#endif
++}
++
++/* Return STATUS_NOT_IMPLEMENTED without changing the mutex when disabled,
++ * unavailable or ineligible. All pointers passed across modules refer to
++ * native locals; application memory is read/written outside the server lock. */
++unsigned int server_try_fast_mutex( HANDLE handle, int release, const LARGE_INTEGER *timeout, LONG *prev_count )
++{
++#ifdef WINE_INPROCESS_SERVER
++    struct thread_data *data = get_thread_data();
++    unsigned int status, previous = 0;
++    obj_handle_t h = wine_server_obj_handle( handle );
++    sigset_t old_set;
++    int fallback;
++
++    if (!try_server_mutex || !data->tid) return STATUS_NOT_IMPLEMENTED;
++    if (!release && server_skip_fast_mutex( h )) return STATUS_NOT_IMPLEMENTED;
++    if (!release && timeout)
++    {
++        /* The ordinary wait reads the timeout before acquiring any object,
++         * even if it is ready. Preserve that read on the immediate path.
++         * Readiness wins over an expired timeout in Wine's check_wait. */
++        volatile timeout_t when = timeout->QuadPart;
++        (void)when;
++    }
++    if (pthread_sigmask( SIG_BLOCK, &server_block_set, &old_set )) return STATUS_NOT_IMPLEMENTED;
++    fallback = try_server_mutex( data->tid, inprocess_teb(), h,
++                                 release, &status, &previous );
++    pthread_sigmask( SIG_SETMASK, &old_set, NULL );
++    if (fallback == 2 && !release && h)
++        __atomic_store_n( &nonmutex_hints[(h >> 2) % ARRAY_SIZE(nonmutex_hints)],
++                          (63ull << 32) | h, __ATOMIC_RELAXED );
++    if (!fallback)
++    {
++        if (release && prev_count) *prev_count = 1 - previous;
++        return status;
++    }
++#endif
++    return STATUS_NOT_IMPLEMENTED;
++}
++
+ unsigned int server_call_unlocked( void *req_ptr )
+ {
+     struct thread_data *data = get_thread_data();
+@@ -1524,7 +1621,10 @@ static int connect_inprocess_server(void)
+     /* WINE_PS5_SERVER_DIRECT=0 sends every request through the server thread */
+     p = getenv( "WINE_PS5_SERVER_DIRECT" );
+     if (!p || strcmp( p, "0" )) call_server_direct = dlsym( module, "pw_wineserver_call_direct" );
++    if (call_server_direct && server_mutex_fast_enabled())
++        try_server_mutex = dlsym( module, "pw_wineserver_try_fast_mutex" );
+     fprintf( stderr, "wine-ps5: server requests on client threads: %s\n", call_server_direct ? "on" : "off" );
++    fprintf( stderr, "wine-ps5: immediate mutex calls: %s\n", try_server_mutex ? "on" : "off" );
+     TRACE( "connected to the in-process server %s\n", module_path );
+     free( dir );
+     free( module_path );
+@@ -2025,6 +2125,8 @@ NTSTATUS WINAPI NtDuplicateObject( HANDLE source_process, HANDLE source, HANDLE
+     unsigned int ret;
+     int fd = -1;
+
++    /* Duplication can close a source, reuse a number or rewrite access. */
++    server_clear_fast_mutex_hints();
+     if (dest) *dest = 0;
+
+     if ((options & DUPLICATE_CLOSE_SOURCE) && source_process != NtCurrentProcess())
+@@ -2121,6 +2223,7 @@ NTSTATUS WINAPI NtClose( HANDLE handle )
+     unsigned int ret;
+     int fd;
+
++    server_clear_fast_mutex_hint( handle );
+     if (HandleToLong( handle ) >= ~5 && HandleToLong( handle ) <= ~0)
+         return STATUS_SUCCESS;
+
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index 103be94..a2cb762 100644
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -1298,6 +1298,7 @@ NTSTATUS WINAPI NtCreateMutant( HANDLE *handle, ACCESS_MASK access, const OBJECT
+         req->owned   = owned;
+         wine_server_add_data( req, objattr, len );
+         ret = wine_server_call( req );
++        server_clear_fast_mutex_hint( wine_server_ptr_handle( reply->handle ) );
+         *handle = wine_server_ptr_handle( reply->handle );
+     }
+     SERVER_END_REQ;
+@@ -1327,6 +1328,7 @@ NTSTATUS WINAPI NtOpenMutant( HANDLE *handle, ACCESS_MASK access, const OBJECT_A
+         if (attr->ObjectName)
+             wine_server_add_data( req, attr->ObjectName->Buffer, attr->ObjectName->Length );
+         ret = wine_server_call( req );
++        server_clear_fast_mutex_hint( wine_server_ptr_handle( reply->handle ) );
+         *handle = wine_server_ptr_handle( reply->handle );
+     }
+     SERVER_END_REQ;
+@@ -1346,6 +1348,9 @@ NTSTATUS WINAPI NtReleaseMutant( HANDLE handle, LONG *prev_count )
+     if ((ret = inproc_release_mutex( handle, prev_count )) != STATUS_NOT_IMPLEMENTED)
+         return ret;
+
++    if ((ret = server_try_fast_mutex( handle, 1, NULL, prev_count )) != STATUS_NOT_IMPLEMENTED)
++        return ret;
++
+     SERVER_START_REQ( release_mutex )
+     {
+         req->handle = wine_server_obj_handle( handle );
+@@ -2355,6 +2360,9 @@ NTSTATUS WINAPI NtWaitForSingleObject( HANDLE handle, BOOLEAN alertable, const L
+         return ret;
+     }
+
++    if (!alertable && (ret = server_try_fast_mutex( handle, 0, timeout, NULL )) != STATUS_NOT_IMPLEMENTED)
++        return ret;
++
+     if (alertable) flags |= SELECT_ALERTABLE;
+     select_op.wait.op = SELECT_WAIT;
+     select_op.wait.handles[0] = wine_server_obj_handle( handle );
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 9dacc72..ec93497 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -245,6 +245,9 @@ extern ULONG_PTR redirect_arm64ec_rva( void *module, ULONG_PTR rva, const IMAGE_
+ extern void start_server( BOOL debug );
+
+ extern unsigned int server_call_unlocked( void *req_ptr );
++extern unsigned int server_try_fast_mutex( HANDLE handle, int release, const LARGE_INTEGER *timeout,
++                                           LONG *prev_count );
++extern void server_clear_fast_mutex_hint( HANDLE handle );
+ extern void server_enter_uninterrupted_section( pthread_mutex_t *mutex, sigset_t *sigset );
+ extern int ps5_slow_log(void);
+ extern ULONGLONG ps5_now_us(void);
+diff --git a/server/mutex.c b/server/mutex.c
+index ead214b..c947303 100644
+--- a/server/mutex.c
++++ b/server/mutex.c
+@@ -182,6 +182,42 @@ static const struct object_ops mutex_ops =
+     .destroy  = mutex_destroy,
+ };
+
++#ifdef WINE_INPROCESS_SERVER
++/* Called with the server lock held. No cached handles, second ownership
++ * state or waiter registration: the existing server object remains the
++ * authority for aliases, handle closure and thread-exit abandonment. */
++int try_fast_mutex( struct thread *thread, obj_handle_t handle, int release, unsigned int *prev_count )
++{
++    struct mutex *mutex;
++    struct mutex_sync *sync;
++    int handled = 0;
++
++    if (!(mutex = (struct mutex *)get_handle_obj( thread->process, handle,
++                                                release ? 0 : SYNCHRONIZE, &mutex_ops ))) return 0;
++    if (mutex->sync->ops != &mutex_sync_ops) goto done;
++    sync = (struct mutex_sync *)mutex->sync;
++
++    /* Let select handle abandonment and every existing waiter, including
++     * wait-all and other processes. A final release may then wake them. */
++    if (sync->abandoned || !list_empty( &sync->obj.wait_queue )) goto done;
++    if (release)
++    {
++        if (!sync->count || sync->owner != thread) goto done;
++        *prev_count = sync->count;
++        handled = do_release( sync, thread, 1 );
++    }
++    else
++    {
++        if (sync->count == ~0u || (sync->count && sync->owner != thread)) goto done;
++        do_grab( sync, thread );
++        handled = 1;
++    }
++done:
++    release_object( mutex );
++    return handled;
++}
++#endif
++
+ void abandon_mutexes( struct thread *thread )
+ {
+     struct list *ptr;
+diff --git a/server/request.c b/server/request.c
+index 6f68d95..344dc27 100644
+--- a/server/request.c
++++ b/server/request.c
+@@ -312,6 +312,55 @@ static void call_req_handler( struct thread *thread )
+ }
+
+ #ifdef WINE_INPROCESS_SERVER
++/* The caller blocks server signals, just as wine_server_call does. Return
++ * 0 only after an immediately successful operation, 2 for an observed
++ * non-mutex type, otherwise 1. Fallback never mutates a mutex. Try once:
++ * a busy or disabled server takes the existing
++ * request path, without adding a startup lock wait or changing its gate. */
++DECLSPEC_EXPORT int pw_wineserver_try_fast_mutex( unsigned int tid, client_ptr_t teb, obj_handle_t handle,
++                                                int release, unsigned int *status, unsigned int *prev_count )
++{
++    struct thread *thread;
++    unsigned int saved_error, saved_global_error;
++    int ret = 1;
++
++    if (release != 0 && release != 1) return 1;
++    if (pthread_mutex_trylock( &inprocess_server_mutex )) return 1;
++    saved_global_error = global_error;
++    if (!inprocess_direct_ok || current || debug_level) goto unlock;
++    if (!(thread = get_thread_from_id( tid ))) goto unlock;
++    if (thread->teb == teb && teb && thread->state != TERMINATED && thread->reply_fd &&
++        !thread->req_toread && !thread->reply_towrite && !thread->req_data && !thread->reply_data &&
++        thread_can_fast_mutex( thread ))
++    {
++        saved_error = thread->error;
++        current = thread;
++        clear_error();
++        if (try_fast_mutex( thread, handle, release, prev_count ))
++        {
++            thread->ps5_last_req = release ? REQ_release_mutex : REQ_select;
++            /* No timeout or queued waiter is changed by this path. The main
++             * loop maintains shared time at its existing 16 ms cadence.
++             * Take only the watchdog timestamp here, without gettimeofday
++             * or republishing all of KUSER_SHARED_DATA on every mutex op. */
++            thread->ps5_last_req_time = monotonic_counter();
++            *status = STATUS_SUCCESS;
++            ret = 0;
++        }
++        else
++        {
++            if (get_error() == STATUS_OBJECT_TYPE_MISMATCH) ret = 2;
++            thread->error = saved_error;
++        }
++        current = NULL;
++    }
++    release_object( thread );
++unlock:
++    if (ret) global_error = saved_global_error;
++    pthread_mutex_unlock( &inprocess_server_mutex );
++    return ret;
++}
++
+ /* Requests a client thread may run itself: they act on sync objects,
+  * handles and file opens, and never sleep in the server (a wait that cannot
+  * be satisfied returns STATUS_PENDING, and the thread then sleeps on its wait
+diff --git a/server/request.h b/server/request.h
+index 55ac3a9..671ce2f 100644
+--- a/server/request.h
++++ b/server/request.h
+@@ -67,6 +67,8 @@ extern const char *inprocess_nls_dir;
+ extern pthread_mutex_t inprocess_server_mutex;
+ extern int inprocess_direct_ok;
+ extern int inprocess_wake_fd;
++extern int thread_can_fast_mutex( struct thread *thread );
++extern int try_fast_mutex( struct thread *thread, obj_handle_t handle, int release, unsigned int *prev_count );
+ #endif
+ extern void open_master_socket(void);
+ extern void close_master_socket( timeout_t timeout );
+diff --git a/server/thread.c b/server/thread.c
+index 5f4c432..0872dad 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -400,6 +400,16 @@ static inline int is_thread_suspended( struct thread *thread )
+     return !thread->bypass_proc_suspend && thread->process->suspend;
+ }
+
++#ifdef WINE_INPROCESS_SERVER
++/* A typed mutex call cannot deliver APCs or a suspend context. Keep those
++ * operations, nested waits and suspended callers on the ordinary path. */
++int thread_can_fast_mutex( struct thread *thread )
++{
++    return !thread->wait && !thread->context && !is_thread_suspended( thread ) &&
++           list_empty( &thread->system_apc ) && list_empty( &thread->user_apc );
++}
++#endif
++
+ /* check if address looks valid for a client-side data structure (TEB etc.) */
+ static inline int is_valid_address( client_ptr_t addr )
+ {

@@ -1,0 +1,384 @@
+{
+  "pe": {
+    "image_base": "01000000",
+    "text_rva": "00001000"
+  },
+  "privacy": "identities, public symbols and aggregate public-source references only",
+  "provenance": {
+    "license": "MIT",
+    "maintained_commit": "cb9b7b886244a27773f66b0b19fdc2998392565e",
+    "pdb_age": 2,
+    "pdb_guid": "1C24FD97-10EA-CC4F-8960-A06F3BABE841",
+    "win32_oracle_commit": "6756c54d3b17bf41cab82a822125140aed2e3120"
+  },
+  "public_symbol_addresses": {
+    "_WinMain@16": "0100833a",
+    "_WinMainCRTStartup": "01020f95",
+    "_message_handler@16": "01007a3e",
+    "_options_get_int@12": "01003588",
+    "_options_get_string@20": "01003601",
+    "_options_path@4": "01003503",
+    "_options_path_free@0": "0100356c",
+    "_options_path_init@4": "010034b6",
+    "_options_path_uninit@0": "010034e7",
+    "_options_set_int@12": "0100367c"
+  },
+  "repository": "https://github.com/k4zmu2a/SpaceCadetPinball",
+  "schema": "pw-source-oracle/1",
+  "source_groups": {
+    "audio": {
+      "api_references": [
+        {
+          "api": "waveOutOpen",
+          "files": [
+            "SpaceCadetPinball/WaveMix.cpp"
+          ],
+          "occurrences": 2
+        },
+        {
+          "api": "waveOutPrepareHeader",
+          "files": [
+            "SpaceCadetPinball/WaveMix.cpp"
+          ],
+          "occurrences": 1
+        },
+        {
+          "api": "waveOutWrite",
+          "files": [
+            "SpaceCadetPinball/WaveMix.cpp"
+          ],
+          "occurrences": 2
+        },
+        {
+          "api": "waveOutPause",
+          "files": [
+            "SpaceCadetPinball/WaveMix.cpp"
+          ],
+          "occurrences": 2
+        },
+        {
+          "api": "waveOutRestart",
+          "files": [
+            "SpaceCadetPinball/WaveMix.cpp"
+          ],
+          "occurrences": 4
+        },
+        {
+          "api": "waveOutReset",
+          "files": [
+            "SpaceCadetPinball/WaveMix.cpp"
+          ],
+          "occurrences": 1
+        },
+        {
+          "api": "waveOutUnprepareHeader",
+          "files": [
+            "SpaceCadetPinball/WaveMix.cpp"
+          ],
+          "occurrences": 1
+        },
+        {
+          "api": "waveOutClose",
+          "files": [
+            "SpaceCadetPinball/WaveMix.cpp"
+          ],
+          "occurrences": 2
+        },
+        {
+          "api": "waveOutGetPosition",
+          "files": [
+            "SpaceCadetPinball/WaveMix.cpp"
+          ],
+          "occurrences": 2
+        },
+        {
+          "api": "mciSendCommandA",
+          "files": [
+            "SpaceCadetPinball/midi.cpp"
+          ],
+          "occurrences": 5
+        },
+        {
+          "api": "sndPlaySoundA",
+          "files": [
+            "SpaceCadetPinball/WaveMix.cpp"
+          ],
+          "occurrences": 1
+        }
+      ],
+      "files": [
+        "SpaceCadetPinball/Sound.cpp",
+        "SpaceCadetPinball/WaveMix.cpp",
+        "SpaceCadetPinball/midi.cpp"
+      ]
+    },
+    "graphics": {
+      "api_references": [
+        {
+          "api": "BitBlt",
+          "files": [
+            "SpaceCadetPinball/splash.cpp"
+          ],
+          "occurrences": 4
+        },
+        {
+          "api": "StretchDIBits",
+          "files": [
+            "SpaceCadetPinball/gdrv.cpp"
+          ],
+          "occurrences": 3
+        },
+        {
+          "api": "CreateCompatibleBitmap",
+          "files": [
+            "SpaceCadetPinball/splash.cpp"
+          ],
+          "occurrences": 1
+        },
+        {
+          "api": "CreateCompatibleDC",
+          "files": [
+            "SpaceCadetPinball/splash.cpp"
+          ],
+          "occurrences": 1
+        },
+        {
+          "api": "CreateDIBitmap",
+          "files": [
+            "SpaceCadetPinball/splash.cpp"
+          ],
+          "occurrences": 1
+        },
+        {
+          "api": "CreatePalette",
+          "files": [
+            "SpaceCadetPinball/gdrv.cpp",
+            "SpaceCadetPinball/splash.cpp"
+          ],
+          "occurrences": 3
+        },
+        {
+          "api": "SelectObject",
+          "files": [
+            "SpaceCadetPinball/fullscrn.cpp",
+            "SpaceCadetPinball/splash.cpp"
+          ],
+          "occurrences": 4
+        },
+        {
+          "api": "SelectPalette",
+          "files": [
+            "SpaceCadetPinball/gdrv.cpp",
+            "SpaceCadetPinball/splash.cpp"
+          ],
+          "occurrences": 10
+        },
+        {
+          "api": "SetPaletteEntries",
+          "files": [
+            "SpaceCadetPinball/gdrv.cpp",
+            "SpaceCadetPinball/splash.cpp"
+          ],
+          "occurrences": 3
+        },
+        {
+          "api": "RealizePalette",
+          "files": [
+            "SpaceCadetPinball/gdrv.cpp",
+            "SpaceCadetPinball/splash.cpp"
+          ],
+          "occurrences": 9
+        },
+        {
+          "api": "GetDC",
+          "files": [
+            "SpaceCadetPinball/gdrv.cpp",
+            "SpaceCadetPinball/splash.cpp"
+          ],
+          "occurrences": 5
+        },
+        {
+          "api": "ReleaseDC",
+          "files": [
+            "SpaceCadetPinball/fullscrn.cpp",
+            "SpaceCadetPinball/gdrv.cpp",
+            "SpaceCadetPinball/splash.cpp"
+          ],
+          "occurrences": 11
+        }
+      ],
+      "files": [
+        "SpaceCadetPinball/fullscrn.cpp",
+        "SpaceCadetPinball/gdrv.cpp",
+        "SpaceCadetPinball/splash.cpp"
+      ]
+    },
+    "message_input": {
+      "api_references": [
+        {
+          "api": "PeekMessageA",
+          "files": [
+            "SpaceCadetPinball/winmain.cpp"
+          ],
+          "occurrences": 2
+        },
+        {
+          "api": "GetMessageA",
+          "files": [
+            "SpaceCadetPinball/winmain.cpp"
+          ],
+          "occurrences": 1
+        },
+        {
+          "api": "TranslateMessage",
+          "files": [
+            "SpaceCadetPinball/winmain.cpp"
+          ],
+          "occurrences": 2
+        },
+        {
+          "api": "DispatchMessageA",
+          "files": [
+            "SpaceCadetPinball/winmain.cpp"
+          ],
+          "occurrences": 2
+        },
+        {
+          "api": "PostQuitMessage",
+          "files": [
+            "SpaceCadetPinball/winmain.cpp"
+          ],
+          "occurrences": 2
+        },
+        {
+          "api": "GetCursorPos",
+          "files": [
+            "SpaceCadetPinball/winmain.cpp"
+          ],
+          "occurrences": 1
+        },
+        {
+          "api": "SetCursorPos",
+          "files": [
+            "SpaceCadetPinball/winmain.cpp"
+          ],
+          "occurrences": 1
+        },
+        {
+          "api": "SetCapture",
+          "files": [
+            "SpaceCadetPinball/winmain.cpp"
+          ],
+          "occurrences": 1
+        },
+        {
+          "api": "ReleaseCapture",
+          "files": [
+            "SpaceCadetPinball/winmain.cpp"
+          ],
+          "occurrences": 1
+        }
+      ],
+      "files": [
+        "SpaceCadetPinball/winmain.cpp"
+      ]
+    },
+    "startup": {
+      "api_references": [
+        {
+          "api": "RegCreateKeyExA",
+          "files": [
+            "SpaceCadetPinball/options.cpp"
+          ],
+          "occurrences": 4
+        },
+        {
+          "api": "RegQueryValueExA",
+          "files": [
+            "SpaceCadetPinball/options.cpp"
+          ],
+          "occurrences": 2
+        },
+        {
+          "api": "RegSetValueExA",
+          "files": [
+            "SpaceCadetPinball/options.cpp"
+          ],
+          "occurrences": 2
+        },
+        {
+          "api": "RegCloseKey",
+          "files": [
+            "SpaceCadetPinball/options.cpp"
+          ],
+          "occurrences": 4
+        },
+        {
+          "api": "LoadStringA",
+          "files": [
+            "SpaceCadetPinball/pinball.cpp"
+          ],
+          "occurrences": 2
+        },
+        {
+          "api": "RegisterWindowMessageA",
+          "files": [
+            "SpaceCadetPinball/winmain.cpp"
+          ],
+          "occurrences": 1
+        },
+        {
+          "api": "FindWindowA",
+          "files": [
+            "SpaceCadetPinball/winmain.cpp"
+          ],
+          "occurrences": 1
+        },
+        {
+          "api": "RegisterClassA",
+          "files": [
+            "SpaceCadetPinball/winmain.cpp"
+          ],
+          "occurrences": 1
+        },
+        {
+          "api": "CreateWindowExA",
+          "files": [
+            "SpaceCadetPinball/winmain.cpp"
+          ],
+          "occurrences": 1
+        },
+        {
+          "api": "ShowWindow",
+          "files": [
+            "SpaceCadetPinball/winmain.cpp"
+          ],
+          "occurrences": 2
+        },
+        {
+          "api": "UpdateWindow",
+          "files": [
+            "SpaceCadetPinball/winmain.cpp"
+          ],
+          "occurrences": 1
+        },
+        {
+          "api": "timeGetTime",
+          "files": [
+            "SpaceCadetPinball/winmain.cpp"
+          ],
+          "occurrences": 7
+        }
+      ],
+      "files": [
+        "SpaceCadetPinball/options.cpp",
+        "SpaceCadetPinball/pinball.cpp",
+        "SpaceCadetPinball/winmain.cpp"
+      ]
+    }
+  },
+  "target": {
+    "sha1": "2a5b525e0f631bb6107639e2a69df15986fb0d05",
+    "sha256": "2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc"
+  }
+}

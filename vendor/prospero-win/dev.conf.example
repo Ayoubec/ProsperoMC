@@ -1,0 +1,10 @@
+# Copy to dev.conf for local builds and pass it as PS5LOG_DEV_CONF. The real
+# file is git-ignored: never commit a workstation address, and never let a
+# binary embed one.
+DEV_ENABLED=1
+DEV_SERVER=REPLACE_WITH_PC_IPV4
+DEV_PORT=9300
+DEV_UDP=0
+DEV_CONNECT_TIMEOUT_MS=500
+DEV_SEND_TIMEOUT_MS=200
+DEV_TAG=prospero-win-pe-map

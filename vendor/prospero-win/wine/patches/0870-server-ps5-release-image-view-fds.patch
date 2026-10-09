@@ -1,0 +1,253 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: prospero-win <prospero-win@invalid>
+Subject: [PATCH] server: Opt in to releasing view-only image backing descriptors.
+
+Completed unshared image views retain sharing/name/address metadata after
+all mapping objects close. Release their native descriptor only when every
+remaining FD object reference is an eligible view and no lock, delete,
+async, completion or active poll dependency exists. Live mapping objects
+keep their descriptor for later views. Data/shared/anonymous mappings are
+unchanged. Late debugger events for released metadata have no file handle;
+never reopen a pathname that may now identify a different file.
+
+Default off: WINE_PS5_IMAGE_VIEW_FD_RELEASE=1 or a prefix-local
+pw_image_view_fd_release containing exactly 1 with optional newline.
+---
+--- a/server/fd.c
++++ b/server/fd.c
+@@ -1900,33 +1900,105 @@
+     else if ((fd->unix_fd = dup( orig->unix_fd )) == -1)
+     {
+         file_set_error();
+         goto failed;
+     }
+     return fd;
+
+ failed:
+     release_object( fd );
+     return NULL;
+ }
+
++/* Opt-in resource cleanup; read the prefix setting once, without retaining a file. */
++int ps5_image_view_fd_release_enabled(void)
++{
++#ifdef __PROSPERO__
++    static int enabled = -1;
++    const char *value;
++    char buffer[3];
++    int file, result = 0, saved_errno = errno;
++    size_t count = 0;
++    ssize_t size = -1;
++
++    if (enabled != -1) return enabled;
++    if ((value = getenv( "WINE_PS5_IMAGE_VIEW_FD_RELEASE" )))
++        result = !strcmp( value, "1" );
++    else if (config_dir_fd != -1 &&
++             (file = openat( config_dir_fd, "pw_image_view_fd_release", O_RDONLY )) != -1)
++    {
++        while (count < sizeof(buffer) &&
++               (size = read( file, buffer + count, sizeof(buffer) - count )) > 0)
++            count += size;
++        close( file );
++        result = size == 0 && (count == 1 || (count == 2 && buffer[1] == '\n')) &&
++                 buffer[0] == '1';
++    }
++    enabled = result;
++    fprintf( stderr, "wine-ps5: image-view fd release: %s\n", enabled ? "on" : "off" );
++    errno = saved_errno;
++    return enabled;
++#else
++    return 0;
++#endif
++}
++
++/* The caller owns one mapping reference; every other reference must be a
++ * completed, unshared, non-debugged image view. Keep the inode object in its
++ * sharing list and retain names/map-address metadata through view destruction. */
++int ps5_release_image_view_fd( struct fd *fd, unsigned int view_refs )
++{
++    int unix_fd;
++
++    if (!ps5_image_view_fd_release_enabled() || !view_refs ||
++        fd->obj.refcount <= 1 || view_refs != fd->obj.refcount - 1 ||
++        fd->unix_fd == -1 || fd->access != (FILE_MAPPING_ACCESS | FILE_MAPPING_IMAGE) ||
++        fd->user || !fd->inode || !fd->closed ||
++        fd->closed->unix_fd != fd->unix_fd || fd->closed->disp_flags ||
++        (fd->options & FILE_DELETE_ON_CLOSE) || !list_empty( &fd->locks ) ||
++        !list_empty( &fd->inode->locks ) || !list_empty( &fd->inode->closed ) ||
++        async_queued( &fd->read_q ) || async_queued( &fd->write_q ) ||
++        async_queued( &fd->wait_q ) || fd->completion)
++        return 0;
++
++    if (fd->poll_index != -1)
++    {
++        if (pollfd[fd->poll_index].fd != -1 || pollfd[fd->poll_index].events) return 0;
++        remove_poll_user( fd, fd->poll_index );
++        fd->poll_index = -1;
++    }
++    unix_fd = fd->unix_fd;
++    fd->unix_fd = fd->closed->unix_fd = -1;
++    fd->no_fd_status = STATUS_FILE_CLOSED;
++    fd->fs_locks = 0;
++    close( unix_fd );
++    fprintf( stderr, "wine-ps5: released image-view fd %d (views %u)\n", unix_fd, view_refs );
++    return 1;
++}
++
++int ps5_is_image_view_fd_released( struct fd *fd )
++{
++    return fd->unix_fd == -1 && fd->no_fd_status == STATUS_FILE_CLOSED &&
++           fd->access == (FILE_MAPPING_ACCESS | FILE_MAPPING_IMAGE);
++}
++
+ /* find an existing fd object that can be reused for a mapping */
+ struct fd *get_fd_object_for_mapping( struct fd *fd, unsigned int access, unsigned int sharing )
+ {
+     struct fd *fd_ptr;
+
+     if (!fd->inode) return NULL;
+
+     LIST_FOR_EACH_ENTRY( fd_ptr, &fd->inode->open, struct fd, inode_entry )
+-        if (fd_ptr->access == access && fd_ptr->sharing == sharing)
++        if (fd_ptr->unix_fd != -1 && fd_ptr->access == access && fd_ptr->sharing == sharing)
+             return (struct fd *)grab_object( fd_ptr );
+
+     return NULL;
+ }
+
+ /* sets the user of an fd that previously had no user */
+ void set_fd_user( struct fd *fd, const struct fd_ops *user_ops, struct object *user )
+ {
+     assert( fd->fd_ops == NULL );
+     fd->fd_ops = user_ops;
+     fd->user   = user;
+ }
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -1195,25 +1195,25 @@
+
+     return create_named_object( &params );
+ }
+
+ static struct mapping *get_mapping_obj( struct process *process, obj_handle_t handle, unsigned int access )
+ {
+     return (struct mapping *)get_handle_obj( process, handle, access, &mapping_ops );
+ }
+
+ /* open a new file for the file descriptor backing the view */
+ struct file *get_view_file( const struct memory_view *view, unsigned int access, unsigned int sharing )
+ {
+-    if (!view->fd) return NULL;
++    if (!view->fd || ps5_is_image_view_fd_released( view->fd )) return NULL;
+     return create_file_for_fd_obj( view->fd, access, sharing );
+ }
+
+ /* get the image info for a SEC_IMAGE mapped view */
+ const struct pe_image_info *get_view_image_info( const struct memory_view *view, client_ptr_t *base )
+ {
+     if (!(view->flags & SEC_IMAGE)) return NULL;
+     *base = view->base;
+     return &view->image;
+ }
+
+ /* get the file name for a mapped view */
+@@ -1269,29 +1269,68 @@
+     assert( obj->ops == &mapping_ops );
+     fprintf( stderr, "Mapping size=%08x%08x flags=%08x fd=%p shared=%p\n",
+              (unsigned int)(mapping->size >> 32), (unsigned int)mapping->size,
+              mapping->flags, mapping->fd, mapping->shared );
+ }
+
+ static struct fd *mapping_get_fd( struct object *obj )
+ {
+     struct mapping *mapping = (struct mapping *)obj;
+     return (struct fd *)grab_object( mapping->fd );
+ }
+
++struct image_view_fd_refs
++{
++    struct fd *fd;
++    unsigned int count;
++    int ineligible;
++};
++
++/* Check current views under the server lock, including late debugger attach. */
++static int count_image_view_fd_refs( struct process *process, void *user )
++{
++    struct image_view_fd_refs *refs = user;
++    struct memory_view *view;
++
++    LIST_FOR_EACH_ENTRY( view, &process->views, struct memory_view, entry )
++    {
++        if (view->fd != refs->fd) continue;
++        if (!(view->flags & SEC_IMAGE) || view->shared || process->debug_obj)
++        {
++            refs->ineligible = 1;
++            return 1;
++        }
++        refs->count++;
++    }
++    return 0;
++}
++
++static void release_mapping_image_view_fd( struct fd *fd, unsigned int flags, struct shared_map *shared )
++{
++    struct image_view_fd_refs refs = { fd, 0, 0 };
++
++    if (!(flags & SEC_IMAGE) || shared || !ps5_image_view_fd_release_enabled()) return;
++    enum_processes( count_image_view_fd_refs, &refs );
++    if (!refs.ineligible) ps5_release_image_view_fd( fd, refs.count );
++}
++
+ static void mapping_destroy( struct object *obj )
+ {
+     struct mapping *mapping = (struct mapping *)obj;
+     assert( obj->ops == &mapping_ops );
+-    if (mapping->fd) release_object( mapping->fd );
++    if (mapping->fd)
++    {
++        release_mapping_image_view_fd( mapping->fd, mapping->flags, mapping->shared );
++        release_object( mapping->fd );
++    }
+     if (mapping->committed) release_object( mapping->committed );
+     if (mapping->shared) release_object( mapping->shared );
+     free( mapping->exp_name );
+     free( mapping->ver_res );
+ }
+
+ static enum server_fd_type mapping_get_fd_type( struct fd *fd )
+ {
+     return FD_TYPE_FILE;
+ }
+
+ /* assign a mapping address to a PE image mapping */
+--- a/server/file.h
++++ b/server/file.h
+@@ -80,24 +80,27 @@
+ /* file descriptor functions */
+
+ extern struct fd *alloc_pseudo_fd( const struct fd_ops *fd_user_ops, struct object *user,
+                                    unsigned int options );
+ extern struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_name,
+                            int flags, mode_t *mode, unsigned int access,
+                            unsigned int sharing, unsigned int options );
+ extern struct fd *create_anonymous_fd( const struct fd_ops *fd_user_ops,
+                                        int unix_fd, struct object *user, unsigned int options );
+ extern struct fd *dup_fd_object( struct fd *orig, unsigned int access, unsigned int sharing,
+                                  unsigned int options );
+ extern struct fd *get_fd_object_for_mapping( struct fd *fd, unsigned int access, unsigned int sharing );
++extern int ps5_image_view_fd_release_enabled(void);
++extern int ps5_release_image_view_fd( struct fd *fd, unsigned int view_refs );
++extern int ps5_is_image_view_fd_released( struct fd *fd );
+ extern void *get_fd_user( struct fd *fd );
+ extern void set_fd_user( struct fd *fd, const struct fd_ops *ops, struct object *user );
+ extern unsigned int get_fd_options( struct fd *fd );
+ extern unsigned int get_fd_comp_flags( struct fd *fd );
+ extern int is_fd_overlapped( struct fd *fd );
+ extern int get_unix_fd( struct fd *fd );
+ extern client_ptr_t get_fd_map_address( struct fd *fd );
+ extern void set_fd_map_address( struct fd *fd, client_ptr_t addr, mem_size_t size );
+ extern int is_same_file_fd( struct fd *fd1, struct fd *fd2 );
+ extern int is_fd_removable( struct fd *fd );
+ extern int check_fd_events( struct fd *fd, int events );
+ extern void set_fd_events( struct fd *fd, int events );

@@ -1,0 +1,103 @@
+format = 2
+generated = "2026-10-08"
+
+[[dependency]]
+name = "prospero-win"
+revision = "b510eb3db8709bb251d3da3c56850e96e057f489"
+url = "https://github.com/mpereiraesaa/prospero-win"
+sha256 = "59c7bcbc49bf48ad28e5479a1fcabfe9b83535ef0b1de03635c2b675f098e50d"
+license = "LGPL-2.1-or-later"
+purpose = "PS5 Wine and native runtime"
+
+[[dependency]]
+name = "PolyMC"
+revision = "5ad72dda606a7e8a3a3c7adae6de7053597fcc23"
+url = "https://github.com/PolyMC/PolyMC"
+sha256 = "6b90ad77c2db130dd8eda9138da2b7cb5a622044342ecc0e531dc3a572ad4676"
+license = "GPL-3.0-only"
+purpose = "Behavior and instance format reference; Qt launcher not shipped"
+
+[[dependency]]
+name = "ProsperoEden"
+revision = "026851f5accfca80e0f6cb2c83b4dc686e0ca25f"
+url = "https://github.com/blackbearreloaded/ProsperoEden"
+sha256 = "d590d9b414157687a1a21e5dd801094987584fb021ba4ab0c3c94fa6103a3841"
+license = "GPL-3.0-or-later and font OFL"
+purpose = "Visual reference and font source only"
+
+[[binary]]
+name = "prospero-win runtime"
+version = "v0.1.1"
+source_revision = "8086243da85fae62206a98af322dc746fe5f7a6d"
+url = "https://github.com/mpereiraesaa/prospero-win/releases/download/v0.1.1/prospero-win-v0.1.1.zip"
+sha256 = "fdfa016cd60979aae08040e61d70929c8759c9bf66c16001c6db8178a4d6c162"
+includes = "Wine, OpenGL in win32u.prx, RADV, FreeType, source/license notices"
+
+[[local_runtime]]
+name = "Adoptium Temurin JRE"
+version = "8.0.504+1"
+os = "Windows"
+arch = "amd64"
+license = "GPL-2.0 with Classpath Exception and components"
+
+[[dependency]]
+name = "PS5-Lapy-JB-Daemon exact-title helper"
+revision = "b48b7d7236eca25c7b9dfd6c040c763ae05dde80"
+url = "https://github.com/mpereiraesaa/PS5-Lapy-JB-Daemon"
+archive_sha256 = "fb5bb88630e6ad58c6d24673b029f8365b81986191bbb438bae4affdcf8c341f"
+title_id = "PPSA99888"
+elf_sha256 = "f6964eb1b9ff95aa118b918b3016772bf720e68d3949012424865a6b06bc3970"
+console_validated = false
+
+[[dependency]]
+name = "Wine source for ntdll floating-point repair"
+revision = "490f6d5dcbb2a5047345b8af88d114bbcaad69a8"
+url = "https://github.com/wine-mirror/wine"
+archive_sha256 = "c40c03637f90ede4fe60ffc4162473870038dc2324cd1d67d186ad72212a70d5"
+license = "LGPL-2.1-or-later"
+
+[[dependency]]
+name = "prospero-win release patch series for ntdll rebuild"
+revision = "8086243da85fae62206a98af322dc746fe5f7a6d"
+url = "https://github.com/mpereiraesaa/prospero-win"
+archive_sha256 = "9bc865efd9c4f6e5d159c61b64838c25e49682fff55fcd845e800305f688f5b4"
+additional_patch = "0501 from prospero-win b510eb3db8709bb251d3da3c56850e96e057f489"
+license = "LGPL-2.1-or-later"
+
+[[dependency]]
+name = "PS5 native module export tools"
+revision = "30597512539e7edfde079cbcaf4a626bc0a948c5"
+url = "https://github.com/blackbearreloaded/ps5-native-app-boilerplate"
+archive_sha256 = "9afcf7314e52af65b2a84848e396b908a0e74c3d4bc179fc6d18560e96a94ac0"
+license = "see upstream source notices"
+
+[[binary]]
+name = "PS5 OpenGL SDK for BGRA texture repair"
+version = "1.0.1"
+source_revision = "db752da4c89380af228497b5b6852163a4e61069"
+url = "https://github.com/blackbearreloaded/ps5-opengl/releases/download/v1.0.1/ps5-opengl-sdk-1.0.1.tar.gz"
+sha256 = "aaa2e8957f55e1fc0b654dcb35a36e585f7e635d63952da40a28be7f64fde741"
+sdk_manifest_sha256 = "52b6b82f32aec7c983680858c50c25c926266d58f7660d79d44fc1c4505d05bc"
+license = "GPL-3.0-or-later and included Mesa/component licenses"
+purpose = "Rebuild only win32u with upstream BGRA sampler capability correction"
+
+[[binary]]
+name = "PS5 OpenGL CI SDK with legacy drawing fixes"
+version = "ci-738f94cbdf6f-37710162111-1"
+source_revision = "738f94cbdf6ff1de0376dc1cd4ce1229fd640730"
+url = "https://github.com/blackbearreloaded/ps5-opengl/actions/runs/37710162111"
+artifact_id = "11521757116"
+sha256 = "7ef042e1cb6259b12f124890c9d30edd51f4bae5f126e1dbff5f3bd7d07b64d2"
+sdk_manifest_sha256 = "ec96253ae019c50c9ddfe31bf2f7a38eaca029c631fcfa54f7dde57f565d8b69"
+license = "GPL-3.0-or-later and included Mesa/component licenses"
+purpose = "Upstream legacy varying mapping, lowered client-array draws and EGL HUD fixes"
+
+[[local_patch]]
+name = "ProsperoMC smooth legacy draw batching"
+base_source_revision = "738f94cbdf6ff1de0376dc1cd4ce1229fd640730"
+file = "artifacts/graphics-batching/smooth-legacy-batching.patch"
+sha256 = "915cdc13ca343babae4a73d420f0fe62163fab60ec3da7c6202a1d4c8e166c3f"
+runtime_archive_sha256 = "34f0016018bfc4a9c98fbdba2482195655cd1f408c4802ecfe820d4734a7b884"
+sdk_manifest_sha256 = "ec1d3a524f4a0ffface62795e93ff62c0ba6c0567e6954462862183dc87df985"
+license = "GPL-3.0-or-later"
+purpose = "Batch smooth converted quads; keep flat/unknown interpolation, geometry shaders, transform feedback and occlusion on the original path"

@@ -1,0 +1,93 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+#ifndef PW_X86_REENCODE_H
+#define PW_X86_REENCODE_H
+/*
+ * Same-ISA re-encoding of i386 blocks for an x86-64 host.
+ *
+ * Guest and host are both x86, so most guest instructions run as themselves:
+ * the eight guest GPRs stay pinned in host registers for the whole of a
+ * linked chain (eax ecx edx ebx ebp esi in their own registers, esp in r12,
+ * edi in r13, PwX86State in rdi), and the guest's arithmetic flags live in
+ * the host RFLAGS, saved to PwX86State only when the chain returns to C.
+ * Register forms are copied with the encoding adjusted for r12/r13; a memory
+ * operand is addressed through r11 after the flat guard (the guest range is
+ * identity-mapped below 4 GiB, so the guest address is the host address).
+ * The glue between instructions is flag-free (mov, lea, xchg, jrcxz), and
+ * the guard, which compares, keeps the flags around itself whenever a later
+ * instruction can read them. Stack instructions, calls and returns, which
+ * use the host stack natively, are translated onto r12.
+ *
+ * Only flat address spaces (PwX86TranslateOptions.flat_low/high) without the
+ * statistics counters are re-encoded. A block ends before the first
+ * instruction this backend does not take, which the older emitter then
+ * translates; the two meet through the canonical entries (the contracts
+ * never match), so either can follow the other.
+ *
+ * div and idiv run as the host's, on a divisor checked first: one that would
+ * fault stops the block at the div with the guest state untouched and
+ * returns to C, which then reports it as before (the 32-bit forms as the
+ * emitter does, PW_ERR_VM; the 8- and 16-bit ones through the host fallback,
+ * PW_X86_REENCODE_HOST_STEP), so the host instruction never raises #DE.
+ *
+ * ah-bh beside a memory operand whose address needs a REX prefix (r11, or
+ * esp and edi as base or index) run on r10b, moved there and back with
+ * BMI2's flag-free rorx; bt, bts, btr and btc on memory with a register
+ * offset find the unit of the bit string they reach (sarx) and guard it
+ * before the host's instruction runs on it. A host without BMI2 leaves
+ * both to the emitter.
+ *
+ * PUSHFD and POPFD (and the 16-bit PUSHF and POPF) build and load EFLAGS
+ * from the host's arithmetic flags and PwX86State.eflags' DF, AC and ID, as
+ * the host fallback does; PUSHAD and POPAD reach both ends of their 32 bytes
+ * first, so one that faults leaves ESP and the registers as they were.
+ *
+ * Differences from the older emitter, both deliberate:
+ * - a fault reports the incoming arithmetic flags exactly only when a later
+ *   instruction reads them; when every flag is redefined before any read,
+ *   the reported flags are whatever the guard left, which re-execution of
+ *   the faulting instruction never observes. TZCNT/LZCNT memory forms are
+ *   an explicit exception: their refused reads retain the incoming flags
+ *   to match the older emitter's fault context. Other flag-defining memory
+ *   forms retain the existing relaxation;
+ * - step_retired is not counted (as with no_counters).
+ */
+#include "pw_x86_block.h"
+
+/* The contract every re-encoded block has: all eight guest GPRs resident,
+ * with guest_to_host holding 16 + the host register number. */
+enum { PW_X86_REENCODE_HOST_BASE = 16, PW_X86_REENCODE_CHAIN_SLOTS = 65536,
+       PW_X86_REENCODE_CHAIN_ENTRIES = 2 * PW_X86_REENCODE_CHAIN_SLOTS };
+
+/* What a re-encoded block returns when it stops at state->eip for the host
+ * fallback (pw_x86_hostexec) to run that one instruction, as it did before
+ * the re-encoder took it: an 8- or 16-bit div or idiv that divides by zero
+ * or overflows. The engine's step reports it as PW_ERR_UNSUPPORTED. */
+enum { PW_X86_REENCODE_HOST_STEP = 0x100 };
+
+/* What a block that verifies its source (PwX86TranslateOptions.verify_source)
+ * returns when its source no longer matches the copy it was translated from:
+ * state->eip is the block's guest PC and nothing of the block has run. The
+ * engine retires the block and translates the current bytes. */
+enum { PW_X86_REENCODE_STALE = 0x200, PW_X86_REENCODE_VERIFY_HOPS = 8 };
+
+/* Whether a translated block came from this backend. */
+static inline int pw_x86_reencoded(const PwX86RegContract *contract)
+{
+    return contract->resident_mask == 0xff &&
+           contract->guest_to_host[0] == PW_X86_REENCODE_HOST_BASE;
+}
+
+/* Translate the block at pc. PW_OK with a block of at least one
+ * instruction; PW_ERR_UNSUPPORTED when the options are not flat or keep
+ * counters, or when the first instruction is not one this backend takes.
+ * Other errors as pw_x86_translate_opts. */
+int pw_x86_reencode(const uint8_t *source, size_t bytes, uint32_t guest_pc,
+                    uint8_t *output, size_t capacity, PwX86Block *block,
+                    const PwX86TranslateOptions *options);
+
+/* The return stub PwX86TranslateOptions.call_stack needs at the start of the
+ * code arena: a host ret that finds no call on the call stack comes here
+ * with the guest's return address in r10d. Its bytes, or 0 when the options
+ * have no call stack or it does not fit. */
+size_t pw_x86_reencode_return_stub(uint8_t *output, size_t capacity, const PwX86TranslateOptions *options);
+#endif

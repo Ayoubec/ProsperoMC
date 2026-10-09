@@ -1,0 +1,36 @@
+# PolyMC functionality audit
+
+This is an independent native PS5 launcher and Java backend. PolyMC's Qt
+application is not embedded. The table distinguishes implementation from actual
+PS5 execution; all Java/LWJGL console compatibility still needs a console run.
+
+| Function | Current implementation |
+| --- | --- |
+| Minecraft releases and snapshots | Real Mojang catalog; native version screen and filters |
+| Version download/install | Client, libraries, Windows x64 native archives, assets and logging configuration; metadata SHA1/size checks |
+| Isolated instances | Create, install, clone, delete; separate game directories with shared verified downloads |
+| Java selection | Required major from version metadata; detects installed Windows x64 runtimes and downloads a verified runtime automatically when needed |
+| JVM/memory settings | Memory controls and detected-runtime/download controls in native interface; advanced settings through request files |
+| Vanilla | Implemented; supplied 1.12.2 installed and launch plan verified on Windows Java 8 |
+| Fabric and Quilt | Loader metadata/profile resolution implemented and fixture-tested |
+| Legacy Forge 1.12.2 | Checked installer profiles, embedded Forge artifact and LaunchWrapper/FMLTweaker support |
+| Modern Forge and NeoForge | Not implemented; processor-based installers rejected explicitly |
+| Installed mod management | Local JAR add/remove and enable/disable; native mod toggles |
+| Online mod discovery | Modrinth search/download through backend requests; console search/file picker not implemented |
+| Mod dependencies | Compatible required Modrinth project dependencies resolved; unusual version-only dependencies need manual installation |
+| Instance packs | Ordinary PolyMC/MultiMC ZIP import/export, with supported loader components |
+| CurseForge/Modrinth packs | Their pack manifests and service integrations are not implemented |
+| Microsoft accounts | Device OAuth, Xbox/XSTS, Minecraft entitlement/profile flow; publisher's own registered client ID required; no live account test performed |
+| Offline play | Explicit local single-player mode; no multiplayer authentication |
+| Controller support | Native navigation and Minecraft keyboard/mouse mapping through prospero-win |
+| Logs | Wine/native diagnostics and Minecraft logs; no PolyMC-style console/log viewer UI |
+| Custom component/patch editors | Not implemented |
+| General PC games or Switch emulation | Excluded from the application |
+
+Full PolyMC feature parity is not achieved. The working host installer and
+native cross-build are substantial implementation evidence, but neither is a
+claim that Minecraft has reached a playable world on PS5.
+
+Minecraft 1.12.2 is used for initial vanilla and Forge testing. The normal
+application workflow selects a version from the Mojang catalog; those test
+instances do not restrict other versions.

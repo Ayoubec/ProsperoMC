@@ -1,0 +1,121 @@
+From: Prospero Win contributors <prospero-win@localhost>
+Subject: [PATCH] server: prepare event/semaphore shared atomic state
+
+Add native atomic primitives for subsequent server authority/lifetime and
+client integration. This header alone activates no backend, changes no
+existing mutex ABI and exports no function. Runtime defaults are unchanged.
+
+diff --git a/include/wine/ps5_sync_word.h b/include/wine/ps5_sync_word.h
+new file mode 100644
+--- /dev/null
++++ b/include/wine/ps5_sync_word.h
+@@ -0,0 +1,109 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++/* Shared event/semaphore state. Native pointers and caller-local outputs only.
++ * Server integration owns eligibility, handle access, queues and lifetime.
++ * The high bit transfers authority to the server; cached cells are never
++ * freed or rebound. Immutable kind/maximum precede publishing a cell pointer.
++ * A failed operation changes neither state nor its output and falls back to
++ * the ordinary server. Successful operations use at most one strong CAS.
++ */
++#ifndef WINE_PS5_SYNC_WORD_H
++#define WINE_PS5_SYNC_WORD_H
++#include <assert.h>
++#include <stdint.h>
++
++#define PW_SYNC_WORD_SLOW (UINT64_C(1) << 63)
++#define PW_SYNC_WORD_MAX_COUNT UINT32_C(0x7fffffff)
++enum pw_sync_kind { PW_SYNC_AUTO_EVENT = 1, PW_SYNC_MANUAL_EVENT, PW_SYNC_SEMAPHORE };
++struct __attribute__((aligned(64))) pw_sync_word
++{
++    uint64_t word;
++    uint32_t kind;
++    uint32_t maximum;
++};
++
++static inline int pw_sync_word_value_valid(const struct pw_sync_word *cell, uint32_t value)
++{
++    if (cell->kind == PW_SYNC_AUTO_EVENT || cell->kind == PW_SYNC_MANUAL_EVENT)
++        return cell->maximum == 1 && value <= 1;
++    return cell->kind == PW_SYNC_SEMAPHORE && cell->maximum &&
++           cell->maximum <= PW_SYNC_WORD_MAX_COUNT && value <= cell->maximum;
++}
++
++/* Server-lock-held initialization, before any native client observes cell. */
++static inline void pw_sync_word_init(struct pw_sync_word *cell, uint32_t kind,
++                                    uint32_t initial, uint32_t maximum)
++{
++    cell->kind = kind;
++    cell->maximum = maximum;
++    assert(pw_sync_word_value_valid(cell, initial));
++    cell->word = PW_SYNC_WORD_SLOW | initial;
++}
++
++static inline uint64_t pw_sync_word_load(const struct pw_sync_word *cell)
++{
++    return __atomic_load_n(&cell->word, __ATOMIC_ACQUIRE);
++}
++
++static inline int pw_sync_word_try_wait(struct pw_sync_word *cell)
++{
++    uint64_t old = pw_sync_word_load(cell), next;
++    if ((old & PW_SYNC_WORD_SLOW) || !old ||
++        !pw_sync_word_value_valid(cell, (uint32_t)old)) return 0;
++    next = cell->kind == PW_SYNC_MANUAL_EVENT ? old : old - 1;
++    /* Even an unchanged manual-event state requires a CAS: a concurrent
++     * server freeze must reject fast acquisition rather than be ignored. */
++    return __atomic_compare_exchange_n(&cell->word, &old, next, 0,
++                                       __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
++}
++
++static inline int pw_sync_word_try_event(struct pw_sync_word *cell, int set,
++                                        uint32_t *previous)
++{
++    uint64_t old, next;
++    if ((cell->kind != PW_SYNC_AUTO_EVENT && cell->kind != PW_SYNC_MANUAL_EVENT) ||
++        (set != 0 && set != 1)) return 0;
++    old = pw_sync_word_load(cell);
++    if ((old & PW_SYNC_WORD_SLOW) || !pw_sync_word_value_valid(cell, (uint32_t)old)) return 0;
++    next = (uint32_t)set;
++    if (!__atomic_compare_exchange_n(&cell->word, &old, next, 0,
++                                     __ATOMIC_RELEASE, __ATOMIC_RELAXED)) return 0;
++    *previous = (uint32_t)old;
++    return 1;
++}
++
++static inline int pw_sync_word_try_release(struct pw_sync_word *cell, uint32_t count,
++                                          uint32_t *previous)
++{
++    uint64_t old, next;
++    if (cell->kind != PW_SYNC_SEMAPHORE || !count) return 0;
++    old = pw_sync_word_load(cell);
++    if ((old & PW_SYNC_WORD_SLOW) || !pw_sync_word_value_valid(cell, (uint32_t)old) ||
++        count > cell->maximum - (uint32_t)old) return 0;
++    next = old + count;
++    if (!__atomic_compare_exchange_n(&cell->word, &old, next, 0,
++                                     __ATOMIC_RELEASE, __ATOMIC_RELAXED)) return 0;
++    *previous = (uint32_t)old;
++    return 1;
++}
++
++/* Under the server lock, adopt only the first snapshot. Recursive slow
++ * entries must preserve the existing legacy state instead of adopting again. */
++static inline int pw_sync_word_freeze(struct pw_sync_word *cell, uint32_t *snapshot)
++{
++    uint64_t old = __atomic_fetch_or(&cell->word, PW_SYNC_WORD_SLOW, __ATOMIC_ACQ_REL);
++    if (old & PW_SYNC_WORD_SLOW) return 0;
++    *snapshot = (uint32_t)old;
++    return 1;
++}
++
++/* Server-lock-held, only at outermost operation completion with no waiters,
++ * alias/close retirement, debug/module disable or other slow dependency.
++ * Invalid legacy values remain slow; this is not a guest error. */
++static inline int pw_sync_word_publish(struct pw_sync_word *cell, uint32_t value)
++{
++    assert(pw_sync_word_load(cell) & PW_SYNC_WORD_SLOW);
++    if (!pw_sync_word_value_valid(cell, value)) return 0;
++    __atomic_store_n(&cell->word, value, __ATOMIC_RELEASE);
++    return 1;
++}
++#endif

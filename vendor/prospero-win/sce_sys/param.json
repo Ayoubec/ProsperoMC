@@ -1,0 +1,37 @@
+{
+  "ageLevel": {
+    "default": 0
+  },
+  "applicationCategoryType": 0,
+  "applicationDrmType": "free",
+  "attribute": 0,
+  "attribute2": 0,
+  "attribute3": 64,
+  "conceptId": "99888",
+  "contentBadgeType": 1,
+  "contentId": "UP9000-PPSA99888_00-PROSPEROMC000001",
+  "contentVersion": "01.000.000",
+  "downloadDataSize": 8192,
+  "gameIntent": {
+    "permittedIntents": [
+      {
+        "intentType": "launchActivity"
+      }
+    ]
+  },
+  "localizedParameters": {
+    "defaultLanguage": "en-US",
+    "en-US": {
+      "titleName": "ProsperoMC"
+    }
+  },
+  "masterVersion": "01.00",
+  "pubtools": {
+    "creationDate": "2026-09-08 00:00:00",
+    "toolVersion": "2.00"
+  },
+  "requiredSystemSoftwareVersion": "0x0000000000000000",
+  "sdkVersion": "0x0000000000000000",
+  "titleId": "PPSA99888",
+  "versionFileUri": ""
+}

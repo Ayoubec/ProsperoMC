@@ -1,0 +1,86 @@
+From: Prospero Win contributors <prospero-win@localhost>
+Subject: [PATCH] wine: Default to compatible shared events and semaphores.
+
+Enable discovery when the switch file is absent in an existing prefix.
+Explicit environment or exact file values override this choice. Malformed,
+unreadable and invalid-prefix settings remain off; missing/incompatible
+server ABI and direct-call disable retain ordinary Wine fallback.
+
+This changes selection only and requires matching console gates.
+
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -345,67 +345,71 @@
+ }
+
+ /* The console launcher has no arbitrary environment override. A prefix-local
+  * switch is read once during connection; an explicit environment value wins. */
+ static int server_mutex_switch_enabled( const char *environment, const char *file_name, int default_enabled )
+ {
+     const char *env = getenv( environment );
+     char *path;
+     FILE *file;
+     int enabled = 0, value, end;
+
+     if (env) return !strcmp( env, "1" );
+     if (asprintf( &path, "%s/%s", config_dir, file_name ) == -1) return 0;
+     if ((file = fopen( path, "r" )))
+     {
+         value = fgetc( file );
+         end = fgetc( file );
+         enabled = value == '1' && (end == EOF || (end == '\n' && fgetc( file ) == EOF)) && !ferror( file );
+         fclose( file );
+     }
+     else if (errno == ENOENT) enabled = default_enabled;
+     free( path );
+     return enabled;
+ }
+
+-/* Independent strict default-off switch for event/semaphore activation. */
++/* Independent shared event/semaphore selection with explicit overrides. */
+ static int server_shared_sync_enabled(void)
+ {
+     const char *env = getenv( "WINE_PS5_SYNC_SHARED" );
+     char *path;
+     FILE *file;
+     int enabled = 0, value, end;
++    struct stat prefix;
+
+     if (env) return !strcmp( env, "1" );
++    if (!config_dir || !*config_dir) return 0;
+     if (asprintf( &path, "%s/pw_sync_shared", config_dir ) == -1) return 0;
+     if ((file = fopen( path, "r" )))
+     {
+         value = fgetc( file );
+         end = fgetc( file );
+         enabled = value == '1' && (end == EOF || (end == '\n' && fgetc( file ) == EOF)) && !ferror( file );
+         fclose( file );
+     }
++    else if (errno == ENOENT && !stat( config_dir, &prefix ) && S_ISDIR( prefix.st_mode ))
++        enabled = 1;
+     free( path );
+     return enabled;
+ }
+
+
+ /* the TEB this thread gave the server in init_thread or init_process_done */
+ static inline client_ptr_t inprocess_teb(void)
+ {
+     TEB *teb = NtCurrentTeb();
+     TEB64 *teb64 = get_teb64( teb );
+
+     return wine_server_client_ptr( teb64 ? (void *)teb64 : (void *)teb );
+ }
+ #endif
+
+ #ifdef WINE_INPROCESS_SERVER
+ /* Exact canonical handle table, like Wine's fd table, never a modulo hint.
+  * Page pointers and slots are acquire/release atomic. Pages are never freed.
+  * fd_cache_mutex serializes every fill and all four close invalidations. */
+ #define PW_MUTEX_CACHE_PAGES 128u
+ #define PW_MUTEX_CACHE_SLOTS (65536u / sizeof(uintptr_t))
+ static uintptr_t *shared_mutex_pages[PW_MUTEX_CACHE_PAGES];
+ static uintptr_t shared_mutex_initial[PW_MUTEX_CACHE_SLOTS];
+
+ static uintptr_t *shared_mutex_slot( obj_handle_t handle, int allocate )

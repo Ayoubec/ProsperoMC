@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  host-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: 32-bit MinGW for the Vulkan batching checks
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-i686
+      - name: Python dependencies
+        run: python3 -m pip install pyyaml==6.0.1
+      - name: Contributor prerequisites
+        run: python3 tools/check_setup.py
+      - name: Host contracts and publication audit
+        run: make -j2 all
+      - name: ASan and UBSan
+        run: make -j2 sanitize

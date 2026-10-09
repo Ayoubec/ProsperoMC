@@ -1,0 +1,2985 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/* The same-ISA re-encoder against the emitter, on one flat guest range. */
+#define _GNU_SOURCE
+#include "../src/pw_x86_engine.h"
+#include "../src/pw_x86_reencode.h"
+#include "../src/pw_guest_fp.h"
+#include "../src/pw_x86_hostexec.h"
+#include "../src/pw_vm_posix.h"
+#include <assert.h>
+#include <setjmp.h>
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <ucontext.h>
+#include <unistd.h>
+
+enum { SPAN = 0x40000, CODE = 0x1000, DATA = 0x20000, STACK_TOP = 0x3f000 };
+
+static uint8_t *guest;          /* identity-mapped: guest address == host address */
+static uint32_t low, fs_offset;  /* fs base: low + fs_offset, or 0 */
+static uint32_t source_pc;       /* optional synthetic code PC, data stays mapped */
+
+static int view(void *opaque, uint32_t pc, const uint8_t **data, size_t *bytes)
+{
+    (void)opaque;
+    if (source_pc) {
+        const uint32_t offset = pc - source_pc;
+        if (offset >= DATA - CODE) return PW_ERR_NOT_FOUND;
+        *data = guest + CODE + offset;
+        *bytes = DATA - CODE - offset;
+        return PW_OK;
+    }
+    if (pc < low + CODE || pc >= low + DATA) return PW_ERR_NOT_FOUND;
+    *data = (const uint8_t *)(uintptr_t)pc;
+    *bytes = low + DATA - pc;
+    return PW_OK;
+}
+
+/* view() with every byte writable: each block checks its source on entry. */
+static int view_writable(void *opaque, uint32_t pc, const uint8_t **data, size_t *bytes, size_t *writable_from)
+{
+    *writable_from = 0;
+    return view(opaque, pc, data, bytes);
+}
+
+static void initial(PwX86State *s)
+{
+    memset(s, 0, sizeof(*s));
+    s->eip = source_pc ? source_pc : low + CODE;
+    s->stack_low = low;
+    s->stack_high = low + SPAN;
+    s->memory_count = 1;
+    s->memory[0].low = low;
+    s->memory[0].high = (uint64_t)low + SPAN;
+    s->memory[0].permissions = PW_X86_READ | PW_X86_WRITE;
+    for (unsigned r = 0; r < 8; r++) s->gpr[r] = 0x11111111u * (r + 1);
+    s->gpr[4] = low + STACK_TOP;
+    s->gpr[6] = low + DATA;          /* esi */
+    s->gpr[7] = low + DATA + 0x100;  /* edi */
+    s->eflags = 0x2 | 0x040 | 0x001; /* ZF CF */
+    s->fs_base = fs_offset ? low + fs_offset : 0;
+    pw_guest_fp_init(&s->fp);  /* exceptions masked, as a Windows thread starts */
+}
+
+typedef struct Run {
+    PwX86State state;
+    uint8_t data[0x1000];
+    int status;
+    uint64_t reencoded, chain_slots, stale, tables;
+    unsigned steps, verified;
+    unsigned host_steps;  /* instructions run by the host fallback */
+} Run;
+
+static unsigned unbounded;  /* pw_x86_engine_set_unbounded_chains for run() */
+static unsigned native_fp;  /* pw_x86_engine_set_native_fp for run()'s re-encoder */
+/* run() executes what neither translator takes on the host, one instruction
+ * at a time, as wowprospero does. */
+static unsigned hostexec_fallback;
+static PwX86HostExec hostexec;
+/* run() on a call stack (pw_x86_engine_set_call_stack): 16 KiB above a
+ * 64 KiB guard, and the host faults the guard takes. */
+enum { CALL_STACK_BYTES = 0x4000 };
+static unsigned call_stack, call_stack_faults;
+/* run() with superblocks, whose side exits rewrite their own code: the
+ * engine's code stays writable (and executable) while it runs. */
+static unsigned superblocks;
+/* run() with pw_x86_engine_set_call_predict, which needs superblocks' writable code. */
+static unsigned call_predict;
+/* run() with pw_x86_engine_set_jump_tables and set_jump_predict. */
+static unsigned jump_tables, jump_predict;
+/* run()'s re-encoder with fault markers, which only a test of a fault
+ * (test_pw_x86_fault_markers.c) needs a handler for. */
+static unsigned fault_markers;
+/* run()'s source is writable (view_writable). */
+static unsigned all_writable;
+static PwVmBackend posix;
+
+static int writable_commit(void *context, const PwVmRegion *region, size_t offset, size_t bytes, unsigned protection)
+{
+    (void)protection;
+    return posix.commit(context, region, offset, bytes, PW_PROT_READ | PW_PROT_WRITE | PW_PROT_EXEC);
+}
+
+static int writable_protect(void *context, const PwVmRegion *region, size_t offset, size_t bytes, unsigned protection)
+{
+    (void)protection;
+    return posix.protect(context, region, offset, bytes, PW_PROT_READ | PW_PROT_WRITE | PW_PROT_EXEC);
+}
+static uint8_t *call_stack_region;
+static PwX86Engine *current;
+
+static void on_fault(int sig, siginfo_t *info, void *context)
+{
+    ucontext_t *uc = context;
+    uintptr_t rsp;
+
+    (void)sig;
+    if (!current || !pw_x86_engine_call_stack_fault(current, (uintptr_t)info->si_addr, &rsp)) {
+        static const char message[] = "unexpected fault\n";
+        (void)!write(2, message, sizeof(message) - 1);
+        _exit(3);
+    }
+    uc->uc_mcontext.gregs[REG_RSP] = (greg_t)rsp;
+    call_stack_faults++;
+}
+
+/* An engine as run() configures it, from the globals above. */
+static void setup(PwX86Engine *engine, PwX86CacheEntry *entries, unsigned reencode)
+{
+    static PwVmBackend vm;
+
+    assert(pw_vm_posix_backend(&vm) == PW_OK);
+    if (superblocks) {
+        posix = vm;
+        vm.commit = writable_commit;
+        vm.protect = writable_protect;
+    }
+    assert(pw_x86_engine_init(engine, &vm, entries, 512, 1u << 20, 1, view, NULL) == PW_OK);
+    assert(pw_x86_engine_set_chaining(engine, 1) == PW_OK);
+    assert(pw_x86_engine_set_indirect(engine, 1) == PW_OK);
+    assert(pw_x86_engine_set_counters(engine, 0) == PW_OK);
+    assert(pw_x86_engine_set_flat_memory(engine, low, low + SPAN) == PW_OK);
+    assert(pw_x86_engine_set_reencode(engine, reencode) == PW_OK);
+    assert(pw_x86_engine_set_unbounded_chains(engine, unbounded || call_stack || superblocks) == PW_OK);
+    assert(pw_x86_engine_set_superblocks(engine, superblocks) == PW_OK);
+    assert(pw_x86_engine_set_call_predict(engine, call_predict && superblocks) == PW_OK);
+    assert(pw_x86_engine_set_jump_tables(engine, jump_tables && superblocks) == PW_OK);
+    assert(pw_x86_engine_set_jump_predict(engine, jump_predict && superblocks) == PW_OK);
+    assert(pw_x86_engine_set_native_fp(engine, native_fp && reencode) == PW_OK);
+    assert(pw_x86_engine_set_fault_markers(engine, fault_markers && reencode) == PW_OK);
+    assert(pw_x86_engine_set_source_view_writable(engine, all_writable ? view_writable : NULL) == PW_OK);
+    if (call_stack && reencode)
+        assert(pw_x86_engine_set_call_stack(engine, call_stack_region + PW_X86_ENGINE_CALL_STACK_GUARD,
+                                            CALL_STACK_BYTES) == PW_OK);
+}
+
+/* Run code from low+CODE on engine until the guest returns to its sentinel. */
+static Run execute(PwX86Engine *engine, const uint8_t *code, size_t bytes)
+{
+    PwX86StepReport step;
+    Run r;
+
+    memset(guest + CODE, 0xcc, DATA - CODE);
+    memcpy(guest + CODE, code, bytes);
+    for (unsigned i = 0; i < 0x1000; i++) guest[DATA + i] = (uint8_t)(i * 7 + 3);
+    initial(&r.state);
+    memcpy(guest + STACK_TOP, &(uint32_t){ 0xdead0000u }, 4);
+    current = engine;
+    r.status = PW_OK;
+    r.steps = 0;
+    r.host_steps = 0;
+    for (unsigned i = 0; i < 100000 && r.state.eip != 0xdead0000u; i++, r.steps++) {
+        r.status = pw_x86_engine_step(engine, &r.state, &step);
+        if (r.status == PW_ERR_UNSUPPORTED && hostexec_fallback) {
+            /* As wowprospero does: the one instruction on the host. */
+            const uint8_t *at = (const uint8_t *)(uintptr_t)r.state.eip;
+            pw_x86_commit_canonical_flags(&r.state);
+            pw_x86_engine_fp_sync(engine, &r.state);
+            if ((r.status = pw_x86_hostexec_step(&hostexec, &r.state, at, 15)) == PW_OK) {
+                r.host_steps++;
+                continue;
+            }
+        }
+        if (r.status != PW_OK) break;
+    }
+    current = NULL;
+    pw_x86_engine_fp_sync(engine, &r.state);
+    memcpy(r.data, guest + DATA, sizeof(r.data));
+    r.reencoded = engine->reencoded_blocks;
+    r.stale = engine->stale_blocks;
+    r.tables = engine->jump_table_blocks;
+    r.verified = 0;
+    for (unsigned k = 0; k < engine->cache.capacity; k++)
+        r.verified += engine->cache.entries[k].used && engine->cache.entries[k].verify;
+    r.chain_slots = 0;
+    for (unsigned k = 0; engine->chain_targets && k < PW_X86_REENCODE_CHAIN_ENTRIES; k++)
+        r.chain_slots += engine->chain_targets[k].host_code != NULL;
+    return r;
+}
+
+/* Run code from low+CODE until the guest returns to its sentinel. */
+static Run run(const uint8_t *code, size_t bytes, unsigned reencode)
+{
+    static PwX86CacheEntry entries[512];
+    PwX86Engine engine;
+    Run r;
+
+    setup(&engine, entries, reencode);
+    r = execute(&engine, code, bytes);
+    assert(pw_x86_engine_destroy(&engine) == PW_OK);
+    return r;
+}
+
+static void same(const Run *a, const Run *b)
+{
+    for (unsigned g = 0; g < 8; g++) {
+        if (a->state.gpr[g] != b->state.gpr[g])
+            fprintf(stderr, "gpr%u %08x != %08x\n", g, a->state.gpr[g], b->state.gpr[g]);
+        assert(a->state.gpr[g] == b->state.gpr[g]);
+    }
+    assert(a->state.eip == b->state.eip);
+    if ((a->state.eflags ^ b->state.eflags) & 0x8d5)
+        fprintf(stderr, "flags %03x != %03x\n", a->state.eflags & 0x8d5, b->state.eflags & 0x8d5);
+    assert((a->state.eflags & 0x8d5) == (b->state.eflags & 0x8d5));
+    assert(a->status == b->status);
+    assert(!memcmp(a->data, b->data, sizeof(a->data)));
+}
+
+/* Run code on a call stack. */
+static Run run_call_stack(const uint8_t *code, size_t bytes)
+{
+    Run r;
+    call_stack = 1;
+    r = run(code, bytes, 1);
+    call_stack = 0;
+    return r;
+}
+
+/* Run code with superblocks and a call stack. */
+static Run run_superblocks(const uint8_t *code, size_t bytes)
+{
+    Run r;
+    superblocks = 1;
+    r = run_call_stack(code, bytes);
+    superblocks = 0;
+    return r;
+}
+
+/* Run code as wowprospero does: superblocks, a call stack, native FP and
+ * fault markers. */
+static Run run_production(const uint8_t *code, size_t bytes)
+{
+    Run r;
+    native_fp = fault_markers = 1;
+    r = run_superblocks(code, bytes);
+    native_fp = fault_markers = 0;
+    return r;
+}
+
+/* As run_production, from writable source: every block checks its source
+ * (PwX86TranslateOptions.verify_source) on every entry, and none finds it
+ * changed. */
+static Run run_production_writable(const uint8_t *code, size_t bytes)
+{
+    Run r;
+    all_writable = 1;
+    r = run_production(code, bytes);
+    all_writable = 0;
+    return r;
+}
+
+/* Both backends give the same result, and so does the re-encoder on a call
+ * stack, with superblocks, and as wowprospero runs it, from read-only and
+ * writable source; the re-encoder took some blocks. */
+static void compare(const uint8_t *code, size_t bytes)
+{
+    Run emitter = run(code, bytes, 0), reencoded = run(code, bytes, 1), stacked = run_call_stack(code, bytes);
+    Run super = run_superblocks(code, bytes), production = run_production(code, bytes);
+    Run checked = run_production_writable(code, bytes);
+    same(&super, &emitter);
+    same(&production, &emitter);
+    same(&checked, &emitter);
+    assert(checked.reencoded && checked.verified && !checked.stale && !production.verified);
+    assert(production.reencoded);
+    assert(super.reencoded);
+    if (emitter.status != PW_OK || emitter.state.eip != 0xdead0000u)
+        fprintf(stderr, "emitter stopped: status %d eip +%x\n", emitter.status, emitter.state.eip - low - CODE);
+    assert(emitter.status == PW_OK && emitter.state.eip == 0xdead0000u);
+    same(&reencoded, &emitter);
+    same(&stacked, &emitter);
+    assert(!emitter.reencoded && reencoded.reencoded && stacked.reencoded);
+}
+
+static void test_options(void)
+{
+    static const uint8_t mov[] = { 0x89, 0xc8, 0xc3 };           /* mov eax, ecx; ret */
+    static const uint8_t lock[] = { 0xf0, 0x01, 0xc0, 0xc3 };    /* lock add eax, eax: #UD */
+    static const uint8_t tail[] = { 0x40, 0x0f, 0xb6, 0xfc };    /* inc eax; movzx edi, ah */
+    static const uint8_t high[] = { 0x40, 0x88, 0x3e, 0xc3 };    /* inc eax; mov [esi], bh; ret */
+    static const uint8_t divide[] = { 0xf7, 0xf1, 0xc3 };        /* div ecx; ret */
+    PwX86TranslateOptions o = { .flat_low = 0x10000, .flat_high = 0xfffff000u, .no_counters = 1 };
+    uint8_t out[16384];
+    PwX86Block block;
+
+    assert(pw_x86_reencode(mov, sizeof(mov), 0x401000, out, sizeof(out), &block, &o) == PW_OK);
+    assert(block.instructions == 2 && block.exit.kind == PW_X86_EXIT_DYNAMIC);
+    assert(block.entry_contract.resident_mask == 0xff);
+    assert(block.entry_contract.guest_to_host[4] == PW_X86_REENCODE_HOST_BASE + 12);
+    assert(pw_x86_reencode(lock, sizeof(lock), 0x401000, out, sizeof(out), &block, &o) ==
+           PW_ERR_UNSUPPORTED);
+    assert(pw_x86_reencode(tail, sizeof(tail), 0x401000, out, sizeof(out), &block, &o) == PW_OK);
+    assert(block.instructions == 1 && block.source_bytes == 1);
+    assert(block.exit.kind == PW_X86_EXIT_DIRECT_JUMP && block.exit.target_pc == 0x401001);
+    assert(pw_x86_reencode(high, sizeof(high), 0x401000, out, sizeof(out), &block, &o) == PW_OK);
+    assert(block.instructions == 3 && block.exit.kind == PW_X86_EXIT_DYNAMIC);
+    assert(pw_x86_reencode(divide, sizeof(divide), 0x401000, out, sizeof(out), &block, &o) == PW_OK);
+    assert(block.instructions == 2 && block.exit.kind == PW_X86_EXIT_DYNAMIC);
+    o.no_counters = 0;
+    assert(pw_x86_reencode(mov, sizeof(mov), 0x401000, out, sizeof(out), &block, &o) ==
+           PW_ERR_UNSUPPORTED);
+    o.no_counters = 1; o.flat_high = 0;
+    assert(pw_x86_reencode(mov, sizeof(mov), 0x401000, out, sizeof(out), &block, &o) ==
+           PW_ERR_UNSUPPORTED);
+    assert(pw_x86_reencode(NULL, 1, 0, out, sizeof(out), &block, &o) == PW_ERR_PRECONDITION);
+}
+
+/* ALU and moves on every register, esp and edi in both ModRM fields and
+ * as base and index, byte registers high and low, 16-bit forms. (A form
+ * that needs a REX prefix and names ah-bh, such as movzx edi, ah, ends
+ * the block for the emitter instead.) */
+static void test_registers(void)
+{
+    static const uint8_t ok[] = {
+        0x89, 0xe0, 0x89, 0xfb, 0x01, 0xe7, 0x29, 0xfc, 0x01, 0xfc, 0x29, 0xe7,
+        0x8b, 0x14, 0x24, 0x8b, 0x4c, 0x24, 0xfc, 0x8d, 0x6c, 0xbe, 0x10,
+        0x88, 0xe1, 0x00, 0xf2, 0x66, 0x01, 0xfe, 0x66, 0x89, 0xe6,
+        0x0f, 0xb6, 0xc4,                   /* movzx eax, ah */
+        0x0f, 0xbf, 0xfe,                   /* movsx edi, si */
+        0x0f, 0xcf,                         /* bswap edi */
+        0x4c, 0x44, 0x47, 0x4f,             /* dec esp, inc esp, inc edi, dec edi */
+        0xbf, 0x78, 0x56, 0x34, 0x12,       /* mov edi, 0x12345678 */
+        0xc1, 0xe7, 0x05,                   /* shl edi, 5 */
+        0xd3, 0xcf,                         /* ror edi, cl */
+        0x0f, 0xaf, 0xfa,                   /* imul edi, edx */
+        0x6b, 0xc7, 0x13,                   /* imul eax, edi, 19 */
+        0xf7, 0xe7,                         /* mul edi */
+        0x99,                               /* cdq */
+        0x39, 0xd8,                         /* cmp eax, ebx: every flag defined */
+        0xc3,
+    };
+    compare(ok, sizeof(ok));
+}
+
+/* TZCNT/LZCNT (DXVK's bit iteration): register and memory forms, zero and
+ * nonzero sources, with CF and ZF captured by setcc before cmp redefines
+ * every flag. */
+static void test_bit_counts(void)
+{
+    static const uint8_t ok[] = {
+        0xb8, 0x00, 0x10, 0x00, 0x00,       /* mov eax, 0x1000 */
+        0xf3, 0x0f, 0xbc, 0xf8,             /* tzcnt edi, eax */
+        0xf3, 0x0f, 0xbd, 0xe8,             /* lzcnt ebp, eax */
+        0x31, 0xc0,                         /* xor eax, eax */
+        0xf3, 0x0f, 0xbc, 0xd0,             /* tzcnt edx, eax: 32, CF */
+        0x0f, 0x92, 0xc1,                   /* setc cl */
+        0xf3, 0x0f, 0xbd, 0xf0,             /* lzcnt esi, eax: 32, CF */
+        0x0f, 0x92, 0xc5,                   /* setc ch */
+        0xb8, 0x01, 0x00, 0x00, 0x80,       /* mov eax, 0x80000001 */
+        0xf3, 0x0f, 0xbc, 0xd8,             /* tzcnt ebx, eax: 0, ZF */
+        0x0f, 0x94, 0xc4,                   /* setz ah */
+        0xf3, 0x0f, 0xbc, 0x1c, 0x24,       /* tzcnt ebx, [esp] */
+        0xf3, 0x0f, 0xbd, 0x04, 0x24,       /* lzcnt eax, [esp] */
+        0x39, 0xd8,                         /* cmp eax, ebx */
+        0xc3,
+    };
+    compare(ok, sizeof(ok));
+}
+
+/* xchg between registers, which only the re-encoder takes. */
+static void test_xchg(void)
+{
+    static const uint8_t code[] = {
+        0x87, 0xe7, 0x87, 0xe7,             /* xchg edi, esp, twice */
+        0x87, 0xfb,                         /* xchg ebx, edi */
+        0x97,                               /* xchg eax, edi */
+        0x86, 0xe1,                         /* xchg cl, ah */
+        0xc3,
+    };
+    Run r = run(code, sizeof(code), 1);
+    assert(r.status == PW_OK && r.state.eip == 0xdead0000u);
+    assert(r.state.gpr[3] == low + DATA + 0x100 && r.state.gpr[0] == 0x44442244u);
+    assert(r.state.gpr[7] == 0x11111111u && r.state.gpr[1] == 0x22222244u);
+    assert(r.state.gpr[4] == low + STACK_TOP + 4);
+}
+
+static uint32_t pattern(uint32_t offset)
+{
+    uint32_t v = 0;
+    for (unsigned k = 0; k < 4; k++) v |= (uint32_t)(uint8_t)((offset + k) * 7 + 3) << (8 * k);
+    return v;
+}
+
+/* Atomic read-modify-writes with lock, xchg, cmpxchg, xadd and cmpxchg8b
+ * on memory, and fs and the flat segment overrides. */
+static void test_atomic_and_segments(void)
+{
+    static const uint8_t code[] = {
+        0xf0, 0x01, 0x06,                   /* lock add [esi], eax */
+        0xf0, 0x0f, 0xc1, 0x4e, 0x04,       /* lock xadd [esi+4], ecx */
+        0x87, 0x56, 0x08,                   /* xchg [esi+8], edx */
+        0x8b, 0x46, 0x0c,                   /* mov eax, [esi+12] */
+        0xf0, 0x0f, 0xb1, 0x5e, 0x0c,       /* lock cmpxchg [esi+12], ebx: equal */
+        0xf0, 0x0f, 0xc7, 0x4e, 0x10,       /* lock cmpxchg8b [esi+16]: not equal */
+        0x64, 0xa1, 0, 0, 0, 0,             /* mov eax, fs:[0] */
+        0x64, 0x89, 0x0d, 4, 0, 0, 0,       /* mov fs:[4], ecx */
+        0x2e, 0x8b, 0x5e, 0x20,             /* mov ebx, cs:[esi+0x20] */
+        0xc3,
+    };
+    const uint32_t *data;
+    Run r;
+
+    fs_offset = DATA + 0x200;
+    r = run(code, sizeof(code), 1);
+    fs_offset = 0;
+    data = (const uint32_t *)(const void *)r.data;
+    assert(r.status == PW_OK && r.state.eip == 0xdead0000u);
+    assert(data[0] == pattern(0) + 0x11111111u);
+    assert(data[1] == pattern(4) + 0x22222222u);
+    assert(data[2] == 0x33333333u && data[3] == 0x44444444u);
+    assert(data[4] == pattern(16) && data[5] == pattern(20));
+    assert(data[0x204 / 4] == pattern(4));
+    assert(r.state.gpr[0] == pattern(0x200) && r.state.gpr[1] == pattern(4));
+    assert(r.state.gpr[2] == pattern(20) && r.state.gpr[3] == pattern(0x20));
+    assert(!(r.state.eflags & 0x040));
+    assert(r.reencoded);
+}
+
+/* Memory operands through the guard: loads, stores, read-modify-write,
+ * immediates, moffs, setcc and cmov with memory. */
+static void test_memory(void)
+{
+    uint8_t code[] = {
+        0xb9, 0x04, 0x00, 0x00, 0x00,       /* mov ecx, 4 */
+        0x8b, 0x06,                         /* mov eax, [esi] */
+        0x03, 0x47, 0x04,                   /* add eax, [edi+4] */
+        0x89, 0x47, 0x08,                   /* mov [edi+8], eax */
+        0x01, 0x07,                         /* add [edi], eax */
+        0x83, 0x6f, 0x0c, 0x05,             /* sub dword [edi+12], 5 */
+        0x80, 0x76, 0x10, 0x5a,             /* xor byte [esi+16], 0x5a */
+        0xc7, 0x44, 0x8e, 0x20, 1, 2, 3, 4, /* mov dword [esi+ecx*4+0x20], 0x04030201 */
+        0x66, 0xc7, 0x47, 0x30, 0x34, 0x12, /* mov word [edi+0x30], 0x1234 */
+        0xa1, 0, 0, 0, 0,                   /* mov eax, [moffs] (patched) */
+        0xa3, 0, 0, 0, 0,                   /* mov [moffs+4], eax (patched) */
+        0x39, 0x06,                         /* cmp [esi], eax */
+        0x0f, 0x94, 0xc2,                   /* setz dl */
+        0x88, 0x57, 0x40,                   /* mov [edi+0x40], dl */
+        0x0f, 0x42, 0x5e, 0x44,             /* cmovb ebx, [esi+0x44] */
+        0x13, 0x4e, 0x48,                   /* adc ecx, [esi+0x48] */
+        0xd1, 0x67, 0x50,                   /* shl dword [edi+0x50], 1 */
+        0xf7, 0x5f, 0x54,                   /* neg dword [edi+0x54] */
+        0x0f, 0xb6, 0x56, 0x58,             /* movzx edx, byte [esi+0x58] */
+        0x0f, 0xbf, 0x6e, 0x5a,             /* movsx ebp, word [esi+0x5a] */
+        0xff, 0x47, 0x60,                   /* inc dword [edi+0x60] */
+        0x85, 0x46, 0x64,                   /* test [esi+0x64], eax */
+        0x39, 0xd8,                         /* cmp eax, ebx: test leaves AF undefined */
+        0xc3,
+    };
+    uint32_t moffs = low + DATA + 0x80, moffs4 = moffs + 4;
+    memcpy(code + 38, &moffs, 4);
+    memcpy(code + 43, &moffs4, 4);
+    compare(code, sizeof(code));
+}
+
+/* Flags across linked blocks (a compare in one block, the branch in the
+ * next), a loop, calls, returns, push and pop of every kind, and leave. */
+static void test_control(void)
+{
+    static const uint8_t code[] = {
+        0x55,                               /* 00 push ebp */
+        0x89, 0xe5,                         /* 01 mov ebp, esp */
+        0x57, 0x56,                         /* 03 push edi; push esi */
+        0xb9, 0x20, 0, 0, 0,                /* 05 mov ecx, 32 */
+        0x31, 0xc0,                         /* 0a xor eax, eax */
+        0x01, 0xc8,                         /* 0c L: add eax, ecx */
+        0x39, 0xc1,                         /* 0e cmp ecx, eax */
+        0xeb, 0x00,                         /* 10 jmp +0 (the flags cross a link) */
+        0x72, 0x01,                         /* 12 jb +1 */
+        0x40,                               /* 14 inc eax */
+        0x49,                               /* 15 dec ecx */
+        0x75, 0xf4,                         /* 16 jnz L */
+        0xe8, 0x0d, 0, 0, 0,                /* 18 call F */
+        0x6a, 0xfe,                         /* 1d push -2 */
+        0x68, 0x44, 0x33, 0x22, 0x11,       /* 1f push 0x11223344 */
+        0x5b, 0x5a,                         /* 24 pop ebx; pop edx */
+        0x5e, 0x5f,                         /* 26 pop esi; pop edi */
+        0xc9,                               /* 28 leave */
+        0xc3,                               /* 29 ret */
+        0xff, 0x36,                         /* 2a F: push dword [esi] */
+        0x5f,                               /* 2c pop edi */
+        0x54,                               /* 2d push esp */
+        0x58,                               /* 2e pop eax */
+        0xc2, 0x00, 0x00,                   /* 2f ret 0 */
+    };
+    compare(code, sizeof(code));
+}
+
+/* MPX's bnd prefix (F2) on jumps, calls and returns, as FFmpeg's assembly
+ * has it (LAV Filters): a processor without MPX ignores it. */
+static void test_bnd_branches(void)
+{
+    static const uint8_t code[] = {
+        0xb9, 0x04, 0, 0, 0,                /* 00 mov ecx, 4 */
+        0x31, 0xc0,                         /* 05 xor eax, eax */
+        0x40,                               /* 07 L: inc eax */
+        0x49,                               /* 08 dec ecx */
+        0xf2, 0x75, 0xfb,                   /* 09 bnd jnz L */
+        0xf2, 0xe8, 0x12, 0, 0, 0,          /* 0c bnd call F */
+        0x85, 0xc0,                         /* 12 test eax, eax */
+        0xf2, 0x0f, 0x85, 0x01, 0, 0, 0,    /* 14 bnd jnz near +1 */
+        0x40,                               /* 1b inc eax */
+        0xf2, 0xe9, 0x00, 0, 0, 0,          /* 1c bnd jmp +0 */
+        0xf2, 0xc3,                         /* 22 bnd ret */
+        0x01, 0xc0,                         /* 24 F: add eax, eax */
+        0xf2, 0xc3,                         /* 26 bnd ret */
+    };
+    /* The same without the prefix. */
+    static const uint8_t plain[] = {
+        0xb9, 0x04, 0, 0, 0,                /* 00 mov ecx, 4 */
+        0x31, 0xc0,                         /* 05 xor eax, eax */
+        0x40,                               /* 07 L: inc eax */
+        0x49,                               /* 08 dec ecx */
+        0x75, 0xfc,                         /* 09 jnz L */
+        0xe8, 0x0f, 0, 0, 0,                /* 0b call F */
+        0x85, 0xc0,                         /* 10 test eax, eax */
+        0x0f, 0x85, 0x01, 0, 0, 0,          /* 12 jnz near +1 */
+        0x40,                               /* 18 inc eax */
+        0xe9, 0x00, 0, 0, 0,                /* 19 jmp +0 */
+        0xc3,                               /* 1e ret */
+        0x01, 0xc0,                         /* 1f F: add eax, eax */
+        0xc3,                               /* 21 ret */
+    };
+    Run bnd = run(code, sizeof(code), 0), without = run(plain, sizeof(plain), 0);
+
+    compare(code, sizeof(code));
+    assert(bnd.state.gpr[0] == 8 && without.state.gpr[0] == 8);
+    same(&bnd, &without);
+}
+
+/* A block the re-encoder stops in the middle (a high-byte store, which it
+ * leaves to the emitter) and indirect calls and jumps through registers and
+ * memory. */
+static void test_mixed_and_indirect(void)
+{
+    uint8_t code[] = {
+        0xb8, 100, 0, 0, 0,                 /* 00 mov eax, 100 */
+        0x31, 0xd2,                         /* 05 xor edx, edx */
+        0xb9, 7, 0, 0, 0,                   /* 07 mov ecx, 7 */
+        0xf7, 0xf1,                         /* 0c div ecx */
+        0x88, 0x6e, 0x10,                   /* 0e mov [esi+0x10], ch (emitter) */
+        0x8d, 0x1c, 0x10,                   /* 11 lea ebx, [eax+edx] */
+        0xbf, 0, 0, 0, 0,                   /* 14 mov edi, F (patched) */
+        0xff, 0xd7,                         /* 19 call edi */
+        0x89, 0x3e,                         /* 1b mov [esi], edi */
+        0xff, 0x16,                         /* 1d call [esi] */
+        0x39, 0xd8,                         /* 1f cmp eax, ebx: div left the flags undefined */
+        0xc3,                               /* 21 ret */
+        0x43,                               /* 22 F: inc ebx */
+        0xc3,                               /* 23 ret */
+    };
+    uint32_t f = low + CODE + 0x22;
+    memcpy(code + 0x15, &f, 4);
+    compare(code, sizeof(code));
+}
+
+/* Invalid null targets return to the dispatcher as the emitter does; they
+ * must not jump to host NULL, including a ret through the empty call stack. */
+static void test_null_targets(void)
+{
+    static uint8_t sources[][8] = {
+        {0xb8,0,0,0,0,0xff,0xd0},       /* mov eax,0; call eax */
+        {0xb8,0,0,0,0,0xff,0xe0},       /* mov eax,0; jmp eax */
+        {0xc7,0x06,0,0,0,0,0xff,0x16},  /* mov dword [esi],0; call [esi] */
+        {0xc7,0x06,0,0,0,0,0xff,0x26},  /* mov dword [esi],0; jmp [esi] */
+        {0xc7,0x04,0x24,0,0,0,0,0xc3}, /* mov dword [esp],0; ret */
+        {0x0f,0x84,0,0,0,0,0x90,0xc3}, /* jz 0; nop; ret (side exit) */
+    };
+    static const size_t bytes[] = {7,7,8,8,8,8};
+    /* The caller must not occupy slot zero itself: a randomized low mapping
+     * can otherwise hide the empty-slot bug by publishing a nonzero tag. */
+    source_pc = 0x12341000;
+    const uint32_t relative = 0u - (source_pc + 6);
+    memcpy(sources[5] + 2, &relative, sizeof(relative));
+    for (unsigned k = 0; k < sizeof(bytes) / sizeof(bytes[0]); k++) {
+        Run reference = run(sources[k], bytes[k], 0);
+        Run ordinary = run(sources[k], bytes[k], 1);
+        Run stacked = run_call_stack(sources[k], bytes[k]);
+        Run super = run_superblocks(sources[k], bytes[k]);
+        assert(reference.status == PW_ERR_NOT_FOUND && reference.state.eip == 0);
+        same(&reference, &ordinary);
+        same(&reference, &stacked);
+        same(&reference, &super);
+        unbounded = 1;
+        ordinary = run(sources[k], bytes[k], 1);
+        unbounded = 0;
+        same(&reference, &ordinary);
+    }
+    source_pc = 0;
+}
+
+/* Returns and indirect calls between re-encoded blocks enter their target's
+ * chain entry with the guest state still pinned once the target is known
+ * (the dispatcher records it in the chain table). */
+static void test_chain_hash_flags(void)
+{
+    uint8_t code[]={
+        0xb9,200,0,0,0,                     /* mov ecx,200 */
+        0xbb,0,0,0,0,                       /* mov ebx,F */
+        0xb8,0xff,0xff,0xff,0xff,           /* L: mov eax,-1 */
+        0x05,1,0,0,0,                       /* add eax,1 */
+        0xff,0xd3,                          /* call ebx: hash must preserve flags */
+        0x49,0x75,0xf1,                     /* dec ecx; jnz L */
+        0xc3,
+        0x0f,0x92,0xc2,                     /* F: setb dl */
+        0x0f,0x94,0xc0,                     /* sete al */
+        0x0f,0x9a,0xc6,                     /* setp dh */
+        0x0f,0x90,0xc4,                     /* seto ah */
+        0x53,                              /* preserve indirect target in ebx */
+        0x0f,0x98,0xc3,                     /* sets bl (reference supports register SETcc) */
+        0x88,0x1e,                          /* mov [esi],bl */
+        0x5b,                              /* pop ebx */
+        0xc3,
+    };
+    uint32_t f=low+CODE+26;
+    Run captured;
+    memcpy(code+6,&f,4);
+    compare(code,sizeof(code));
+    captured=run(code,sizeof(code),1);
+    assert(captured.status==PW_OK && captured.state.eip==0xdead0000u);
+    assert(captured.chain_slots>=3 && captured.state.gpr[1]==0);
+    assert(captured.state.gpr[0]==1 && (captured.state.gpr[2]&0xffffu)==0x0101u);
+    assert(captured.data[0]==0);
+    /* A different carry/zero/sign/overflow pattern at the same dynamic exit. */
+    memcpy(code+11,&(uint32_t){0x7fffffffu},4);
+    compare(code,sizeof(code));
+    captured=run(code,sizeof(code),1);
+    assert(captured.status==PW_OK && captured.state.eip==0xdead0000u);
+    assert(captured.state.gpr[0]==0x80000100u && (captured.state.gpr[2]&0xffffu)==0x0100u);
+    assert(captured.data[0]==1);
+}
+
+/* Two colliding callees must retain both entries and incoming flags. */
+static void test_two_way_calls(void)
+{
+    uint8_t *code=calloc(1, DATA-CODE);
+    uint8_t caller[]={
+        0xb9,64,0,0,0, 0xbb,0,0,0,0, 0xb8,0,0,0,0,
+        0x39,0xc9,                         /* L: cmp ecx,ecx: clear CF */
+        0xff,0xd3,                         /* call ebx */
+        0x81,0xf3,0,0,0,0,                /* xor ebx,F^G */
+        0x49,0x75,0xf3,                    /* dec ecx; jnz L */
+        0x3d,128,0,0,0, 0xc3,
+    };
+    const uint8_t fcode[]={0x83,0xd0,1,0xc3}, gcode[]={0x83,0xd0,3,0xc3};
+    uint32_t f=low+CODE+0x100, g=0, mask;
+    Run captured;
+    assert(code);
+    for(uint32_t candidate=f+16; candidate<low+DATA-16; candidate++)
+        if(pw_x86_chain_slot(candidate)==pw_x86_chain_slot(f)) {g=candidate;break;}
+    assert(g && g!=f);
+    mask=f^g;
+    memcpy(caller+6,&f,4);memcpy(caller+21,&mask,4);
+    memcpy(code,caller,sizeof(caller));
+    memcpy(code+f-low-CODE,fcode,sizeof(fcode));
+    memcpy(code+g-low-CODE,gcode,sizeof(gcode));
+    compare(code,DATA-CODE);
+    unbounded=1;captured=run(code,DATA-CODE,1);unbounded=0;
+    assert(captured.status==PW_OK && captured.state.eip==0xdead0000u);
+    assert(captured.state.gpr[0]==128 && captured.state.gpr[1]==0);
+    assert(captured.state.eflags & 0x40);
+    assert(captured.steps<12); /* Cold publication, then both banks chain. */
+    free(code);
+}
+
+static void test_return_targets(void)
+{
+    uint8_t code[] = {
+        0xb9, 0xc8, 0, 0, 0,                /* 00 mov ecx, 200 */
+        0x31, 0xc0,                         /* 05 xor eax, eax */
+        0xbb, 0, 0, 0, 0,                   /* 07 mov ebx, G (patched) */
+        0xe8, 0x0b, 0, 0, 0,                /* 0c L: call F */
+        0xff, 0xd3,                         /* 11 call ebx */
+        0x49,                               /* 13 dec ecx */
+        0x75, 0xf6,                         /* 14 jnz L */
+        0x39, 0xd8,                         /* 16 cmp eax, ebx */
+        0xc3,                               /* 18 ret */
+        0x00, 0x00, 0x00,                   /* 19 padding */
+        0x01, 0xc8,                         /* 1c F: add eax, ecx */
+        0xc3,                               /* 1e ret */
+        0x40,                               /* 1f G: inc eax */
+        0xc3,                               /* 20 ret */
+    };
+    uint32_t g = low + CODE + 0x1f;
+    Run emitter, reencoded;
+    memcpy(code + 8, &g, 4);
+    emitter = run(code, sizeof(code), 0);
+    reencoded = run(code, sizeof(code), 1);
+    same(&reencoded, &emitter);
+    reencoded = run_call_stack(code, sizeof(code));
+    same(&reencoded, &emitter);
+    assert(reencoded.state.gpr[0] == 200u * 201u / 2u + 200u);
+    assert(!emitter.chain_slots && reencoded.chain_slots >= 3);
+}
+
+/* A refused access stops with every register and, since a branch reads
+ * them later, the flags of the compare before it. */
+/* A loop with a call and a return in it: unbounded chains give the same
+ * result without returning to the dispatcher once linked, where bounded
+ * ones return whenever the budget runs out. */
+static void test_unbounded_chains(void)
+{
+    static const uint8_t code[] = {
+        0xb9, 0xb8, 0x0b, 0, 0,             /* 00 mov ecx, 3000 */
+        0x31, 0xc0,                         /* 05 xor eax, eax */
+        0xe8, 0x04, 0, 0, 0,                /* 07 L: call F */
+        0x49,                               /* 0c dec ecx */
+        0x75, 0xf8,                         /* 0d jnz L */
+        0xc3,                               /* 0f ret */
+        0x01, 0xc8,                         /* 10 F: add eax, ecx */
+        0xc3,                               /* 12 ret */
+    };
+    Run emitter = run(code, sizeof(code), 0), bounded, free_running;
+
+    bounded = run(code, sizeof(code), 1);
+    unbounded = 1;
+    free_running = run(code, sizeof(code), 1);
+    unbounded = 0;
+    assert(emitter.status == PW_OK && emitter.state.eip == 0xdead0000u);
+    assert(emitter.state.gpr[0] == 3000u * 3001u / 2);
+    same(&bounded, &emitter);
+    same(&free_running, &emitter);
+    free_running = run_call_stack(code, sizeof(code));
+    same(&free_running, &emitter);
+    assert(free_running.steps <= 16);
+    /* 6000 charged exits at the default quantum of 64 against a handful of
+     * steps to translate and link the four blocks. */
+    if (free_running.steps > 16 || bounded.steps < 6000 / PW_X86_ENGINE_DEFAULT_QUANTUM)
+        fprintf(stderr, "unbounded chains: %u steps bounded, %u unbounded\n", bounded.steps, free_running.steps);
+    assert(free_running.steps <= 16 && bounded.steps >= 6000 / PW_X86_ENGINE_DEFAULT_QUANTUM);
+}
+
+/* Returns the call stack does not predict: a push/ret trampoline, a call
+ * whose return address is popped (the PC thunk), ret imm16 over arguments,
+ * and recursion deeper than the call stack, which runs out into the guard
+ * and starts it again. The re-encoder on a call stack matches the emitter. */
+static void test_call_stack(void)
+{
+    uint8_t code[] = {
+        0x68, 0, 0, 0, 0,                   /* 00 push T (patched) */
+        0xc3,                               /* 05 ret: to T */
+        0xcc,                               /* 06 */
+        0xe8, 0, 0, 0, 0,                   /* 07 T: call P */
+        0x58,                               /* 0c P: pop eax (the PC thunk) */
+        0x6a, 0x05,                         /* 0d push 5 */
+        0x6a, 0x07,                         /* 0f push 7 */
+        0xe8, 0x12, 0, 0, 0,                /* 11 call A */
+        0xb9, 0xb8, 0x0b, 0, 0,             /* 16 mov ecx, 3000 */
+        0xe8, 0x13, 0, 0, 0,                /* 1b call R */
+        0x01, 0xd8,                         /* 20 add eax, ebx */
+        0xc3,                               /* 22 ret */
+        0xcc, 0xcc, 0xcc, 0xcc, 0xcc,       /* 23 */
+        0x8b, 0x5c, 0x24, 0x04,             /* 28 A: mov ebx, [esp+4] */
+        0x03, 0x5c, 0x24, 0x08,             /* 2c add ebx, [esp+8] */
+        0xc2, 0x08, 0x00,                   /* 30 ret 8 */
+        0x49,                               /* 33 R: dec ecx */
+        0x74, 0x06,                         /* 34 jz done */
+        0xe8, 0xf8, 0xff, 0xff, 0xff,       /* 36 call R */
+        0x43,                               /* 3b inc ebx */
+        0xc3,                               /* 3c done: ret */
+    };
+    const uint32_t t = low + CODE + 7;
+    Run emitter, stacked;
+
+    memcpy(code + 1, &t, 4);
+    emitter = run(code, sizeof(code), 0);
+    call_stack_faults = 0;
+    stacked = run_call_stack(code, sizeof(code));
+    assert(emitter.status == PW_OK && emitter.state.eip == 0xdead0000u);
+    same(&stacked, &emitter);
+    assert(emitter.state.gpr[3] == 12 + 2999 && emitter.state.gpr[1] == 0);
+    /* 3000 nested calls take 24000 bytes of a 16 KiB call stack. */
+    assert(call_stack_faults >= 1);
+}
+
+/* A predicted call site (PwX86TranslateOptions.call_predict), run as one
+ * block against a chain table. call edx is looked up until the table finds
+ * its target, then jumps to that first target directly: with the target's
+ * entry missing from the table the call still reaches it. Another target
+ * keeps the lookup without replacing the first, and a missing one returns
+ * to the dispatcher. Untrained, target 0 is looked up and trains nothing.
+ * The callee's SETcc observe the caller's flags on every path. */
+static void test_call_predict_site(void)
+{
+    static const unsigned flags[] = { 0, 0x8d5, 0x41, 0x894 };
+    static const uint8_t caller[] = { 0xff, 0xd2 }; /* call edx */
+    static const uint8_t destination[] = {
+        0x0f, 0x92, 0xc0, /* setb al */
+        0x0f, 0x94, 0xc3, /* sete bl */
+        0x0f, 0x9a, 0xc2, /* setp dl */
+        0x0f, 0x90, 0xc4, /* seto ah */
+        0x0f, 0x98, 0xc7, /* sets bh */
+    };
+    const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+    const size_t table_bytes = PW_X86_REENCODE_CHAIN_ENTRIES * sizeof(PwX86IndirectTarget);
+    uint8_t *region = mmap(NULL, table_bytes + 2 * page, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    uint8_t *code = mmap(NULL, 3 * page, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    const uint32_t pc = low + CODE, a = low + CODE + 0x100, other = low + CODE + 0x200;
+    const uint32_t ends[2] = { a + (uint32_t)sizeof(destination), other + (uint32_t)sizeof(destination) };
+    PwX86IndirectTarget indirect = {0}, *table, *slot_a, *slot_other;
+    PwX86TranslateOptions options = {
+        .flat_low = low, .flat_high = low + SPAN, .no_counters = 1, .indirect_targets = &indirect,
+        .native_fp = 1, .unbounded_chains = 1, .call_stack = 1, .call_predict = 1,
+    };
+    PwX86Block block, callee;
+
+    assert(region != MAP_FAILED && code != MAP_FAILED);
+    assert(!mprotect(region + page, table_bytes, PROT_READ | PROT_WRITE));
+    table = (PwX86IndirectTarget *)(region + page);
+    options.chain_targets = table;
+    /* The empty slot 0 must not match target 0 (its entry has no code). */
+    table[0].guest_pc = table[PW_X86_REENCODE_CHAIN_SLOTS].guest_pc = 1;
+    slot_a = table + pw_x86_chain_slot(a);          /* the chain table index */
+    slot_other = table + pw_x86_chain_slot(other);
+    assert(slot_a != slot_other && slot_a != table && slot_other != table);
+    assert(pw_x86_reencode(destination, sizeof(destination), a, code + page, page, &callee, &options) == PW_OK);
+    slot_a->host_code = code + page + callee.chain_entry_offset;
+    assert(pw_x86_reencode(destination, sizeof(destination), other, code + 2 * page, page, &callee, &options) == PW_OK);
+    slot_other->host_code = code + 2 * page + callee.chain_entry_offset;
+
+    /* Each step: the target, whether its slot holds it, where the run ends
+     * (0: at the target, in the dispatcher; 1/2: past a or other's code). */
+    static const struct { unsigned target; unsigned listed; unsigned reached; } steps[] = {
+        { 0, 0, 0 },    /* a missing: looked up, missed */
+        { 0, 1, 1 },    /* a listed: looked up, trains */
+        { 0, 0, 1 },    /* a missing: predicted */
+        { 1, 1, 2 },    /* other listed: looked up */
+        { 0, 0, 1 },    /* a missing: still predicted */
+        { 1, 0, 0 },    /* other missing: looked up, missed */
+    };
+    for (unsigned f = 0; f < sizeof(flags) / sizeof(flags[0]); f++) {
+        assert(pw_x86_reencode(caller, sizeof(caller), pc, code, page, &block, &options) == PW_OK);
+        for (unsigned k = 0; k < sizeof(steps) / sizeof(steps[0]); k++) {
+            const uint32_t target = steps[k].target ? other : a;
+            PwX86IndirectTarget *slot = steps[k].target ? slot_other : slot_a;
+            PwX86State state;
+            uint32_t expected[8];
+            slot->guest_pc = steps[k].listed ? target : target ^ 1u;
+            initial(&state);
+            state.gpr[2] = target;
+            state.eflags = 2 | flags[f];
+            state.chain_budget = 8;
+            state.call_stack_top = (uintptr_t)call_stack_region + PW_X86_ENGINE_CALL_STACK_GUARD + CALL_STACK_BYTES;
+            memcpy(expected, state.gpr, sizeof(expected));
+            expected[4] -= 4;
+            if (steps[k].reached) {
+                expected[0] = (expected[0] & 0xffff0000u) |
+                    ((flags[f] & 0x800) ? 0x100u : 0u) | (flags[f] & 1);
+                expected[3] = (expected[3] & 0xffff0000u) |
+                    ((flags[f] & 0x80) ? 0x100u : 0u) | ((flags[f] & 0x40) != 0);
+                expected[2] = (expected[2] & 0xffffff00u) | ((flags[f] & 4) != 0);
+            }
+            assert(pw_x86_run_block(&state, code) == 0);
+            if (state.eip != (steps[k].reached ? ends[steps[k].reached - 1] : target))
+                fprintf(stderr, "call predict: flags %03x step %u eip %08x\n", flags[f], k, state.eip);
+            assert(state.eip == (steps[k].reached ? ends[steps[k].reached - 1] : target));
+            assert(!memcmp(state.gpr, expected, sizeof(expected)));
+            assert((state.eflags & 0x8d5) == flags[f]);
+            {
+                uint32_t pushed;
+                memcpy(&pushed, guest + STACK_TOP - 4, 4);
+                assert(pushed == pc + (uint32_t)sizeof(caller));
+            }
+        }
+        slot_a->guest_pc = a;
+        slot_other->guest_pc = other;
+    }
+    /* Untrained, target 0 goes to the lookup, which misses, and trains
+     * nothing: a afterwards, missing, is looked up too. */
+    assert(pw_x86_reencode(caller, sizeof(caller), pc, code, page, &block, &options) == PW_OK);
+    for (unsigned k = 0; k < 2; k++) {
+        PwX86State state;
+        initial(&state);
+        state.gpr[2] = k ? a : 0;
+        state.chain_budget = 8;
+        state.call_stack_top = (uintptr_t)call_stack_region + PW_X86_ENGINE_CALL_STACK_GUARD + CALL_STACK_BYTES;
+        slot_a->guest_pc = a ^ 1u;
+        assert(pw_x86_run_block(&state, code) == 0);
+        assert(state.eip == (k ? a : 0u));
+    }
+    assert(!munmap(code, 3 * page));
+    assert(!munmap(region, table_bytes + 2 * page));
+}
+
+/* Predicted calls in the engine, whose code learns its targets in place: a
+ * monomorphic call through memory, a site alternating between two
+ * targets, a callee reading the CF its caller set, and a callee that
+ * returns past its call (the return's own lookup), a hundred times each.
+ * The result matches the emitter's and the re-encoder's without
+ * prediction. */
+static void test_call_predict_engine(void)
+{
+    enum { F1 = 0x80, F2 = 0x90, F3 = 0xa0, F4 = 0xb0, TABLE = 0x30000 };
+    static const uint8_t program[] = {
+        0xb8, 0, 0, 0, 0,                   /* 00 mov eax, table */
+        0xb9, 100, 0, 0, 0,                 /* 05 mov ecx, 100 */
+        0x31, 0xf6,                         /* 0a xor esi, esi */
+        0xff, 0x50, 0x04,                   /* 0c loop: call [eax+4]: f1 */
+        0xff, 0x14, 0xb0,                   /* 0f call [eax+esi*4]: f2, f1, ... */
+        0x83, 0xf6, 0x01,                   /* 12 xor esi, 1 */
+        0x83, 0xf9, 0x32,                   /* 15 cmp ecx, 50 */
+        0xff, 0x50, 0x08,                   /* 18 call [eax+8]: f3, adc */
+        0xff, 0x50, 0x0c,                   /* 1b call [eax+0xc]: f4, returns to 21 */
+        0xcc, 0xcc, 0xcc,                   /* 1e */
+        0x49,                               /* 21 dec ecx */
+        0x75, 0xe8,                         /* 22 jnz loop */
+        0xc3,                               /* 24 ret */
+    };
+    static const uint8_t f1[] = { 0x83, 0xc3, 0x01, 0xc3 };             /* add ebx, 1 */
+    static const uint8_t f2[] = { 0x83, 0xc7, 0x03, 0xc3 };             /* add edi, 3 */
+    static const uint8_t f3[] = { 0x83, 0xd5, 0x00, 0xc3 };             /* adc ebp, 0 */
+    static const uint8_t f4[] = { 0x83, 0x04, 0x24, 0x03, 0xc3 };       /* add dword [esp], 3 */
+    const uint32_t code = low + CODE, table = low + TABLE;
+    const uint32_t targets[4] = { code + F2, code + F1, code + F3, code + F4 };
+    uint8_t image[0xc0];
+    Run emitter, plain, predicted;
+
+    memset(image, 0xcc, sizeof(image));
+    memcpy(image, program, sizeof(program));
+    memcpy(image + 1, &table, 4);
+    memcpy(image + F1, f1, sizeof(f1));
+    memcpy(image + F2, f2, sizeof(f2));
+    memcpy(image + F3, f3, sizeof(f3));
+    memcpy(image + F4, f4, sizeof(f4));
+    memcpy(guest + TABLE, targets, sizeof(targets));
+    emitter = run(image, sizeof(image), 0);
+    plain = run_superblocks(image, sizeof(image));
+    call_predict = 1;
+    predicted = run_superblocks(image, sizeof(image));
+    call_predict = 0;
+    assert(emitter.status == PW_OK && emitter.state.eip == 0xdead0000u);
+    assert(emitter.state.gpr[3] == 0x44444444u + 150 && emitter.state.gpr[7] == low + DATA + 0x100 + 150);
+    assert(emitter.state.gpr[5] == 0x66666666u + 49 && emitter.state.gpr[1] == 0 && emitter.state.gpr[6] == 0);
+    same(&plain, &emitter);
+    same(&predicted, &emitter);
+    assert(predicted.reencoded && plain.reencoded);
+}
+
+/* Returns into code that reads the flags the callee left (adc after a
+ * callee's compare: the flag-free landing check) and into code that redefines
+ * them first (the compare), including a callee that returns past its call
+ * to the instruction after next. */
+static void test_call_landings(void)
+{
+    static const uint8_t program[] = { 0xb9,0x14,0x00,0x00,0x00,0xe8,0x36,0x00,0x00,0x00,0x83,0xd3,0x00,0xe8,0x36,0x00,0x00,0x00,0x83,0xc6,0x01,0xe8,0x36,0x00,0x00,0x00,0x83,0xc7,0x01,0x49,0x75,0xe5,0xc3 };
+    static const uint8_t f1[] = { 0x31, 0xc0, 0x83, 0xf8, 0x01, 0xc3 }; /* xor eax, eax; cmp eax, 1 (CF); ret */
+    static const uint8_t f3[] = { 0x83, 0x04, 0x24, 0x03, 0xc3 };       /* add dword [esp], 3; ret */
+    uint8_t image[0x60];
+
+    memset(image, 0xcc, sizeof(image));
+    memcpy(image, program, sizeof(program));
+    memcpy(image + 0x40, f1, sizeof(f1));
+    memcpy(image + 0x48, f1, sizeof(f1));
+    memcpy(image + 0x50, f3, sizeof(f3));
+    compare(image, sizeof(image));
+    {
+        Run r = run_production(image, sizeof(image));
+        assert(r.state.gpr[3] == 0x44444444u + 20 && r.state.gpr[6] == low + DATA + 20 &&
+               r.state.gpr[7] == low + DATA + 0x100);
+    }
+}
+
+/* Switches: a jump through a table bounded by cmp and ja (or jae) just
+ * before it, its table in the code (as MSVC places it), whose targets read
+ * the flags the compare left (adc, sbb, setcc); entries past the bound
+ * that are never used; and the same switch with its table where the source
+ * view does not reach, which keeps the lookup. Each matches the emitter,
+ * with jump tables in the engine and without, and the tables were taken. */
+static void test_jump_tables(void)
+{
+    enum { T = 0xa0, T2 = 0xd0, FAR = 0x30000 };
+    static const uint8_t program[] = {
+        0xb9, 0x2c, 0x01, 0, 0,             /* 00 mov ecx, 300 */
+        0x31, 0xdb,                         /* 05 xor ebx, ebx */
+        0x31, 0xf6,                         /* 07 xor esi, esi */
+        0x89, 0xc8,                         /* 09 L: mov eax, ecx */
+        0x83, 0xe0, 0x07,                   /* 0b and eax, 7 */
+        0x83, 0xf8, 0x05,                   /* 0e cmp eax, 5 */
+        0x77, 0x2d,                         /* 11 ja D (40) */
+        0xff, 0x24, 0x85, 0, 0, 0, 0,       /* 13 jmp [eax*4+T] */
+        0x83, 0xc3, 0x01, 0xeb, 0x26,       /* 1a C0: add ebx, 1; jmp N (45) */
+        0x83, 0xc3, 0x0a, 0xeb, 0x21,       /* 1f C1: add ebx, 10; jmp N */
+        0x83, 0xd3, 0x64, 0xeb, 0x1c,       /* 24 C2: adc ebx, 100 (CF set: 2 < 5); jmp N */
+        0x83, 0xdb, 0x02, 0xeb, 0x17,       /* 29 C3: sbb ebx, 2; jmp N */
+        0x0f, 0x92, 0xc2, 0x01, 0xd3,       /* 2e C4: setb dl; add ebx, edx */
+        0xeb, 0x10,                         /* 33 jmp N */
+        0x0f, 0x94, 0xc2, 0x01, 0xd3,       /* 35 C5: sete dl (ZF: 5 == 5); add ebx, edx */
+        0xeb, 0x09,                         /* 3a jmp N */
+        0xcc, 0xcc, 0xcc, 0xcc,             /* 3c */
+        0x83, 0xeb, 0x03,                   /* 40 D: sub ebx, 3 */
+        0x90, 0x90,                         /* 43 */
+        0x89, 0xc8,                         /* 45 N: mov eax, ecx */
+        0x83, 0xe0, 0x03,                   /* 47 and eax, 3 */
+        0x3d, 0x03, 0, 0, 0,                /* 4a cmp eax, 3 */
+        0x73, 0x0b,                         /* 4f jae E (5c) */
+        0xff, 0x24, 0x85, 0, 0, 0, 0,       /* 51 jmp [eax*4+T2] */
+        0xcc, 0xcc, 0xcc, 0xcc,             /* 58 */
+        0x83, 0xc6, 0x07,                   /* 5c E: add esi, 7 */
+        0x49,                               /* 5f K: dec ecx */
+        0x75, 0xa7,                         /* 60 jnz L (09) */
+        0xc3,                               /* 62 ret */
+        0x83, 0xc6, 0x01, 0xeb, 0xf7,       /* 63 E0: add esi, 1; jmp K */
+        0x83, 0xd6, 0x02, 0xeb, 0xf2,       /* 68 E1: adc esi, 2 (CF set); jmp K */
+        0x46, 0xeb, 0xef,                   /* 6d E2: inc esi; jmp K */
+    };
+    const uint32_t code = low + CODE;
+    /* Six used entries and two past the bound that point nowhere. */
+    const uint32_t entries[8] = { code + 0x1a, code + 0x1f, code + 0x24, code + 0x29, code + 0x2e, code + 0x35,
+                                  0xdeadbeef, 0 };
+    const uint32_t second[3] = { code + 0x63, code + 0x68, code + 0x6d };
+    uint8_t image[0x100];
+    Run emitter, plain, tables, far_emitter, far_tables;
+
+    for (unsigned far = 0; far < 2; far++) {
+        const uint32_t t = far ? low + FAR : code + T;
+        memset(image, 0xcc, sizeof(image));
+        memcpy(image, program, sizeof(program));
+        memcpy(image + 0x16, &t, 4);
+        memcpy(image + 0x54, &(uint32_t){ code + T2 }, 4);
+        memcpy(image + T, entries, sizeof(entries));
+        memcpy(image + T2, second, sizeof(second));
+        if (far) memcpy(guest + FAR, entries, sizeof(entries));
+        emitter = run(image, sizeof(image), 0);
+        plain = run_superblocks(image, sizeof(image));
+        jump_tables = 1;
+        tables = run_superblocks(image, sizeof(image));
+        native_fp = fault_markers = 1;
+        far_tables = run_superblocks(image, sizeof(image));
+        native_fp = fault_markers = 0;
+        jump_tables = 0;
+        assert(emitter.status == PW_OK && emitter.state.eip == 0xdead0000u);
+        same(&plain, &emitter);
+        same(&tables, &emitter);
+        same(&far_tables, &emitter);
+        assert(!plain.tables);
+        /* Each switch is in two blocks (from L and from 00; from N and from
+         * D); with the first table far, only the second's two copy it. */
+        if (tables.tables != (far ? 2u : 4u)) fprintf(stderr, "jump tables: %llu\n", (unsigned long long)tables.tables);
+        assert(tables.tables == (far ? 2u : 4u) && far_tables.tables == tables.tables);
+        if (!far) far_emitter = emitter;
+    }
+    same(&far_emitter, &emitter);
+    /* 300 iterations, linked: the dispatcher sees each target about once. */
+    assert(tables.steps < 60);
+}
+
+/* MSVC's two-level switch: cmp, ja, then movzx of the index from a byte
+ * table, then the jump through the table it indexes; flags from the compare
+ * read by a target. The same as the emitter, with the table taken. */
+static void test_two_level_jump_tables(void)
+{
+    enum { BYTES = 0x80, T = 0x90 };
+    static const uint8_t program[] = {
+        0xb9, 0x2c, 0x01, 0, 0,             /* 00 mov ecx, 300 */
+        0x31, 0xdb,                         /* 05 xor ebx, ebx */
+        0x89, 0xc8,                         /* 07 L: mov eax, ecx */
+        0x83, 0xe0, 0x07,                   /* 09 and eax, 7 */
+        0x83, 0xf8, 0x05,                   /* 0c cmp eax, 5 */
+        0x77, 0x1b,                         /* 0f ja D (2c) */
+        0x0f, 0xb6, 0x90, 0, 0, 0, 0,       /* 11 movzx edx, byte [eax+BYTES] */
+        0xff, 0x24, 0x95, 0, 0, 0, 0,       /* 18 jmp [edx*4+T] */
+        0x83, 0xc3, 0x01, 0xeb, 0x0e,       /* 1f C0: add ebx, 1; jmp N (32) */
+        0x83, 0xd3, 0x0a, 0xeb, 0x09,       /* 24 C1: adc ebx, 10 (CF: eax < 5); jmp N */
+        0x90, 0x90, 0x90,                   /* 29 */
+        0x83, 0xeb, 0x03,                   /* 2c D: sub ebx, 3 */
+        0x90, 0x90, 0x90,                   /* 2f */
+        0x49,                               /* 32 N: dec ecx */
+        0x75, 0xd2,                         /* 33 jnz L (07) */
+        0xc3,                               /* 35 ret */
+    };
+    static const uint8_t bytes[6] = { 0, 1, 1, 0, 1, 0 };
+    const uint32_t code = low + CODE;
+    const uint32_t entries[2] = { code + 0x1f, code + 0x24 };
+    uint8_t image[0xa0];
+    Run emitter, tables;
+
+    memset(image, 0xcc, sizeof(image));
+    memcpy(image, program, sizeof(program));
+    memcpy(image + 0x14, &(uint32_t){ code + BYTES }, 4);
+    memcpy(image + 0x1b, &(uint32_t){ code + T }, 4);
+    memcpy(image + BYTES, bytes, sizeof(bytes));
+    memcpy(image + T, entries, sizeof(entries));
+    emitter = run(image, sizeof(image), 0);
+    jump_tables = 1;
+    native_fp = fault_markers = 1;
+    tables = run_superblocks(image, sizeof(image));
+    native_fp = fault_markers = 0;
+    jump_tables = 0;
+    assert(emitter.status == PW_OK && emitter.state.eip == 0xdead0000u);
+    same(&tables, &emitter);
+    assert(tables.tables >= 1);
+}
+
+/* An import thunk, jmp [slot], and an import call, call [slot2], with jump
+ * prediction: each learns its target, the program then changes both slots,
+ * and later calls go to the new target (the prediction misses and looks it
+ * up); the same as the emitter. */
+static void test_jump_predict(void)
+{
+    enum { SLOT = 0x30000, SLOT2 = 0x30010, THUNK = 0x40, F1 = 0x50, F2 = 0x60 };
+    static const uint8_t program[] = {
+        0xb9, 100, 0, 0, 0,                 /* 00 mov ecx, 100 */
+        0xe8, 0x36, 0, 0, 0,                /* 05 L: call THUNK (40) */
+        0xff, 0x15, 0, 0, 0, 0,             /* 0a call [SLOT2] */
+        0x83, 0xf9, 0x32,                   /* 10 cmp ecx, 50 */
+        0x75, 0x14,                         /* 13 jne K (29) */
+        0xc7, 0x05, 0, 0, 0, 0, 0, 0, 0, 0, /* 15 mov dword [SLOT], F2 */
+        0xc7, 0x05, 0, 0, 0, 0, 0, 0, 0, 0, /* 1f mov dword [SLOT2], F2 */
+        0x49,                               /* 29 K: dec ecx */
+        0x75, 0xd9,                         /* 2a jnz L */
+        0xc3,                               /* 2c ret */
+    };
+    static const uint8_t thunk[] = { 0xff, 0x25, 0, 0, 0, 0 };   /* jmp [SLOT] */
+    static const uint8_t f1[] = { 0x83, 0xc3, 0x01, 0xc3 };       /* add ebx, 1 */
+    static const uint8_t f2[] = { 0x83, 0xc3, 0x64, 0xc3 };       /* add ebx, 100 */
+    const uint32_t code = low + CODE, slot = low + SLOT, slot2 = low + SLOT2, f2_pc = code + F2;
+    uint8_t image[0x80];
+    Run emitter, plain, predicted, production;
+
+    memset(image, 0xcc, sizeof(image));
+    memcpy(image, program, sizeof(program));
+    memcpy(image + 0x0c, &slot2, 4);
+    memcpy(image + 0x17, &slot, 4);
+    memcpy(image + 0x1b, &f2_pc, 4);
+    memcpy(image + 0x21, &slot2, 4);
+    memcpy(image + 0x25, &f2_pc, 4);
+    memcpy(image + THUNK, thunk, sizeof(thunk));
+    memcpy(image + THUNK + 2, &slot, 4);
+    memcpy(image + F1, f1, sizeof(f1));
+    memcpy(image + F2, f2, sizeof(f2));
+#define RESET_SLOTS() do { memcpy(guest + SLOT, &(uint32_t){ code + F1 }, 4); \
+                           memcpy(guest + SLOT2, &(uint32_t){ code + F1 }, 4); } while (0)
+    RESET_SLOTS();
+    emitter = run(image, sizeof(image), 0);
+    RESET_SLOTS();
+    plain = run_superblocks(image, sizeof(image));
+    jump_predict = 1;
+    RESET_SLOTS();
+    predicted = run_superblocks(image, sizeof(image));
+    RESET_SLOTS();
+    production = run_production(image, sizeof(image));
+    jump_predict = 0;
+#undef RESET_SLOTS
+    assert(emitter.status == PW_OK && emitter.state.eip == 0xdead0000u);
+    assert(emitter.state.gpr[3] == 0x44444444u + 2 * 51 + 2 * 49 * 100);
+    same(&plain, &emitter);
+    same(&predicted, &emitter);
+    same(&production, &emitter);
+}
+
+/* A branchy loop whose side exits are taken on alternate iterations, and
+ * one taken from the fallthrough of another: with superblocks the result
+ * matches the emitter, and once each side exit has linked itself the loop
+ * no longer returns to the dispatcher. */
+static void test_superblocks(void)
+{
+    static const uint8_t code[] = {
+        0xb9, 0xa0, 0x0f, 0, 0,             /* 00 mov ecx, 4000 */
+        0x31, 0xc0,                         /* 05 xor eax, eax */
+        0x31, 0xdb,                         /* 07 xor ebx, ebx */
+        0xf6, 0xc1, 0x01,                   /* 09 L: test cl, 1 */
+        0x74, 0x05,                         /* 0c jz E (side exit) */
+        0x83, 0xc0, 0x03,                   /* 0e add eax, 3 */
+        0xeb, 0x03,                         /* 11 jmp J */
+        0x83, 0xc3, 0x05,                   /* 13 E: add ebx, 5 */
+        0xf6, 0xc1, 0x02,                   /* 16 J: test cl, 2 */
+        0x75, 0x01,                         /* 19 jnz K (side exit) */
+        0x40,                               /* 1b inc eax */
+        0x39, 0xd8,                         /* 1c K: cmp eax, ebx */
+        0x49,                               /* 1e dec ecx */
+        0x75, 0xe8,                         /* 1f jnz L (last: the block's exit) */
+        0xc3,                               /* 21 ret */
+    };
+    Run emitter = run(code, sizeof(code), 0), super = run_superblocks(code, sizeof(code));
+
+    assert(emitter.status == PW_OK && emitter.state.eip == 0xdead0000u);
+    same(&super, &emitter);
+    if (super.steps > 40) fprintf(stderr, "superblocks: %u steps\n", super.steps);
+    assert(super.steps <= 40);
+}
+
+/* SSE, SSE2, x87 and MMX with native FP: the re-encoder copies them onto the
+ * guest's own state in the host FPU, and the result matches what wowprospero
+ * did before (the emitter and its software x87, the rest one instruction at
+ * a time on the host): registers, flags, memory, xmm0-7 and the x87 and
+ * MXCSR state; the re-encoder took the FP blocks. Only TOP is compared from
+ * fnstsw: the software x87 leaves C1 where the CPU clears it. */
+/* String instructions as the host's (movs, stos, scas and cmps, with rep,
+ * repe and repne, bytes, words and dwords, a zero count) forwards, and
+ * backwards after std: the same as the emitter and the host fallback in
+ * every mode. The
+ * emitter's lods leaves eax as it was, so lods is checked against its
+ * expected values instead: dwords, words and bytes, forwards and back. */
+static void test_strings(void)
+{
+    static const uint8_t code[] = {
+        0xb9, 0x10, 0x00, 0x00, 0x00, 0xf3, 0xa4, 0xb9, 0x04, 0x00, 0x00, 0x00,
+        0xf3, 0xa5, 0x66, 0xa5, 0xa4, 0xb0, 0x41, 0xb9, 0x08, 0x00, 0x00, 0x00,
+        0xf3, 0xaa, 0xab, 0x8d, 0x7f, 0xc0, 0xb9, 0x20, 0x00, 0x00, 0x00, 0xf2,
+        0xae, 0x89, 0xcb, 0x83, 0xee, 0x40, 0xb9, 0x0a, 0x00, 0x00, 0x00, 0xf3,
+        0xa6, 0x0f, 0x95, 0xc2, 0x89, 0xcd, 0xfd, 0x8d, 0x76, 0x20, 0x8d, 0xbf,
+        0x80, 0x00, 0x00, 0x00, 0xb9, 0x04, 0x00, 0x00, 0x00, 0xf3, 0xa5, 0xa4,
+        0xfc, 0x31, 0xc9, 0xf3, 0xa4, 0xc3,
+    };
+    static const uint8_t lods[] = {
+        0x8d, 0x76, 0x23, 0xad, 0x89, 0xc3, 0x66, 0xad, 0xfd, 0xac, 0xfc, 0xc3,
+    };
+    Run r;
+
+    /* As in wowprospero, what neither translator takes (std, cld, scas on
+     * the emitter's side) runs on the host. */
+    hostexec_fallback = 1;
+    compare(code, sizeof(code));
+    /* With fault markers as well, where single lods forwards are plain
+     * moves (emit_string). */
+    for (unsigned production = 0; production < 2; production++) {
+        r = production ? run_production(lods, sizeof(lods)) : run_superblocks(lods, sizeof(lods));
+        assert(r.status == PW_OK && r.state.eip == 0xdead0000u);
+        assert(r.state.gpr[3] == pattern(35));                          /* lodsl */
+        assert((r.state.gpr[0] & 0xffffff00u) == ((pattern(35) & 0xffff0000u) | (pattern(39) & 0xff00u)));
+        assert((r.state.gpr[0] & 0xff) == (pattern(41) & 0xff));         /* lodsb after std */
+        assert(r.state.gpr[6] == low + DATA + 40);                      /* esi went back one */
+    }
+    hostexec_fallback = 0;
+}
+
+static void test_native_fp(void)
+{
+    static const uint8_t code[] = {
+        0xc7, 0x06, 0x00, 0x00, 0x80, 0x3f, 0xc7, 0x46, 0x04, 0x00, 0x00, 0x00,
+        0x40, 0xc7, 0x46, 0x08, 0x00, 0x00, 0x40, 0x40, 0xc7, 0x46, 0x0c, 0x00,
+        0x00, 0x80, 0x40, 0xc7, 0x46, 0x10, 0x00, 0x00, 0x00, 0x3f, 0xc7, 0x46,
+        0x14, 0x00, 0x00, 0x80, 0x3e, 0xc7, 0x46, 0x18, 0x00, 0x00, 0xc0, 0xbf,
+        0xc7, 0x46, 0x1c, 0x00, 0x00, 0x00, 0x41, 0xc7, 0x46, 0x20, 0x00, 0x00,
+        0x00, 0x00, 0xc7, 0x46, 0x24, 0x00, 0x00, 0x02, 0x40, 0xc7, 0x46, 0x28,
+        0x07, 0x00, 0x00, 0x00, 0x0f, 0x10, 0x06, 0x0f, 0x10, 0x4e, 0x10, 0x0f,
+        0x58, 0xc1, 0x0f, 0x59, 0xc8, 0x0f, 0x28, 0xd1, 0x0f, 0xc6, 0xd2, 0x1b,
+        0xf2, 0x0f, 0x10, 0x5e, 0x20, 0xf2, 0x0f, 0x51, 0xe3, 0xf2, 0x0f, 0x2a,
+        0xe9, 0xf2, 0x0f, 0x58, 0xec, 0xf2, 0x0f, 0x2c, 0xdd, 0x66, 0x0f, 0x2f,
+        0xeb, 0x0f, 0x97, 0xc0, 0x66, 0x0f, 0x6e, 0xf2, 0x66, 0x0f, 0x70, 0xf6,
+        0x00, 0x66, 0x0f, 0xef, 0xff, 0x66, 0x0f, 0xfe, 0xfe, 0xf3, 0x0f, 0x7f,
+        0x76, 0x30, 0x0f, 0x11, 0x46, 0x40, 0x66, 0x0f, 0xd7, 0xd1, 0xdd, 0x46,
+        0x20, 0xdb, 0x46, 0x28, 0xde, 0xc9, 0xd9, 0xfa, 0xd9, 0xe8, 0xde, 0xc1,
+        0xdd, 0x56, 0x50, 0xdb, 0x5e, 0x58, 0xd9, 0xe8, 0xd9, 0xee, 0xdf, 0xf1,
+        0xdd, 0xd8, 0xdf, 0xe0, 0x25, 0x00, 0x38, 0x00, 0x00, 0x0f, 0x6f, 0x06,
+        0x0f, 0xfd, 0x46, 0x08, 0x0f, 0x7f, 0x46, 0x60, 0x0f, 0x77, 0xc3,
+    };
+    Run emitter, native;
+
+    hostexec_fallback = 1;
+    emitter = run(code, sizeof(code), 0);
+    native_fp = 1;
+    native = run(code, sizeof(code), 1);
+    native_fp = 0;
+    hostexec_fallback = 0;
+    if (emitter.status != PW_OK || emitter.state.eip != 0xdead0000u)
+        fprintf(stderr, "native fp: emitter status %d eip +%x\n", emitter.status, emitter.state.eip - low - CODE);
+    assert(emitter.status == PW_OK && emitter.state.eip == 0xdead0000u);
+    same(&native, &emitter);
+    for (unsigned r = 0; r < 8; r++) {
+        if (memcmp(native.state.fp.xmm[r], emitter.state.fp.xmm[r], 16))
+            fprintf(stderr, "native fp: xmm%u differs\n", r);
+        assert(!memcmp(native.state.fp.xmm[r], emitter.state.fp.xmm[r], 16));
+    }
+    assert(native.state.fp.mxcsr == emitter.state.fp.mxcsr);
+    assert(native.state.fp.x87_control == emitter.state.fp.x87_control);
+    assert((native.state.fp.x87_status & 0x3800) == (emitter.state.fp.x87_status & 0x3800));
+    assert(native.reencoded >= 1);
+}
+
+/* Every family the re-encoder copies with native FP, in register and memory
+ * form: SSE moves, arithmetic, compares and conversions (with GPRs), SSE2
+ * integer, SSE3, SSSE3 and SSE4.1, MXCSR, fences and prefetch, MMX, and x87
+ * at every memory width with fcmov, fcomi, fucomi and fstsw, sahf and lahf.
+ * Same comparison as
+ * test_native_fp; the SSE4.1 forms with a GPR, which the host fallback does
+ * not take, are in test_native_fp_gpr. */
+/* The SSE4.1 forms with a GPR or memory operand (pextrd, pextrb, pinsrd,
+ * pinsrb, extractps), edi being r13 on the host: their results against the
+ * guest's data. */
+static void test_native_fp_gpr(void)
+{
+    static const uint8_t code[] = {
+        0xf3, 0x0f, 0x6f, 0x1e, 0x66, 0x0f, 0xef, 0xf6, 0x66, 0x0f, 0x3a, 0x16,
+        0xdf, 0x01, 0x66, 0x0f, 0x3a, 0x14, 0x5e, 0x40, 0x02, 0xba, 0x44, 0x33,
+        0x22, 0x11, 0x66, 0x0f, 0x3a, 0x22, 0xf2, 0x02, 0x66, 0x0f, 0x3a, 0x20,
+        0x76, 0x08, 0x01, 0x66, 0x0f, 0x3a, 0x17, 0xd9, 0x03, 0xf3, 0x0f, 0x7f,
+        0x76, 0x50, 0xc3,
+    };
+    Run native;
+    uint32_t dword[4];
+    uint8_t lane[16] = { 0 };
+
+    native_fp = 1;
+    native = run(code, sizeof(code), 1);
+    native_fp = 0;
+    assert(native.status == PW_OK && native.state.eip == 0xdead0000u);
+    for (unsigned k = 0; k < 4; k++) dword[k] = pattern(4 * k);
+    assert(native.state.gpr[7] == dword[1]);                  /* pextrd into r13 */
+    assert(native.data[64] == (uint8_t)(dword[0] >> 16));     /* pextrb to memory */
+    assert(native.state.gpr[1] == dword[3]);                  /* extractps */
+    lane[1] = (uint8_t)pattern(8);                            /* pinsrb from memory */
+    memcpy(lane + 8, &(uint32_t){ 0x11223344u }, 4);          /* pinsrd */
+    assert(!memcmp(native.data + 80, lane, 16));
+    assert(native.reencoded >= 1);
+}
+
+/* Re-encoded FP code around an instruction only the emitter takes (a
+ * high-byte store, after a div):
+ * the chain leaves through C at each crossing, which never links the two
+ * kinds, and the guest's xmm and x87 values live across it survive the
+ * emitter, which uses xmm as scratch. Also pause, and cpuid, which the
+ * host-exec stepper runs with the guest's feature mask (as wowprospero
+ * does). */
+static void test_native_fp_emitter(void)
+{
+    static const uint8_t code[] = {
+        0xc7, 0x46, 0x20, 0x00, 0x00, 0x00, 0x00, 0xc7, 0x46, 0x24, 0x00, 0x00,
+        0x02, 0x40, 0xb9, 0x05, 0x00, 0x00, 0x00, 0xf2, 0x0f, 0x10, 0x56, 0x20,
+        0x66, 0x0f, 0x57, 0xc9, 0xdd, 0x46, 0x20, 0xf2, 0x0f, 0x58, 0xca, 0xf3,
+        0x90, 0xb8, 0x64, 0x00, 0x00, 0x00, 0x31, 0xd2, 0xbb, 0x07, 0x00, 0x00,
+        0x00, 0xf7, 0xf3, 0x88, 0x7e, 0x58, 0xd8, 0xc0, 0x49, 0x75, 0xe4, 0xf2, 0x0f, 0x11, 0x4e,
+        0x40, 0xdd, 0x5e, 0x48, 0x89, 0x46, 0x50, 0x31, 0xc0, 0x0f, 0xa2, 0xc3,
+    };
+    Run native;
+    double sum, doubled;
+    uint32_t a, b, c, d;
+
+    native_fp = 1;
+    hostexec_fallback = 1;
+    native = run(code, sizeof(code), 1);
+    hostexec_fallback = 0;
+    native_fp = 0;
+    assert(native.status == PW_OK && native.state.eip == 0xdead0000u);
+    memcpy(&sum, native.data + 64, 8);
+    memcpy(&doubled, native.data + 72, 8);
+    assert(sum == 5 * 2.25 && doubled == 2.25 * 32);
+    assert(native.data[80] == 100 / 7);
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0), "c"(0));
+    assert(native.state.gpr[3] == b && native.state.gpr[1] == c && native.state.gpr[2] == d);
+    assert(native.reencoded >= 2);
+}
+
+static void test_native_fp_forms(void)
+{
+    static const uint8_t code[] = {
+        0xc7, 0x06, 0x00, 0x00, 0x80, 0x3f, 0xc7, 0x46, 0x04, 0x00, 0x00, 0x00,
+        0x40, 0xc7, 0x46, 0x08, 0x00, 0x00, 0x40, 0x40, 0xc7, 0x46, 0x0c, 0x00,
+        0x00, 0x80, 0x40, 0xc7, 0x46, 0x10, 0x00, 0x00, 0x00, 0x3f, 0xc7, 0x46,
+        0x14, 0x00, 0x00, 0x80, 0x3e, 0xc7, 0x46, 0x18, 0x00, 0x00, 0xc0, 0xbf,
+        0xc7, 0x46, 0x1c, 0x00, 0x00, 0x00, 0x41, 0xc7, 0x46, 0x20, 0x00, 0x00,
+        0x00, 0x00, 0xc7, 0x46, 0x24, 0x00, 0x00, 0x02, 0x40, 0xc7, 0x46, 0x28,
+        0x07, 0x00, 0x00, 0x00, 0xc7, 0x46, 0x2c, 0x00, 0x00, 0xf0, 0x3f, 0xc7,
+        0x46, 0x30, 0x00, 0x00, 0x00, 0x00, 0xc7, 0x46, 0x34, 0x00, 0x00, 0x10,
+        0x40, 0xc7, 0x46, 0x38, 0x02, 0x00, 0x03, 0x00, 0xc7, 0x46, 0x3c, 0x04,
+        0x00, 0x05, 0x00, 0x8d, 0xae, 0x80, 0x00, 0x00, 0x00, 0x0f, 0x10, 0x06,
+        0x0f, 0x10, 0x4e, 0x10, 0xf3, 0x0f, 0x10, 0x56, 0x04, 0xf2, 0x0f, 0x10,
+        0x5e, 0x20, 0x66, 0x0f, 0x10, 0x26, 0x0f, 0x12, 0x6e, 0x08, 0x0f, 0x16,
+        0x6e, 0x10, 0x66, 0x0f, 0x12, 0x76, 0x20, 0x66, 0x0f, 0x16, 0x76, 0x30,
+        0x0f, 0x12, 0xf9, 0x0f, 0x16, 0xf8, 0x0f, 0x14, 0xc1, 0x0f, 0x15, 0x56,
+        0x10, 0x0f, 0x28, 0xc8, 0x66, 0x0f, 0x28, 0x56, 0x10, 0x0f, 0x11, 0x45,
+        0x00, 0xf3, 0x0f, 0x11, 0x55, 0x10, 0xf2, 0x0f, 0x11, 0x5d, 0x18, 0x0f,
+        0x13, 0x6d, 0x20, 0x0f, 0x17, 0x6d, 0x28, 0x0f, 0x29, 0x4d, 0x30, 0x0f,
+        0x2b, 0x4d, 0x40, 0x0f, 0x58, 0xc1, 0xf3, 0x0f, 0x58, 0x46, 0x04, 0xf2,
+        0x0f, 0x58, 0x5e, 0x20, 0x0f, 0x5c, 0xc8, 0x0f, 0x59, 0x0e, 0xf2, 0x0f,
+        0x59, 0xdb, 0x0f, 0x5e, 0xca, 0xf2, 0x0f, 0x5e, 0x5e, 0x20, 0x0f, 0x51,
+        0xe1, 0xf3, 0x0f, 0x51, 0xe2, 0x0f, 0x5d, 0xc8, 0xf2, 0x0f, 0x5f, 0x5e,
+        0x20, 0x0f, 0x54, 0xc1, 0x0f, 0x55, 0xca, 0x0f, 0x56, 0xd0, 0x0f, 0x57,
+        0xff, 0x0f, 0xc2, 0xc1, 0x01, 0xf2, 0x0f, 0xc2, 0x5e, 0x20, 0x02, 0x0f,
+        0xc6, 0xc1, 0x4e, 0x66, 0x0f, 0xc6, 0xdb, 0x01, 0x0f, 0x2f, 0xd1, 0x0f,
+        0x97, 0xc3, 0x66, 0x0f, 0x2e, 0x5e, 0x20, 0x0f, 0x92, 0xc7, 0x0f, 0x5a,
+        0xe1, 0x66, 0x0f, 0x5a, 0xec, 0xf3, 0x0f, 0x5a, 0x76, 0x04, 0xf2, 0x0f,
+        0x5a, 0xf3, 0x0f, 0x5b, 0x3e, 0xf3, 0x0f, 0x5b, 0xf9, 0xf3, 0x0f, 0x2a,
+        0xc1, 0xf2, 0x0f, 0x2a, 0x4e, 0x28, 0xf3, 0x0f, 0x2c, 0xd0, 0xf2, 0x0f,
+        0x2d, 0x7e, 0x20, 0xf2, 0x0f, 0x2c, 0xcb, 0x0f, 0x50, 0xc1, 0x66, 0x0f,
+        0x50, 0xd3, 0x66, 0x0f, 0x6e, 0xc1, 0x66, 0x0f, 0x6e, 0x4e, 0x28, 0x66,
+        0x0f, 0x7e, 0xc0, 0x66, 0x0f, 0x7e, 0x4d, 0x50, 0xf3, 0x0f, 0x7e, 0x56,
+        0x38, 0x66, 0x0f, 0xd6, 0x55, 0x58, 0xf3, 0x0f, 0x6f, 0x1e, 0x66, 0x0f,
+        0x6f, 0x66, 0x10, 0xf3, 0x0f, 0x7f, 0x5d, 0x60, 0x66, 0x0f, 0x7f, 0x65,
+        0x70, 0x66, 0x0f, 0xfe, 0xe3, 0x66, 0x0f, 0xf9, 0x66, 0x10, 0x66, 0x0f,
+        0xd5, 0xe3, 0x66, 0x0f, 0xf4, 0xe3, 0x66, 0x0f, 0xdb, 0xe3, 0x66, 0x0f,
+        0xeb, 0x26, 0x66, 0x0f, 0xef, 0xd2, 0x66, 0x0f, 0x76, 0xd3, 0x66, 0x0f,
+        0x64, 0xd4, 0x66, 0x0f, 0x60, 0xd3, 0x66, 0x0f, 0x6a, 0x56, 0x10, 0x66,
+        0x0f, 0x6c, 0xd3, 0x66, 0x0f, 0x63, 0xd3, 0x66, 0x0f, 0x67, 0xd4, 0x66,
+        0x0f, 0x70, 0xeb, 0x1b, 0xf2, 0x0f, 0x70, 0x2e, 0x1b, 0xf3, 0x0f, 0x70,
+        0xeb, 0x1b, 0x66, 0x0f, 0x71, 0xf5, 0x03, 0x66, 0x0f, 0x72, 0xe5, 0x02,
+        0x66, 0x0f, 0x73, 0xdd, 0x04, 0x66, 0x0f, 0xf3, 0xea, 0x66, 0x0f, 0xf5,
+        0xeb, 0x66, 0x0f, 0xe0, 0xeb, 0x66, 0x0f, 0xf6, 0xeb, 0x66, 0x0f, 0xda,
+        0xeb, 0x66, 0x0f, 0xd7, 0xdd, 0x66, 0x0f, 0xc4, 0xe9, 0x03, 0x66, 0x0f,
+        0xc4, 0x6e, 0x38, 0x01, 0x66, 0x0f, 0xc5, 0xd5, 0x03, 0x0f, 0xc3, 0x4d,
+        0x78, 0x66, 0x0f, 0xe7, 0xad, 0x80, 0x00, 0x00, 0x00, 0xf2, 0x0f, 0x12,
+        0x76, 0x20, 0xf3, 0x0f, 0x12, 0xf1, 0xf3, 0x0f, 0x16, 0x36, 0xf2, 0x0f,
+        0x7c, 0xf1, 0x66, 0x0f, 0x7d, 0x76, 0x20, 0xf2, 0x0f, 0xd0, 0xf1, 0xf2,
+        0x0f, 0xf0, 0x3e, 0x66, 0x0f, 0x38, 0x00, 0xfb, 0x66, 0x0f, 0x3a, 0x0f,
+        0xfb, 0x04, 0x66, 0x0f, 0x38, 0x1e, 0x3e, 0x66, 0x0f, 0x38, 0x04, 0xfb,
+        0x66, 0x0f, 0x38, 0x39, 0xfb, 0x66, 0x0f, 0x38, 0x40, 0x7e, 0x10, 0x66,
+        0x0f, 0x38, 0x17, 0xfb, 0x0f, 0x94, 0xc0, 0x66, 0x0f, 0x3a, 0x0b, 0xf3,
+        0x01, 0x66, 0x0f, 0x3a, 0x0c, 0xf1, 0x05, 0x0f, 0xae, 0x9d, 0x8c, 0x00,
+        0x00, 0x00, 0x0f, 0xae, 0x95, 0x8c, 0x00, 0x00, 0x00, 0x0f, 0xae, 0xe8,
+        0x0f, 0xae, 0xf0, 0x0f, 0xae, 0xf8, 0x0f, 0x18, 0x0e, 0x0f, 0x18, 0x46,
+        0x40, 0x0f, 0x6f, 0x06, 0x0f, 0x6f, 0x4e, 0x08, 0x0f, 0xfd, 0xc1, 0x0f,
+        0xfa, 0x46, 0x10, 0x0f, 0xd5, 0xc1, 0x0f, 0x73, 0xf0, 0x03, 0x0f, 0x60,
+        0xc1, 0x0f, 0x70, 0xd0, 0x1b, 0x0f, 0x7e, 0xd2, 0x0f, 0x6e, 0xd9, 0x0f,
+        0x7f, 0x85, 0x90, 0x00, 0x00, 0x00, 0xf3, 0x0f, 0xd6, 0xc8, 0xf2, 0x0f,
+        0xd6, 0xe2, 0x0f, 0x2a, 0xd1, 0x0f, 0x2c, 0xea, 0x66, 0x0f, 0x2a, 0x5e,
+        0x08, 0x0f, 0x77, 0xd9, 0x46, 0x04, 0xdd, 0x46, 0x20, 0xde, 0xc1, 0xd8,
+        0x06, 0xdc, 0x4e, 0x20, 0xd8, 0x6e, 0x08, 0xdc, 0x76, 0x20, 0xda, 0x46,
+        0x28, 0xde, 0x4e, 0x38, 0xdb, 0x46, 0x28, 0xdf, 0x6e, 0x30, 0xdf, 0x46,
+        0x38, 0xd9, 0xca, 0xda, 0xc1, 0xdb, 0xca, 0xda, 0xd1, 0xda, 0xda, 0xdb,
+        0xe9, 0x0f, 0x92, 0xc0, 0xdb, 0xf2, 0x0f, 0x97, 0xc4, 0xd9, 0x9d, 0x98,
+        0x00, 0x00, 0x00, 0xdd, 0x9d, 0xa0, 0x00, 0x00, 0x00, 0xdb, 0x9d, 0xa8,
+        0x00, 0x00, 0x00, 0xdb, 0x8d, 0xac, 0x00, 0x00, 0x00, 0xdb, 0xad, 0x98,
+        0x00, 0x00, 0x00, 0xdb, 0xbd, 0xb0, 0x00, 0x00, 0x00, 0xd9, 0xbd, 0xbc,
+        0x00, 0x00, 0x00, 0xd9, 0xad, 0xbc, 0x00, 0x00, 0x00, 0xd9, 0xb5, 0xc0,
+        0x00, 0x00, 0x00, 0xd9, 0xa5, 0xc0, 0x00, 0x00, 0x00, 0xdd, 0xbd, 0xe0,
+        0x00, 0x00, 0x00, 0xd9, 0xeb, 0xd9, 0xea, 0xd9, 0xe0, 0xd9, 0xe1, 0xd9,
+        0xfa, 0xd9, 0xf8, 0xd9, 0xfc, 0xd9, 0xfd, 0xd9, 0xf1, 0xdd, 0xd8, 0xd9,
+        0xe8, 0xdf, 0x9d, 0xe8, 0x00, 0x00, 0x00, 0xd9, 0xe8, 0xdf, 0xbd, 0xf0,
+        0x00, 0x00, 0x00, 0xd9, 0xe8, 0xd9, 0xee, 0xde, 0xd9, 0x9b, 0xdf, 0xe0,
+        0x9e, 0x0f, 0x92, 0xc1, 0x0f, 0x94, 0xc5, 0x9f, 0x25, 0x00, 0xd5, 0x00,
+        0x00, 0xdb, 0xe3, 0xc7, 0x85, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0xc7, 0x85, 0xc4, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc7,
+        0x85, 0xc8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc7, 0x85, 0xcc,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc7, 0x85, 0xd0, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xc7, 0x85, 0xd4, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0xc7, 0x85, 0xd8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0xc7, 0x85, 0xdc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc7,
+        0x85, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc3,
+    };
+    Run reference, native;
+
+    hostexec_fallback = 1;
+    reference = run(code, sizeof(code), 0);
+    native_fp = 1;
+    native = run(code, sizeof(code), 1);
+    native_fp = 0;
+    hostexec_fallback = 0;
+    if (reference.status != PW_OK || reference.state.eip != 0xdead0000u)
+        fprintf(stderr, "native fp forms: reference status %d eip +%x\n", reference.status,
+                reference.state.eip - low - CODE);
+    if (native.status != PW_OK || native.state.eip != 0xdead0000u)
+        fprintf(stderr, "native fp forms: native status %d eip +%x\n", native.status,
+                native.state.eip - low - CODE);
+    for (unsigned k = 0; k < sizeof(native.data); k++)
+        if (native.data[k] != reference.data[k]) {
+            fprintf(stderr, "native fp forms: data +%#x %02x != %02x\n", k, native.data[k], reference.data[k]);
+            break;
+        }
+    same(&native, &reference);
+    for (unsigned r = 0; r < 8; r++) {
+        if (memcmp(native.state.fp.xmm[r], reference.state.fp.xmm[r], 16))
+            fprintf(stderr, "native fp forms: xmm%u differs\n", r);
+        assert(!memcmp(native.state.fp.xmm[r], reference.state.fp.xmm[r], 16));
+    }
+    assert(native.state.fp.mxcsr == reference.state.fp.mxcsr);
+    assert(native.reencoded >= 1);
+}
+
+static void test_fault(void)
+{
+    static const uint8_t code[] = {
+        0xb8, 5, 0, 0, 0,                   /* 00 mov eax, 5 */
+        0x8d, 0x3c, 0x00,                   /* 05 lea edi, [eax+eax] */
+        0x39, 0xf8,                         /* 08 cmp eax, edi: CF SF */
+        0x89, 0x05, 0x10, 0, 0, 0,          /* 0a mov [0x10], eax: outside */
+        0x72, 0x00,                         /* 10 jb */
+        0xc3,
+    };
+    Run emitter = run(code, sizeof(code), 0), reencoded = run(code, sizeof(code), 1);
+    assert(reencoded.status != PW_OK && reencoded.state.eip == low + CODE + 0x0a);
+    assert(reencoded.state.gpr[0] == 5 && reencoded.state.gpr[7] == 10);
+    assert((reencoded.state.eflags & 0x8d5) == 0x091);          /* SF AF CF */
+    same(&reencoded, &emitter);
+}
+
+/* div and idiv in every width, on registers (low and high bytes, edi and
+ * esp's neighbours) and memory (esi- and esp-relative), signed results of
+ * both signs, the 32-bit idiv's exact path (a dividend that is not cdq's, a
+ * divisor of -1), each result stored. div and idiv leave the arithmetic
+ * flags undefined, and CPUs differ (Intel keeps them, AMD's change), so
+ * each program ends with a compare that defines them again. The 8- and
+ * 16-bit forms are the host fallback's under the emitter. */
+static void test_divide(void)
+{
+    static const uint8_t wide[] = {
+        0xb8, 0x43, 0x42, 0x0f, 0x00,       /* mov eax, 1000003 */
+        0x31, 0xd2,                         /* xor edx, edx */
+        0xb9, 0x07, 0x00, 0x00, 0x00,       /* mov ecx, 7 */
+        0xf7, 0xf1,                         /* div ecx: 142857 r 4 */
+        0x89, 0x06, 0x89, 0x56, 0x04,       /* mov [esi], eax; mov [esi+4], edx */
+        0xb8, 0xbd, 0xbd, 0xf0, 0xff,       /* mov eax, -1000003 */
+        0x99,                               /* cdq */
+        0xf7, 0xf9,                         /* idiv ecx: -142857 r -4 */
+        0x89, 0x46, 0x08, 0x89, 0x56, 0x0c,
+        0xc7, 0x46, 0x10, 0x0d, 0, 0, 0,    /* mov dword [esi+0x10], 13 */
+        0xb8, 0x78, 0x56, 0x34, 0x12,       /* mov eax, 0x12345678 */
+        0xba, 0x05, 0, 0, 0,                /* mov edx, 5 */
+        0xf7, 0x76, 0x10,                   /* div dword [esi+0x10]: 64-bit dividend */
+        0x89, 0x46, 0x14, 0x89, 0x56, 0x18,
+        0x6a, 0xf9,                         /* push -7 */
+        0xb8, 0x64, 0, 0, 0, 0x99,          /* mov eax, 100; cdq */
+        0xf7, 0x3c, 0x24,                   /* idiv dword [esp]: -14 r 2 */
+        0x59,                               /* pop ecx */
+        0x89, 0x46, 0x1c, 0x89, 0x56, 0x20,
+        0x31, 0xc0, 0xba, 0x01, 0, 0, 0,    /* xor eax, eax; mov edx, 1 */
+        0xbb, 0xfd, 0xff, 0xff, 0xff,       /* mov ebx, -3 */
+        0xf7, 0xfb,                         /* idiv ebx: 2^32 / -3, not cdq's */
+        0x89, 0x46, 0x24, 0x89, 0x56, 0x28,
+        0xb8, 0x05, 0, 0, 0, 0x99,          /* mov eax, 5; cdq */
+        0x83, 0xcb, 0xff,                   /* or ebx, -1 */
+        0xf7, 0xfb,                         /* idiv ebx: by -1 */
+        0x89, 0x46, 0x2c, 0x89, 0x56, 0x30,
+        0x31, 0xc0, 0x83, 0xca, 0xff,       /* xor eax, eax; or edx, -1: -2^32 */
+        0xbf, 0x04, 0, 0, 0,                /* mov edi, 4 */
+        0xf7, 0xff,                         /* idiv edi */
+        0x89, 0x46, 0x34, 0x89, 0x56, 0x38,
+        0xbd, 0x09, 0, 0, 0,                /* mov ebp, 9 */
+        0xf7, 0xf5,                         /* div ebp */
+        0xf7, 0xf7,                         /* div edi */
+        0x39, 0xd8,                         /* cmp eax, ebx: the flags again */
+        0xc3,
+    };
+    static const uint8_t narrow[] = {
+        0xb8, 0x78, 0x56, 0x34, 0x12,       /* mov eax, 0x12345678 */
+        0xb9, 0xc9, 0, 0, 0,                /* mov ecx, 201 */
+        0xf6, 0xf1,                         /* div cl: 0x5678 / 201, ah remainder */
+        0x89, 0x06,
+        0xbb, 0x00, 0xf0, 0, 0,             /* mov ebx, 0xf000: bh 240 */
+        0xb8, 0x34, 0x12, 0, 0,             /* mov eax, 0x1234 */
+        0xf6, 0xf7,                         /* div bh */
+        0x89, 0x46, 0x04,
+        0xb8, 0x23, 0x01, 0xaa, 0xaa,       /* mov eax, 0xaaaa0123 */
+        0xf6, 0xff,                         /* idiv bh: 291 / -16 */
+        0x89, 0x46, 0x08,
+        0xc6, 0x46, 0x40, 0xf9,             /* mov byte [esi+0x40], -7 */
+        0xb8, 0x9c, 0xff, 0xff, 0xff,       /* mov eax, -100 */
+        0xf6, 0x7e, 0x40,                   /* idiv byte [esi+0x40]: 14 r -2 */
+        0x89, 0x46, 0x0c,
+        0x6a, 0x11,                         /* push 17 */
+        0xb8, 0x00, 0x01, 0, 0,             /* mov eax, 256 */
+        0xf6, 0x34, 0x24,                   /* div byte [esp] */
+        0x59,
+        0x89, 0x46, 0x10,
+        0xb8, 0x34, 0x12, 0xaa, 0xaa,       /* mov eax, 0xaaaa1234 */
+        0xba, 0x01, 0x00, 0xbb, 0xbb,       /* mov edx, 0xbbbb0001 */
+        0xb9, 0x00, 0x01, 0xcc, 0xcc,       /* mov ecx, 0xcccc0100 */
+        0x66, 0xf7, 0xf1,                   /* div cx: upper halves kept */
+        0x89, 0x46, 0x14, 0x89, 0x56, 0x18,
+        0x66, 0xc7, 0x46, 0x44, 0xd4, 0xfe, /* mov word [esi+0x44], -300 */
+        0xb8, 0x60, 0x79, 0x55, 0x55,       /* mov eax, 0x55557960 */
+        0xba, 0xfe, 0xff, 0x66, 0x66,       /* mov edx, 0x6666fffe: dx:ax -100000 */
+        0x66, 0xf7, 0x7e, 0x44,             /* idiv word [esi+0x44]: 333 r -100 */
+        0x89, 0x46, 0x1c, 0x89, 0x56, 0x20,
+        0x6a, 0xf9,                         /* push -7 */
+        0xb8, 0x00, 0x80, 0, 0,             /* mov eax, 0x8000 */
+        0x31, 0xd2,                         /* xor edx, edx */
+        0x66, 0xf7, 0x3c, 0x24,             /* idiv word [esp]: 32768 / -7 */
+        0x59,                               /* pop ecx */
+        0x89, 0x46, 0x24, 0x89, 0x56, 0x28,
+        0xbf, 0x03, 0x00, 0x05, 0x00,       /* mov edi, 0x50003 */
+        0x66, 0xf7, 0xf7,                   /* div di */
+        0xf6, 0xf1,                         /* div cl */
+        0x39, 0xd8,                         /* cmp eax, ebx: the flags again */
+        0xc3,
+    };
+    Run r;
+
+    compare(wide, sizeof(wide));
+    r = run(wide, sizeof(wide), 1);
+    {
+        const int32_t *v = (const int32_t *)(const void *)r.data;
+        assert(v[0] == 142857 && v[1] == 4 && v[2] == -142857 && v[3] == -4);
+        assert((uint32_t)v[5] == (uint32_t)((0x500000000ull + 0x12345678u) / 13) &&
+               (uint32_t)v[6] == (uint32_t)((0x500000000ull + 0x12345678u) % 13));
+        assert(v[7] == -14 && v[8] == 2);
+        assert(v[9] == -1431655765 && v[10] == 1);
+        assert(v[11] == -5 && v[12] == 0);
+        assert(v[13] == -(1 << 30) && v[14] == 0);
+    }
+    hostexec_fallback = 1;
+    compare(narrow, sizeof(narrow));
+    hostexec_fallback = 0;
+    r = run(narrow, sizeof(narrow), 1);
+    {
+        const uint32_t *v = (const uint32_t *)(const void *)r.data;
+        assert(r.status == PW_OK && r.state.eip == 0xdead0000u);
+        assert(v[0] == (0x12340000u | (0x5678 % 201) << 8 | 0x5678 / 201));
+        assert(v[1] == ((0x1234 % 240) << 8 | 0x1234 / 240));
+        assert(v[2] == 0xaaaa03eeu && v[3] == 0xfffffe0eu);
+        assert(v[4] == (1u << 8 | 15));
+        assert(v[5] == 0xaaaa0112u && v[6] == 0xbbbb0034u);
+        assert(v[7] == 0x5555014du && v[8] == 0x6666ff9cu);
+        assert(v[9] == 0x0000edb7u && v[10] == 0x00000001u);
+    }
+}
+
+/* Run code, which divides at offset fault_at, through every backend: each
+ * stops there with the status the older translators gave (expect), and the
+ * same registers, flags and memory as the emitter's step. */
+static void compare_divide_error(const uint8_t *code, size_t bytes, uint32_t fault_at, int expect)
+{
+    Run emitter = run(code, bytes, 0), reencoded = run(code, bytes, 1), stacked = run_call_stack(code, bytes);
+    Run super = run_superblocks(code, bytes);
+
+    if (emitter.status != expect || emitter.state.eip != low + CODE + fault_at)
+        fprintf(stderr, "divide error: emitter status %d eip +%x\n", emitter.status,
+                emitter.state.eip - low - CODE);
+    assert(emitter.status == expect && emitter.state.eip == low + CODE + fault_at);
+    same(&reencoded, &emitter);
+    same(&stacked, &emitter);
+    same(&super, &emitter);
+    assert(reencoded.reencoded && stacked.reencoded && super.reencoded);
+}
+
+/* Divide errors: by zero (register, memory, esp-relative), quotient
+ * overflow unsigned and signed (INT_MIN / -1, a wide dividend through the
+ * exact path), and the 8- and 16-bit forms (an 8-bit quotient too wide, div
+ * ah, -32768 / -1), each after a compare whose flags must survive. */
+static void test_divide_errors(void)
+{
+    static const struct { uint8_t code[24]; uint8_t bytes, at; int expect; } cases[] = {
+        /* mov eax, 5; xor ecx, ecx; xor edx, edx; cmp eax, 9; div ecx */
+        { { 0xb8, 5, 0, 0, 0, 0x31, 0xc9, 0x31, 0xd2, 0x83, 0xf8, 9, 0xf7, 0xf1, 0xc3 }, 15, 12, PW_ERR_VM },
+        /* mov eax, 0x80000000; cdq; or ebx, -1; cmp eax, 9; idiv ebx */
+        { { 0xb8, 0, 0, 0, 0x80, 0x99, 0x83, 0xcb, 0xff, 0x83, 0xf8, 9, 0xf7, 0xfb, 0xc3 }, 15, 12, PW_ERR_VM },
+        /* mov edx, 7; mov ecx, edx; cmp eax, 9; div ecx: edx >= ecx */
+        { { 0xba, 7, 0, 0, 0, 0x89, 0xd1, 0x83, 0xf8, 9, 0xf7, 0xf1, 0xc3 }, 13, 10, PW_ERR_VM },
+        /* mov edx, 0x40000000; xor eax, eax; mov ebx, 2; cmp eax, 9; idiv ebx */
+        { { 0xba, 0, 0, 0, 0x40, 0x31, 0xc0, 0xbb, 2, 0, 0, 0, 0x83, 0xf8, 9, 0xf7, 0xfb, 0xc3 }, 18, 15, PW_ERR_VM },
+        /* mov dword [esi], 0; cmp eax, 9; idiv dword [esi] */
+        { { 0xc7, 0x06, 0, 0, 0, 0, 0x83, 0xf8, 9, 0xf7, 0x3e, 0xc3 }, 12, 9, PW_ERR_VM },
+        /* push -1; mov eax, 0x80000000; cdq; cmp eax, 9; idiv dword [esp] */
+        { { 0x6a, 0xff, 0xb8, 0, 0, 0, 0x80, 0x99, 0x83, 0xf8, 9, 0xf7, 0x3c, 0x24, 0xc3 }, 15, 11, PW_ERR_VM },
+        /* mov eax, 0x1000; mov ecx, 3; cmp eax, 9; div cl: 1365 */
+        { { 0xb8, 0, 0x10, 0, 0, 0xb9, 3, 0, 0, 0, 0x83, 0xf8, 9, 0xf6, 0xf1, 0xc3 }, 16, 13, PW_ERR_UNSUPPORTED },
+        /* mov eax, 0x8000; or ebx, -1; cmp eax, 9; idiv bl: -32768 / -1 */
+        { { 0xb8, 0, 0x80, 0, 0, 0x83, 0xcb, 0xff, 0x83, 0xf8, 9, 0xf6, 0xfb, 0xc3 }, 14, 11, PW_ERR_UNSUPPORTED },
+        /* mov eax, 0x02f0; cmp eax, 9; div ah: never fits */
+        { { 0xb8, 0xf0, 0x02, 0, 0, 0x83, 0xf8, 9, 0xf6, 0xf4, 0xc3 }, 11, 8, PW_ERR_UNSUPPORTED },
+        /* mov word [esi], 0; cmp eax, 9; div word [esi] */
+        { { 0x66, 0xc7, 0x06, 0, 0, 0x83, 0xf8, 9, 0x66, 0xf7, 0x36, 0xc3 }, 12, 8, PW_ERR_UNSUPPORTED },
+        /* mov eax, 0x8000; or edx, -1; or ecx, -1; cmp eax, 9; idiv cx: dx:ax -32768 / -1 */
+        { { 0xb8, 0, 0x80, 0, 0, 0x83, 0xca, 0xff, 0x83, 0xc9, 0xff, 0x83, 0xf8, 9, 0x66, 0xf7, 0xf9, 0xc3 }, 18, 14, PW_ERR_UNSUPPORTED },
+        /* mov edx, 1; xor eax, eax; mov ecx, 1; cmp eax, 9; div cx: 65536 */
+        { { 0xba, 1, 0, 0, 0, 0x31, 0xc0, 0xb9, 1, 0, 0, 0, 0x83, 0xf8, 9, 0x66, 0xf7, 0xf1, 0xc3 }, 19, 15, PW_ERR_UNSUPPORTED },
+    };
+
+    for (unsigned k = 0; k < sizeof(cases) / sizeof(cases[0]); k++)
+        compare_divide_error(cases[k].code, cases[k].bytes, cases[k].at, cases[k].expect);
+}
+
+/* The host's own div and idiv in every form the oracle runs: eax, edx and
+ * ebx (or [esi] for memory) in, eax and edx out, or 1 for #DE. */
+static sigjmp_buf divide_jump;
+static void on_divide_error(int sig)
+{
+    (void)sig;
+    siglongjmp(divide_jump, 1);
+}
+static __attribute__((noinline)) void divide_on_host(unsigned form, uint32_t *eax_io, uint32_t *edx_io,
+                                                     uint32_t ebx, uint32_t memory)
+{
+    uint32_t a = *eax_io, d = *edx_io;
+    uint8_t byte = (uint8_t)memory;
+    uint16_t word = (uint16_t)memory;
+    switch (form) {
+    case 0: __asm__ volatile("divl %k2" : "+a"(a), "+d"(d) : "b"(ebx)); break;
+    case 1: __asm__ volatile("idivl %k2" : "+a"(a), "+d"(d) : "b"(ebx)); break;
+    case 2: __asm__ volatile("divl %2" : "+a"(a), "+d"(d) : "m"(memory)); break;
+    case 3: __asm__ volatile("idivl %2" : "+a"(a), "+d"(d) : "m"(memory)); break;
+    case 4: __asm__ volatile("divb %%bl" : "+a"(a), "+d"(d) : "b"(ebx)); break;
+    case 5: __asm__ volatile("idivb %%bl" : "+a"(a), "+d"(d) : "b"(ebx)); break;
+    case 6: __asm__ volatile("divb %%bh" : "+a"(a), "+d"(d) : "b"(ebx)); break;
+    case 7: __asm__ volatile("idivb %%bh" : "+a"(a), "+d"(d) : "b"(ebx)); break;
+    case 8: __asm__ volatile("divb %2" : "+a"(a), "+d"(d) : "m"(byte)); break;
+    case 9: __asm__ volatile("idivb %2" : "+a"(a), "+d"(d) : "m"(byte)); break;
+    case 10: __asm__ volatile("divw %%bx" : "+a"(a), "+d"(d) : "b"(ebx)); break;
+    case 11: __asm__ volatile("idivw %%bx" : "+a"(a), "+d"(d) : "b"(ebx)); break;
+    case 12: __asm__ volatile("divw %2" : "+a"(a), "+d"(d) : "m"(word)); break;
+    default: __asm__ volatile("idivw %2" : "+a"(a), "+d"(d) : "m"(word)); break;
+    }
+    *eax_io = a;
+    *edx_io = d;
+}
+static int native_divide(unsigned form, uint32_t *eax_io, uint32_t *edx_io, uint32_t ebx, uint32_t memory)
+{
+    if (sigsetjmp(divide_jump, 1)) return 1;
+    divide_on_host(form, eax_io, edx_io, ebx, memory);
+    return 0;
+}
+
+/* The re-encoder against the host itself over a matrix of dividends and
+ * divisors at the edges (0, 1, -1, the sign bits and byte and word limits
+ * of each width) in all fourteen forms: the same quotient and remainder, the
+ * other registers and flags untouched, or a stop at the div with eax and
+ * edx unchanged and the older translators' status. The 32-bit forms also
+ * against the emitter. */
+static void test_divide_oracle(void)
+{
+    static const uint8_t forms[14][3] = {
+        { 0xf7, 0xf3 }, { 0xf7, 0xfb }, { 0xf7, 0x36 }, { 0xf7, 0x3e },
+        { 0xf6, 0xf3 }, { 0xf6, 0xfb }, { 0xf6, 0xf7 }, { 0xf6, 0xff }, { 0xf6, 0x36 }, { 0xf6, 0x3e },
+        { 0x66, 0xf7, 0xf3 }, { 0x66, 0xf7, 0xfb }, { 0x66, 0xf7, 0x36 }, { 0x66, 0xf7, 0x3e },
+    };
+    static const uint32_t dividends[] = {
+        0, 1, 0x80, 0x7fff, 0x8000, 0x12345678, 0x80000000, 0xfffffff9, 0xffffffff,
+    };
+    static const uint32_t highs[] = { 0, 1, 0x8000, 0x3fffffff, 0x80000000, 0xffffffff };
+    static const uint32_t divisors[] = {
+        0, 1, 7, 0x7f, 0x80, 0xff00, 0x8000, 0xffff, 0x10000,
+        0x7fffffff, 0x80000000, 0xfffffff9, 0xffffffff, 0xff80ff80,
+    };
+    static PwX86CacheEntry entries[2][512];
+    static PwX86Engine engines[2];
+    struct sigaction action, previous;
+    unsigned ran = 0, faulted = 0, generation = 1;
+
+    /* The emitter, and the re-encoder as wowprospero runs it (native FP,
+     * superblocks, call stack), each kept across the matrix and reset
+     * between programs. */
+    setup(&engines[0], entries[0], 0);
+    native_fp = superblocks = call_stack = 1;
+    setup(&engines[1], entries[1], 1);
+    native_fp = superblocks = call_stack = 0;
+
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = on_divide_error;
+    action.sa_flags = SA_NODEFER;
+    sigemptyset(&action.sa_mask);
+    assert(!sigaction(SIGFPE, &action, &previous));
+    for (unsigned f = 0; f < 14; f++) {
+        const unsigned len = forms[f][0] == 0x66 ? 3 : 2, wide = f < 4;
+        for (unsigned i = 0; i < sizeof(dividends) / sizeof(dividends[0]); i++)
+            for (unsigned j = 0; j < sizeof(highs) / sizeof(highs[0]); j++)
+                for (unsigned k = 0; k < sizeof(divisors) / sizeof(divisors[0]); k++) {
+                    const uint32_t a = dividends[i], d = highs[j], v = divisors[k];
+                    uint8_t code[32];
+                    uint32_t na = a, nd = d;
+                    size_t n = 0;
+                    int error;
+                    Run r;
+                    /* edx's own matrix matters only to the forms that read it. */
+                    if (f >= 4 && f < 10 && j) continue;
+                    code[n++] = 0xb8; memcpy(code + n, &a, 4); n += 4;         /* mov eax, a */
+                    code[n++] = 0xba; memcpy(code + n, &d, 4); n += 4;         /* mov edx, d */
+                    code[n++] = 0xbb; memcpy(code + n, &v, 4); n += 4;         /* mov ebx, v */
+                    code[n++] = 0xc7; code[n++] = 0x06; memcpy(code + n, &v, 4); n += 4;   /* mov [esi], v */
+                    memcpy(code + n, forms[f], len); n += len;
+                    code[n++] = 0xc3;
+                    error = native_divide(f, &na, &nd, v, v);
+                    assert(pw_x86_engine_reset(&engines[1], ++generation) == PW_OK);
+                    r = execute(&engines[1], code, n);
+                    ran++;
+                    if (error) {
+                        faulted++;
+                        assert(r.status == (wide ? PW_ERR_VM : PW_ERR_UNSUPPORTED));
+                        assert(r.state.eip == low + CODE + n - 1 - len);
+                        assert(r.state.gpr[0] == a && r.state.gpr[2] == d);
+                    } else {
+                        if (r.status != PW_OK || r.state.gpr[0] != na || r.state.gpr[2] != nd)
+                            fprintf(stderr, "divide form %u: %08x:%08x / %08x: status %d %08x:%08x, host %08x:%08x\n",
+                                    f, d, a, v, r.status, r.state.gpr[2], r.state.gpr[0], nd, na);
+                        assert(r.status == PW_OK && r.state.eip == 0xdead0000u);
+                        assert(r.state.gpr[0] == na && r.state.gpr[2] == nd);
+                    }
+                    assert(r.state.gpr[3] == v && r.state.gpr[1] == 0x22222222u);
+                    assert((r.state.eflags & 0x8d5) == 0x041);
+                    if (wide) {
+                        Run e;
+                        assert(pw_x86_engine_reset(&engines[0], ++generation) == PW_OK);
+                        e = execute(&engines[0], code, n);
+                        same(&r, &e);
+                    }
+                }
+    }
+    assert(!sigaction(SIGFPE, &previous, NULL));
+    assert(engines[1].reencoded_blocks >= ran && !engines[0].reencoded_blocks);
+    assert(pw_x86_engine_destroy(&engines[0]) == PW_OK && pw_x86_engine_destroy(&engines[1]) == PW_OK);
+    assert(ran > 1000 && faulted > 100 && faulted < ran - 1000);
+}
+
+/* Whether the re-encoder takes all of code (bytes, ending in ret) with or
+ * without fault markers: no block stops short of a terminal or the length
+ * limit, so nothing in it is left to the emitter. */
+static void reencodes_all(const uint8_t *code, size_t bytes)
+{
+    static PwX86IndirectTarget targets[16];
+    static uint8_t out[1 << 16];
+    PwX86TranslateOptions o;
+    PwX86Block block;
+
+    memset(&o, 0, sizeof(o));
+    o.flat_low = low; o.flat_high = low + SPAN; o.no_counters = 1;
+    o.indirect_targets = targets; o.chain_targets = targets; o.indirect_mask = 15;
+    o.unbounded_chains = o.call_stack = o.native_fp = 1;
+    for (unsigned markers = 0; markers < 2; markers++) {
+        o.fault_markers = markers;
+        for (size_t at = 0; at < bytes; at += block.source_bytes) {
+            assert(pw_x86_reencode(code + at, bytes - at, low + CODE + (uint32_t)at, out, sizeof(out), &block, &o) == PW_OK);
+            if (block.instructions != 32 && at + block.source_bytes != bytes)
+                fprintf(stderr, "re-encoder stopped at +%zx\n", at + block.source_bytes);
+            assert(block.instructions == 32 || at + block.source_bytes == bytes);
+        }
+    }
+}
+
+/* ah, ch, dh and bh beside a memory operand, as source and destination, in
+ * every instruction that names a byte register (mov, the ALU group, test,
+ * xchg, xadd, cmpxchg, lock), addressed through esi, ebp and ebx (copied as
+ * they are with fault markers), esp and edi as base (through r10b), edi as
+ * index and an absolute address, with flags read across them. Every byte
+ * of the four registers differs, so a wrong byte shows. */
+static void test_high_bytes(void)
+{
+    uint8_t code[] = {
+        0xb8, 0x11, 0x22, 0x33, 0x44,       /* mov eax, 0x44332211 */
+        0xb9, 0x55, 0x66, 0x77, 0x88,       /* mov ecx, 0x88776655 */
+        0xba, 0x99, 0xaa, 0xbb, 0xcc,       /* mov edx, 0xccbbaa99 */
+        0xbb, 0xc0, 0xd0, 0xe0, 0xf0,       /* mov ebx, 0xf0e0d0c0 */
+        0xc7, 0x44, 0x24, 0xfc, 0x8d, 0x7c, 0x6b, 0x5a,   /* mov dword [esp-4], 0x5a6b7c8d */
+        0x88, 0x7c, 0x24, 0xf8,             /* mov [esp-8], bh */
+        0x88, 0x64, 0x24, 0xf9,             /* mov [esp-7], ah */
+        0x88, 0x6c, 0x24, 0xfa,             /* mov [esp-6], ch */
+        0x88, 0x74, 0x24, 0xfb,             /* mov [esp-5], dh */
+        0x88, 0x7f, 0x01,                   /* mov [edi+1], bh */
+        0x88, 0x37,                         /* mov [edi], dh */
+        0x88, 0x24, 0x3d, 4, 0, 0, 0,       /* mov [edi*1+4], ah */
+        0x39, 0xd1,                         /* cmp ecx, edx: CF */
+        0x8a, 0x7e, 0x08,                   /* mov bh, [esi+8] */
+        0x8a, 0x64, 0x24, 0xf8,             /* mov ah, [esp-8] */
+        0x8a, 0x6f, 0x02,                   /* mov ch, [edi+2] */
+        0x8a, 0x36,                         /* mov dh, [esi] */
+        0x8a, 0x34, 0x3d, 4, 0, 0, 0,       /* mov dh, [edi*1+4] */
+        0x0f, 0x92, 0xc0,                   /* setb al */
+        0x88, 0x86, 0x00, 0x02, 0, 0,       /* mov [esi+0x200], al */
+        0x02, 0x66, 0x10,                   /* add ah, [esi+0x10] */
+        0x12, 0x6c, 0x24, 0xfc,             /* adc ch, [esp-4] */
+        0x2a, 0x77, 0x03,                   /* sub dh, [edi+3] */
+        0x1a, 0x7e, 0x11,                   /* sbb bh, [esi+0x11] */
+        0x22, 0x67, 0x05,                   /* and ah, [edi+5] */
+        0x0a, 0x6e, 0x12,                   /* or ch, [esi+0x12] */
+        0x32, 0x74, 0x24, 0xfd,             /* xor dh, [esp-3] */
+        0x3a, 0x7f, 0x06,                   /* cmp bh, [edi+6] */
+        0x0f, 0x92, 0xc0,                   /* setb al */
+        0x88, 0x86, 0x01, 0x02, 0, 0,       /* mov [esi+0x201], al */
+        0x00, 0x67, 0x08,                   /* add [edi+8], ah */
+        0x10, 0x7c, 0x24, 0xfe,             /* adc [esp-2], bh */
+        0x28, 0x6e, 0x20,                   /* sub [esi+0x20], ch */
+        0x18, 0x77, 0x09,                   /* sbb [edi+9], dh */
+        0x20, 0x7e, 0x21,                   /* and [esi+0x21], bh */
+        0x08, 0x67, 0x0a,                   /* or [edi+0xa], ah */
+        0x30, 0x6c, 0x24, 0xff,             /* xor [esp-1], ch */
+        0x38, 0x76, 0x22,                   /* cmp [esi+0x22], dh */
+        0x0f, 0x97, 0xc0,                   /* seta al */
+        0x88, 0x86, 0x02, 0x02, 0, 0,       /* mov [esi+0x202], al */
+        0x84, 0x7f, 0x0b,                   /* test [edi+0xb], bh */
+        0x0f, 0x94, 0xc0,                   /* setz al */
+        0x88, 0x86, 0x03, 0x02, 0, 0,       /* mov [esi+0x203], al */
+        0x86, 0x74, 0x24, 0xf8,             /* xchg [esp-8], dh */
+        0x86, 0x7e, 0x30,                   /* xchg [esi+0x30], bh */
+        0x0f, 0xc0, 0x6f, 0x0c,             /* xadd [edi+0xc], ch */
+        0xf0, 0x00, 0x77, 0x0d,             /* lock add [edi+0xd], dh */
+        0x8b, 0xee,                         /* mov ebp, esi */
+        0x8a, 0x65, 0x40,                   /* mov ah, [ebp+0x40] */
+        0x88, 0x6d, 0x41,                   /* mov [ebp+0x41], ch */
+        0x8a, 0x3d, 0, 0, 0, 0,             /* mov bh, [abs] (patched) */
+        0x88, 0x2d, 0, 0, 0, 0,             /* mov [abs+1], ch (patched) */
+        0x83, 0xf9, 0x07,                   /* cmp ecx, 7 */
+        0x8a, 0x5c, 0x24, 0xfd,             /* mov bl, [esp-3]: flags through */
+        0x8a, 0x7c, 0x24, 0xfe,             /* mov bh, [esp-2] */
+        0x88, 0x7f, 0x50,                   /* mov [edi+0x50], bh */
+        0x83, 0xd0, 0x00,                   /* adc eax, 0: the compare's CF */
+        0x8b, 0x6c, 0x24, 0xf8,             /* mov ebp, [esp-8] */
+        0x89, 0xae, 0x04, 0x02, 0, 0,       /* mov [esi+0x204], ebp */
+        0x8b, 0x6c, 0x24, 0xfc,             /* mov ebp, [esp-4] */
+        0x89, 0xae, 0x08, 0x02, 0, 0,       /* mov [esi+0x208], ebp */
+        0x39, 0xd8,                         /* cmp eax, ebx */
+        0xc3,
+    };
+    const uint32_t absolute = low + DATA + 0x60, absolute1 = absolute + 1;
+    size_t at = 0;
+    Run r;
+
+    while (!(code[at] == 0x8a && code[at + 1] == 0x3d)) at++;   /* mov bh, [abs] */
+    memcpy(code + at + 2, &absolute, 4);
+    memcpy(code + at + 8, &absolute1, 4);
+    reencodes_all(code, sizeof(code));
+    /* xchg, xadd and cmpxchg on bytes are the host fallback's under the emitter. */
+    hostexec_fallback = 1;
+    compare(code, sizeof(code));
+    hostexec_fallback = 0;
+    r = run(code, sizeof(code), 1);
+    assert(r.status == PW_OK && r.state.eip == 0xdead0000u);
+    /* The four stores below esp, then the loads into the high bytes alone. */
+    {
+        uint32_t stored;
+        memcpy(&stored, r.data + 0x204, 4);
+        /* [esp-8] took bh 0xd0, ah 0x22, ch 0x66, dh 0xaa, then xchg with dh. */
+        assert((stored & 0xffffff00u) == 0xaa662200u);
+        assert(r.data[0x100] == 0xaa && r.data[0x101] == 0xd0 && r.data[0x104] == 0x22);
+        assert(r.data[0x200] == 1);             /* 0x88776655 < 0xccbbaa99: CF */
+    }
+}
+
+/* cmpxchg with ah-bh, which neither the emitter nor the host fallback
+ * takes: equal (the high byte stored, ZF) and not equal (al loaded, ZF
+ * clear), through esi and through esp (r10b), with lock. */
+static void test_high_byte_cmpxchg(void)
+{
+    static const uint8_t code[] = {
+        0xb8, 0x11, 0x22, 0x33, 0x44,       /* mov eax, 0x44332211 */
+        0xbb, 0xc0, 0xd0, 0xe0, 0xf0,       /* mov ebx, 0xf0e0d0c0 */
+        0xc7, 0x44, 0x24, 0xfc, 0x8d, 0x7c, 0x6b, 0x5a,   /* mov dword [esp-4], 0x5a6b7c8d */
+        0x8a, 0x46, 0x31,                   /* mov al, [esi+0x31] */
+        0xf0, 0x0f, 0xb0, 0x66, 0x31,       /* lock cmpxchg [esi+0x31], ah: equal */
+        0x0f, 0x94, 0xc1,                   /* setz cl */
+        0x0f, 0xb0, 0x7c, 0x24, 0xfc,       /* cmpxchg [esp-4], bh: not equal */
+        0x0f, 0x94, 0xc5,                   /* setz ch */
+        0xb0, 0x8d,                         /* mov al, 0x8d */
+        0xf0, 0x0f, 0xb0, 0x7c, 0x24, 0xfc, /* lock cmpxchg [esp-4], bh: equal */
+        0x8b, 0x54, 0x24, 0xfc,             /* mov edx, [esp-4] */
+        0xc3,
+    };
+    for (unsigned production = 0; production < 2; production++) {
+        Run r = production ? run_production(code, sizeof(code)) : run(code, sizeof(code), 1);
+        assert(r.status == PW_OK && r.state.eip == 0xdead0000u && r.reencoded);
+        assert(r.data[0x31] == 0x22);
+        assert((r.state.gpr[1] & 0xffff) == 0x0001);
+        assert(r.state.gpr[0] == 0x4433228du && r.state.gpr[2] == 0x5a6b7cd0u);
+    }
+}
+
+/* The same forms with fs: through r10b, the address in r11 (no copy). */
+static void test_high_bytes_fs(void)
+{
+    static const uint8_t code[] = {
+        0xbb, 0xc0, 0xd0, 0xe0, 0xf0,       /* mov ebx, 0xf0e0d0c0 */
+        0xb8, 0x11, 0x22, 0x33, 0x44,       /* mov eax, 0x44332211 */
+        0x64, 0x88, 0x3d, 4, 0, 0, 0,       /* mov fs:[4], bh */
+        0x64, 0x8a, 0x25, 8, 0, 0, 0,       /* mov ah, fs:[8] */
+        0x64, 0x00, 0x25, 9, 0, 0, 0,       /* add fs:[9], ah */
+        0xc3,
+    };
+    Run r;
+
+    fs_offset = DATA + 0x200;
+    for (unsigned markers = 0; markers < 2; markers++) {
+        fault_markers = markers;
+        r = run(code, sizeof(code), 1);
+        assert(r.status == PW_OK && r.state.eip == 0xdead0000u && r.reencoded);
+        assert(r.data[0x204] == 0xd0);
+        assert(r.state.gpr[0] == (0x44330011u | (uint32_t)(uint8_t)(0x208 * 7 + 3) << 8));
+        assert(r.data[0x209] == (uint8_t)(0x209 * 7 + 3 + 0x208 * 7 + 3));
+    }
+    fault_markers = 0;
+    fs_offset = 0;
+}
+
+/* bt, bts, btr and btc on memory with a register offset: offsets inside the
+ * dword, past it (the bit string's next units) and far from it, esp, esi,
+ * edi and an index as the address, edi and ebp as the offset, the 16-bit
+ * forms, lock, CF read after each and the other flags, which bt leaves,
+ * read at the end. Non-negative offsets, which the emitter takes alike. */
+static void test_bit_strings(void)
+{
+    static const uint8_t code[] = {
+        0x31, 0xc0,                         /* xor eax, eax */
+        0x6a, 0x00, 0x6a, 0x00,             /* push 0; push 0: a bitmap */
+        0xb9, 0x23, 0, 0, 0,                /* mov ecx, 35 */
+        0x0f, 0xab, 0x0c, 0x24,             /* bts [esp], ecx: [esp+4] bit 3 */
+        0x0f, 0xa3, 0x0c, 0x24,             /* bt [esp], ecx: CF */
+        0x11, 0xc0,                         /* adc eax, eax */
+        0xbf, 0x05, 0, 0, 0,                /* mov edi, 5 */
+        0x0f, 0xa3, 0x3c, 0x24,             /* bt [esp], edi: clear */
+        0x11, 0xc0,                         /* adc eax, eax */
+        0x0f, 0xab, 0x3c, 0x24,             /* bts [esp], edi */
+        0x59, 0x5a,                         /* pop ecx; pop edx */
+        0x89, 0x8e, 0x00, 0x02, 0, 0,       /* mov [esi+0x200], ecx */
+        0x89, 0x96, 0x04, 0x02, 0, 0,       /* mov [esi+0x204], edx */
+        0xbf, 0x00, 0x01, 0, 0,             /* mov edi, 256 */
+        0xbd, 0x47, 0x01, 0, 0,             /* mov ebp, 327 */
+        0x0f, 0xbb, 0x2e,                   /* btc [esi], ebp: [esi+0x28] bit 7 */
+        0x11, 0xc0,                         /* adc eax, eax */
+        0xbb, 0x02, 0, 0, 0,                /* mov ebx, 2 */
+        0x0f, 0xb3, 0x7c, 0x9e, 0x10,       /* btr [esi+ebx*4+0x10], edi: [esi+0x38] bit 0 */
+        0x11, 0xc0,                         /* adc eax, eax */
+        0x8d, 0x7e, 0x40,                   /* lea edi, [esi+0x40] */
+        0xbd, 0x1f, 0x0c, 0, 0,             /* mov ebp, 0xc1f */
+        0xf0, 0x0f, 0xab, 0x2f,             /* lock bts [edi], ebp: [esi+0x1c0] bit 31 */
+        0x11, 0xc0,                         /* adc eax, eax */
+        0xb9, 0x41, 0, 0, 0,                /* mov ecx, 65 */
+        0x0f, 0xb3, 0x0c, 0x0f,             /* btr [edi+ecx], ecx: [edi+0x49] bit 1 */
+        0x11, 0xc0,                         /* adc eax, eax */
+        0x66, 0xba, 0x13, 0x00,             /* mov dx, 19 */
+        0x66, 0x0f, 0xab, 0x56, 0x60,       /* bts word [esi+0x60], dx: [esi+0x62] bit 3 */
+        0x11, 0xc0,                         /* adc eax, eax */
+        0xba, 0x31, 0x01, 0, 0,             /* mov edx, 0x131 */
+        0x66, 0x0f, 0xa3, 0x56, 0x60,       /* bt word [esi+0x60], dx: [esi+0x86] bit 1 */
+        0x11, 0xc0,                         /* adc eax, eax */
+        0x66, 0x0f, 0xbb, 0x56, 0x70,       /* btc word [esi+0x70], dx */
+        0x66, 0x0f, 0xb3, 0x56, 0x70,       /* btr word [esi+0x70], dx */
+        0x11, 0xc0,                         /* adc eax, eax */
+        0xf0, 0x66, 0x0f, 0xbb, 0x17,       /* lock btc word [edi], dx */
+        0x11, 0xc0,                         /* adc eax, eax */
+        0x39, 0xd1,                         /* cmp ecx, edx: SF, OF, AF, PF... */
+        0x0f, 0xa3, 0x16,                   /* bt [esi], edx */
+        0x9f,                               /* lahf */
+        0x0f, 0x90, 0xc3,                   /* seto bl */
+        0x88, 0x9e, 0x10, 0x02, 0, 0,       /* mov [esi+0x210], bl */
+        0x88, 0xa6, 0x11, 0x02, 0, 0,       /* mov [esi+0x211], ah */
+        0x39, 0xd8,                         /* cmp eax, ebx */
+        0xc3,
+    };
+    Run r;
+
+    reencodes_all(code, sizeof(code));
+    /* lock bts and btc are the host fallback's under the emitter. */
+    hostexec_fallback = 1;
+    compare(code, sizeof(code));
+    hostexec_fallback = 0;
+    r = run_production(code, sizeof(code));
+    assert(r.status == PW_OK && r.state.eip == 0xdead0000u);
+    {
+        uint32_t lo, hi;
+        memcpy(&lo, r.data + 0x200, 4);
+        memcpy(&hi, r.data + 0x204, 4);
+        assert(lo == 1u << 5 && hi == 1u << 3);
+        assert(r.data[0x28] == (uint8_t)((0x28 * 7 + 3) ^ 0x80));
+        assert(r.data[0x38] == (uint8_t)((0x38 * 7 + 3) & ~1));
+        assert(r.data[0x1c3] == (uint8_t)((0x1c3 * 7 + 3) | 0x80));
+        assert(r.data[0x62] == (uint8_t)((0x62 * 7 + 3) | 0x08));
+    }
+}
+
+/* bt, bts, btr, btc [ebx], eax (form: the four with 0f a3 ab b3 bb, then
+ * the same with 0x66) after cmp ecx, edx; the unit at base + offset must
+ * stop every backend at the bt (offset 12) as the guard refuses it, with
+ * the same status, registers, flags and fault (address, width, direction)
+ * on the emitter, the re-encoder, a call stack and superblocks. */
+static void compare_bit_fault(unsigned form, uint32_t base, uint32_t offset, uint32_t address)
+{
+    static const uint8_t ops[4] = { 0xa3, 0xab, 0xb3, 0xbb };
+    uint8_t code[24];
+    size_t n = 0;
+    Run r[4];
+
+    code[n++] = 0xbb; memcpy(code + n, &base, 4); n += 4;          /* mov ebx, base */
+    code[n++] = 0xb8; memcpy(code + n, &offset, 4); n += 4;        /* mov eax, offset */
+    code[n++] = 0x39; code[n++] = 0xd1;                            /* cmp ecx, edx */
+    if (form >= 4) code[n++] = 0x66;
+    code[n++] = 0x0f; code[n++] = ops[form & 3]; code[n++] = 0x03; /* bt [ebx], eax */
+    code[n++] = 0xc3;
+    r[0] = run(code, n, 1);
+    r[1] = run_call_stack(code, n);
+    r[2] = run_superblocks(code, n);
+    r[3] = run(code, n, 0);
+    if (r[0].status != PW_ERR_VM || r[0].state.eip != low + CODE + 12 || r[0].state.fault_address != address)
+        fprintf(stderr, "bit string %u at %08x+%08x: status %d eip +%x fault %08x, want %08x\n", form, base, offset,
+                r[0].status, r[0].state.eip - low - CODE, r[0].state.fault_address, address);
+    assert(r[0].status == PW_ERR_VM && r[0].state.eip == low + CODE + 12 && r[0].reencoded);
+    assert(r[0].state.fault_address == address && r[0].state.fault_width == (form >= 4 ? 2u : 4u));
+    assert(r[0].state.fault_write == ((form & 3) ? 2u : 0u));
+    for (unsigned k = 1; k < 4; k++) {
+        same(&r[k], &r[0]);
+        assert(r[k].state.fault_address == address && r[k].state.fault_width == r[0].state.fault_width);
+        assert(r[k].state.fault_write == r[0].state.fault_write);
+    }
+}
+
+/* The guard on the unit a bit string reaches, not on its base: units that
+ * end exactly at the top of the flat range pass, one more byte stops (dword
+ * and word units, an unaligned base); a negative offset that reaches below
+ * the range stops at the unit's address, and one whose guest address wraps
+ * below 0 at the wrapped address. */
+static void test_bit_string_bounds(void)
+{
+    static const uint8_t fits[] = {
+        0xbb, 0, 0, 0, 0,                   /* mov ebx, top - 0x10 (patched) */
+        0xb8, 0x60, 0, 0, 0,                /* mov eax, 0x60: the last dword */
+        0x0f, 0xab, 0x03,                   /* bts [ebx], eax */
+        0xb8, 0x7f, 0, 0, 0,                /* mov eax, 0x7f: the last word, bit 15 */
+        0x66, 0x0f, 0xbb, 0x03,             /* btc word [ebx], ax */
+        0x4b,                               /* dec ebx */
+        0xb8, 0x68, 0, 0, 0,                /* mov eax, 0x68: an unaligned dword 5 bytes from the top */
+        0x0f, 0xa3, 0x03,                   /* bt [ebx], eax */
+        0x19, 0xc0,                         /* sbb eax, eax */
+        0xc3,
+    };
+    uint8_t code[sizeof(fits)];
+    const uint32_t top = low + SPAN;
+    Run reencoded, emitter;
+
+    memcpy(code, fits, sizeof(code));
+    memcpy(code + 1, &(uint32_t){ top - 0x10 }, 4);
+    memcpy(guest + SPAN - 8, "\0\0\0\x01\0\0\0\x40", 8);
+    reencoded = run(code, sizeof(code), 1);
+    assert(reencoded.status == PW_OK && reencoded.state.eip == 0xdead0000u);
+    assert(guest[SPAN - 4] == 1 && guest[SPAN - 1] == 0xc0 && reencoded.state.gpr[0] == 0xffffffffu);
+    memcpy(guest + SPAN - 8, "\0\0\0\x01\0\0\0\x40", 8);
+    emitter = run(code, sizeof(code), 0);
+    same(&reencoded, &emitter);
+    assert(guest[SPAN - 4] == 1 && guest[SPAN - 1] == 0xc0);
+
+    for (unsigned form = 0; form < 8; form++) {
+        const unsigned wide = form < 4;
+        compare_bit_fault(form, top - 0x10, 0x80, top);                              /* at the top */
+        compare_bit_fault(form, top - (wide ? 3 : 1), 0, top - (wide ? 3 : 1));      /* across it */
+        compare_bit_fault(form, low + 0x10, wide ? 0xffffff00u : 0x1234ff00u, low - 0x10);
+        compare_bit_fault(form, 0x40, wide ? 0xfffff000u : 0xabcdf000u, 0xfffffe40u);
+    }
+}
+
+/* The host's own bt, bts, btr and btc on memory with a register offset
+ * (form as compare_bit_fault's), from flags in: the flags out, and the bit
+ * string changed in place. */
+static __attribute__((noinline)) uint32_t bits_on_host(unsigned form, uint8_t *unit, uint32_t offset, uint32_t flags)
+{
+    unsigned long out, in = flags;
+#define BIT_OP(op) __asm__ volatile("push %[f]; popf; " op " %[o], (%[u]); pushf; pop %[r]" \
+                                    : [r] "=&r"(out) : [f] "r"(in), [o] "r"(offset), [u] "r"(unit) : "cc", "memory")
+#define BIT_OP16(op) __asm__ volatile("push %[f]; popf; " op " %w[o], (%[u]); pushf; pop %[r]" \
+                                      : [r] "=&r"(out) : [f] "r"(in), [o] "r"(offset), [u] "r"(unit) : "cc", "memory")
+    switch (form) {
+    case 0: BIT_OP("btl"); break;
+    case 1: BIT_OP("btsl"); break;
+    case 2: BIT_OP("btrl"); break;
+    case 3: BIT_OP("btcl"); break;
+    case 4: BIT_OP16("btw"); break;
+    case 5: BIT_OP16("btsw"); break;
+    case 6: BIT_OP16("btrw"); break;
+    default: BIT_OP16("btcw"); break;
+    }
+#undef BIT_OP
+#undef BIT_OP16
+    return (uint32_t)out;
+}
+
+/* The re-encoder against the host itself: every form, offsets at the edges
+ * of the unit and of the sign (negative ones reach before the operand), the
+ * 16-bit forms with junk in the offset register's upper half, and two sets
+ * of incoming flags; the same bit string after, the same flags (CF from the
+ * bit, the others as the host's bt leaves them) and registers. The
+ * re-encoder through the guard and with fault markers, as wowprospero runs
+ * it, and the emitter. */
+static void test_bit_string_oracle(void)
+{
+    static const uint32_t wide[] = {
+        0, 1, 31, 32, 33, 63, 64, 1000, 0x7fff, 0xffffffffu, 0xfffffffeu, 0xffffffe1u, 0xffffffe0u,
+        0xffffffdfu, (uint32_t)-1000, (uint32_t)-0x7fff, (uint32_t)-0x8000,
+    };
+    static const uint32_t narrow[] = {
+        0, 1, 15, 16, 17, 0x7fff, 0x8000, 0xffff, 0xfff0, 0xffef, 0x12340005u, 0xabcd8000u, 0x0001ffffu,
+        0x7fff0010u, 0xffff0001u,
+    };
+    static const uint8_t ops[4] = { 0xa3, 0xab, 0xb3, 0xbb };
+    enum { WINDOW = 0x30000, HALF = 0x1000 };
+    static PwX86CacheEntry entries[3][512];
+    static PwX86Engine engines[3];
+    static uint8_t host[2 * HALF];
+    unsigned ran = 0, generation = 1;
+
+    native_fp = superblocks = call_stack = 1;
+    setup(&engines[0], entries[0], 1);
+    fault_markers = 1;
+    setup(&engines[1], entries[1], 1);
+    native_fp = superblocks = call_stack = fault_markers = 0;
+    setup(&engines[2], entries[2], 0);
+    for (unsigned form = 0; form < 8; form++) {
+        const uint32_t *offsets = form < 4 ? wide : narrow;
+        const unsigned count = form < 4 ? sizeof(wide) / sizeof(wide[0]) : sizeof(narrow) / sizeof(narrow[0]);
+        for (unsigned k = 0; k < count; k++)
+            for (unsigned f = 0; f < 2; f++) {
+                const uint8_t flags = f ? 0xd5 : 0x00;
+                const uint32_t base = low + WINDOW, offset = offsets[k];
+                uint32_t native_flags;
+                uint8_t code[32];
+                size_t n = 0;
+
+                code[n++] = 0xbb; memcpy(code + n, &base, 4); n += 4;          /* mov ebx, base */
+                code[n++] = 0xb9; memcpy(code + n, &offset, 4); n += 4;        /* mov ecx, offset */
+                code[n++] = 0xb4; code[n++] = flags; code[n++] = 0x9e;         /* mov ah, flags; sahf */
+                if (form >= 4) code[n++] = 0x66;
+                code[n++] = 0x0f; code[n++] = ops[form & 3]; code[n++] = 0x0b; /* bt [ebx], ecx */
+                code[n++] = 0xc3;
+                for (unsigned i = 0; i < sizeof(host); i++) host[i] = (uint8_t)(i * 13 + k + f);
+                native_flags = bits_on_host(form, host + HALF, offset, 0x202u | flags);
+                for (unsigned e = 0; e < 3; e++) {
+                    Run r;
+                    for (unsigned i = 0; i < sizeof(host); i++) guest[WINDOW - HALF + i] = (uint8_t)(i * 13 + k + f);
+                    assert(pw_x86_engine_reset(&engines[e], ++generation) == PW_OK);
+                    hostexec_fallback = e == 2;           /* sahf, under the emitter */
+                    r = execute(&engines[e], code, n);
+                    hostexec_fallback = 0;
+                    ran++;
+                    if (r.status != PW_OK || (r.state.eflags & 0x8d5) != (native_flags & 0x8d5) ||
+                        memcmp(guest + WINDOW - HALF, host, sizeof(host)))
+                        fprintf(stderr, "bit string form %u offset %08x flags %02x engine %u: status %d flags %03x, host %03x\n",
+                                form, offset, flags, e, r.status, r.state.eflags & 0x8d5, native_flags & 0x8d5);
+                    assert(r.status == PW_OK && r.state.eip == 0xdead0000u);
+                    assert((r.state.eflags & 0x8d5) == (native_flags & 0x8d5));
+                    assert(!memcmp(guest + WINDOW - HALF, host, sizeof(host)));
+                    assert(r.state.gpr[1] == offset && r.state.gpr[3] == base);
+                    assert(r.state.gpr[0] == ((0x11111111u & ~0xff00u) | (uint32_t)flags << 8));
+                }
+            }
+    }
+    assert(engines[0].reencoded_blocks && engines[1].reencoded_blocks && !engines[2].reencoded_blocks && ran > 600);
+    for (unsigned e = 0; e < 3; e++) assert(pw_x86_engine_destroy(&engines[e]) == PW_OK);
+}
+
+static void test_prefixed_padding(void)
+{
+    static const uint8_t padding[] = {
+        0x66,0x66,0x66,0x66,0x66,0x66,0x2e,0x0f,0x1f,0x84,0,0,0,0,0,
+        0x67,0x0f,0x1f,0x06,0,0,
+        0x64,0x65,0x2e,0x66,0x0f,0x1f,0x00,
+        0x66,0x66,0x90,0xc3
+    };
+    Run reference = run(padding,sizeof(padding),0);
+    Run translated = run(padding,sizeof(padding),1);
+    same(&reference,&translated);
+    assert(translated.reencoded && translated.status == PW_OK);
+    translated = run_superblocks(padding,sizeof(padding));
+    same(&reference,&translated);
+    /* Invalid sub-opcodes and overlong padding cannot be normalized to NOP. */
+    {
+        const uint8_t invalid[]={0x66,0x0f,0x1f,0xc8,0xc3};
+        uint8_t overlong[17];
+        memset(overlong,0x66,8);memcpy(overlong+8,padding+7,8);overlong[16]=0xc3;
+        translated=run(invalid,sizeof(invalid),1);
+        assert(translated.status==PW_ERR_UNSUPPORTED && translated.state.eip==low+CODE);
+        translated=run(overlong,sizeof(overlong),1);
+        assert(translated.status==PW_ERR_UNSUPPORTED && translated.state.eip==low+CODE);
+    }
+}
+
+/* A refused bit-count source read preserves the faulting EIP, GPRs and flags. */
+static void test_refused_bit_count_reads(void)
+{
+    static const unsigned opcodes[] = {0xbc, 0xbd};
+    for (unsigned op = 0; op < 2; ++op)
+        for (unsigned width = 2; width <= 4; width += 2)
+            for (unsigned fs = 0; fs < 2; ++fs)
+            {
+                uint8_t code[6]; size_t bytes = 0;
+                if (fs) code[bytes++] = 0x64;
+                if (width == 2) code[bytes++] = 0x66;
+                code[bytes++] = 0xf3; code[bytes++] = 0x0f;
+                code[bytes++] = (uint8_t)opcodes[op]; code[bytes++] = 0x06;
+                PwVmBackend vm; PwX86Engine engine; PwX86CacheEntry entries[16];
+                memset(guest + CODE, 0xcc, DATA - CODE);
+                memcpy(guest + CODE, code, bytes);
+                assert(pw_vm_posix_backend(&vm) == PW_OK);
+                assert(pw_x86_engine_init(&engine, &vm, entries, 16, 16384, 1, view, NULL) == PW_OK);
+                assert(pw_x86_engine_set_counters(&engine, 0) == PW_OK);
+                assert(pw_x86_engine_set_flat_memory(&engine, low, low + SPAN) == PW_OK);
+                assert(pw_x86_engine_set_reencode(&engine, 1) == PW_OK);
+                PwX86State state; PwX86StepReport report;
+                initial(&state);
+                state.eflags = 0x2 | 0x8d5;
+                state.fs_base = fs ? low : 0;
+                state.gpr[6] = (fs ? 0 : low) + SPAN - width + 1;
+                PwX86State before = state;
+                assert(pw_x86_engine_step(&engine, &state, &report) == PW_ERR_VM);
+                assert(state.eip == before.eip && state.eflags == before.eflags);
+                assert(!memcmp(state.gpr, before.gpr, sizeof(state.gpr)));
+                assert(state.fault_address == low + SPAN - width + 1);
+                assert(state.fault_width == width && !state.fault_write);
+                assert(engine.reencoded_blocks == 1);
+                assert(pw_x86_engine_destroy(&engine) == PW_OK);
+            }
+}
+
+static uint32_t native_xlat(uint32_t eax, uint32_t base)
+{
+    uint64_t before, after;
+    __asm__ volatile("pushfq; popq %2; addr32 xlatb; pushfq; popq %3"
+                     : "+a"(eax), "+b"(base), "=&r"(before), "=&r"(after) : : "memory");
+    assert(!((before ^ after) & 0xcd5));
+    return eax;
+}
+
+/* Each immutable single instruction must publish once and reuse the block.
+ * The old host fallback is an independent oracle for valid FS pushes; native
+ * XLAT checks byte indexing/partial EAX, including a translated FS base. */
+static void main_coverage_form(unsigned kind, unsigned form, unsigned marked)
+{
+    uint8_t code[8]; size_t bytes = 0;
+    if(kind == 0) {
+        code[bytes++] = 0x64; code[bytes++] = 0xff;
+        if(form == 8) { code[bytes++] = 0x35; memset(code+bytes,0,4); bytes += 4; }
+        else if(form == 9) { code[bytes++] = 0x74; code[bytes++] = 0xb3; code[bytes++] = 0x10; }
+        else {
+            code[bytes++] = (uint8_t)(0x70 | form);
+            if(form == 4) code[bytes++] = 0x24;
+            code[bytes++] = 0x23;
+        }
+    } else if(kind == 1) {
+        if(form) code[bytes++] = 0x64;
+        code[bytes++] = 0xd7;
+    } else code[bytes++] = form ? 0xfd : 0xfc;
+    memcpy(guest+CODE,code,bytes); memset(guest+CODE+bytes,0xcc,DATA-CODE-bytes);
+    PwVmBackend vm; PwX86Engine engine; PwX86CacheEntry entries[16];
+    assert(pw_vm_posix_backend(&vm) == PW_OK);
+    assert(pw_x86_engine_init(&engine,&vm,entries,16,16384,1,view,NULL) == PW_OK);
+    assert(pw_x86_engine_set_quantum(&engine,1) == PW_OK);
+    assert(pw_x86_engine_set_counters(&engine,0) == PW_OK);
+    assert(pw_x86_engine_set_flat_memory(&engine,low,low+SPAN) == PW_OK);
+    assert(pw_x86_engine_set_reencode(&engine,1) == PW_OK);
+    assert(pw_x86_engine_set_native_fp(&engine,marked) == PW_OK);
+    assert(pw_x86_engine_set_fault_markers(&engine,marked) == PW_OK);
+    static const unsigned indices[] = {0,1,127,128,255,17,64};
+    for(unsigned i=0;i<7;++i) {
+        PwX86State state,expected; PwX86StepReport report; initial(&state);
+        state.eflags=0x2|0x8d5|(i&1?0x400:0);
+        uint32_t value=0xdead0000u|i;
+        if(kind == 0) {
+            uint32_t address;
+            state.fs_base=0x80;
+            if(form == 8) { state.fs_base=low+DATA+0x23; address=state.fs_base; }
+            else if(form == 9) {
+                state.gpr[3]=low+DATA-0x80; state.gpr[6]=3;
+                address=state.fs_base+state.gpr[3]+state.gpr[6]*4+0x10;
+            } else {
+                if(form != 4) state.gpr[form]=low+DATA;
+                address=state.fs_base+state.gpr[form]+0x23;
+            }
+            memcpy((void *)(uintptr_t)address,&value,4);
+            expected=state; expected.gpr[4]-=4;
+            PwX86State fallback=state;
+            assert(pw_x86_hostexec_step(&hostexec,&fallback,code,bytes) == PW_OK);
+            assert(!memcmp(fallback.gpr,expected.gpr,sizeof(expected.gpr)));
+            assert(fallback.eflags == expected.eflags);
+            memset((void *)(uintptr_t)expected.gpr[4],0x5a,4);
+        } else if(kind == 1) {
+            state.fs_base=form?low:0;
+            state.gpr[3]=(form?0:low)+DATA;
+            state.gpr[0]=0xaabbcc00u|indices[i];
+            guest[DATA+indices[i]]=(uint8_t)(i*29);
+            expected=state;
+            expected.gpr[0]=native_xlat(state.gpr[0],state.gpr[3]+state.fs_base);
+            assert(expected.gpr[0]==((state.gpr[0]&0xffffff00u)|(i*29)));
+        } else {
+            expected=state;
+            expected.eflags=(state.eflags&~0x400u)|(form?0x400:0);
+        }
+        expected.eip += (uint32_t)bytes;
+        assert(pw_x86_engine_step(&engine,&state,&report) == PW_OK);
+        uint64_t host_flags; __asm__ volatile("pushfq; popq %0":"=r"(host_flags));
+        assert(!(host_flags&0x400));
+        pw_x86_engine_fp_sync(&engine,&state);
+        assert(state.eip == expected.eip && state.eflags == expected.eflags);
+        assert(!memcmp(state.gpr,expected.gpr,sizeof(state.gpr)));
+        assert(report.instructions == 1 && report.cache_hit == (i != 0));
+        if(kind == 0) { uint32_t pushed;memcpy(&pushed,(void *)(uintptr_t)state.gpr[4],4);assert(pushed==value); }
+    }
+    assert(engine.reencoded_blocks==1 && engine.compiles==1 && engine.cache.publishes==1);
+    assert(engine.cache.misses==1 && engine.cache.hits==6);
+    assert(pw_x86_engine_destroy(&engine)==PW_OK);
+}
+
+static void test_main_instruction_coverage(void)
+{
+    for(unsigned marked=0;marked<2;++marked) {
+        for(unsigned form=0;form<10;++form) main_coverage_form(0,form,marked);
+        for(unsigned form=0;form<2;++form) {
+            main_coverage_form(1,form,marked);
+            main_coverage_form(2,form,marked);
+        }
+    }
+    /* Both backends preserve CMP flags across the guest-only DF changes. */
+    const uint8_t direction[]={0x39,0xd1,0xfd,0x0f,0x92,0xc0,0xfc,0xc3};
+    compare(direction,sizeof(direction));
+    const uint8_t backward[]={0xfd,0xb9,3,0,0,0,0xf3,0xa4,0xfc,0xc3};
+    compare(backward,sizeof(backward));
+    uint8_t mixed[]={0xbb,0,0,0,0,0xb8,1,0xcc,0xbb,0xaa,
+                     0xd7,0xd7,0x64,0xff,0x33,0x59,0x89,0xc2,0xc3};
+    uint32_t base=low+DATA;memcpy(mixed+1,&base,4);
+    compare(mixed,sizeof(mixed));
+    /* Adding these opcodes must not admit locked/repeated forms or an FS
+     * register push. Incomplete memory operands remain refused as well. */
+    const uint8_t refused[][4]={{0xf0,0xd7},{0xf3,0xd7},{0xf0,0xfc},
+                               {0xf3,0xfd},{0x64,0xff,0xf0},{0x64,0xff},
+                               {0x64,0xff,0x74,0x24}};
+    const unsigned lengths[]={2,2,2,2,3,2,4};
+    PwX86TranslateOptions options={.flat_low=low,.flat_high=low+SPAN,.no_counters=1};
+    uint8_t out[16384];PwX86Block block;
+    for(unsigned i=0;i<sizeof(lengths)/sizeof(lengths[0]);++i) {
+        assert(pw_x86_reencode(refused[i],lengths[i],low+CODE,out,sizeof(out),&block,&options)!=PW_OK);
+        assert(pw_x86_translate_opts(refused[i],lengths[i],low+CODE,out,sizeof(out),&block,&options)!=PW_OK);
+    }
+    /* FS source refusal and stack-destination refusal are both atomic. */
+    for(unsigned destination=0;destination<2;++destination) {
+        const uint8_t code[]={0x64,0xff,0x35,0,0,0,0};
+        memcpy(guest+CODE,code,sizeof(code));memset(guest+CODE+sizeof(code),0xcc,DATA-CODE-sizeof(code));
+        PwVmBackend vm;PwX86Engine engine;PwX86CacheEntry entries[16];
+        assert(pw_vm_posix_backend(&vm)==PW_OK);
+        assert(pw_x86_engine_init(&engine,&vm,entries,16,16384,1,view,NULL)==PW_OK);
+        assert(pw_x86_engine_set_counters(&engine,0)==PW_OK);
+        assert(pw_x86_engine_set_flat_memory(&engine,low,low+SPAN)==PW_OK);
+        assert(pw_x86_engine_set_reencode(&engine,1)==PW_OK);
+        PwX86State state;PwX86StepReport report;initial(&state);
+        state.eflags=0xad7;state.fs_base=destination?low+DATA:low+SPAN-3;
+        if(destination) state.gpr[4]=low+SPAN+1;
+        PwX86State before=state;
+        assert(pw_x86_engine_step(&engine,&state,&report)==PW_ERR_VM);
+        assert(state.eip==before.eip && state.eflags==before.eflags);
+        assert(!memcmp(state.gpr,before.gpr,sizeof(state.gpr)));
+        assert(state.fault_address==low+SPAN-3 && state.fault_width==4 && state.fault_write==destination);
+        assert(pw_x86_engine_destroy(&engine)==PW_OK);
+    }
+    for(unsigned fs=0;fs<2;++fs) {
+        uint8_t code[]={0x64,0xd7};unsigned offset=fs?0:1;
+        memcpy(guest+CODE,code+offset,2-offset);memset(guest+CODE+2-offset,0xcc,DATA-CODE-2+offset);
+        PwVmBackend vm;PwX86Engine engine;PwX86CacheEntry entries[16];
+        assert(pw_vm_posix_backend(&vm)==PW_OK);
+        assert(pw_x86_engine_init(&engine,&vm,entries,16,16384,1,view,NULL)==PW_OK);
+        assert(pw_x86_engine_set_counters(&engine,0)==PW_OK);
+        assert(pw_x86_engine_set_flat_memory(&engine,low,low+SPAN)==PW_OK);
+        assert(pw_x86_engine_set_reencode(&engine,1)==PW_OK);
+        PwX86State state;PwX86StepReport report;initial(&state);
+        state.eflags=0xad7;state.fs_base=fs?low:0;state.gpr[3]=(fs?0:low)+SPAN;state.gpr[0]=0xaabbcc00;
+        PwX86State before=state;
+        assert(pw_x86_engine_step(&engine,&state,&report)==PW_ERR_VM);
+        assert(state.eip==before.eip && state.eflags==before.eflags);
+        assert(!memcmp(state.gpr,before.gpr,sizeof(state.gpr)));
+        assert(state.fault_address==low+SPAN && state.fault_width==1 && !state.fault_write);
+        assert(pw_x86_engine_destroy(&engine)==PW_OK);
+    }
+}
+
+/* A later XOR makes CMP's flags dead on successful execution. A refused read
+ * must still expose those flags, not the incoming state or the later XOR. */
+static void test_main_coverage_cold_flags(void)
+{
+    for(unsigned reencode=0;reencode<2;++reencode)
+        for(unsigned form=0;form<4;++form) {
+            uint8_t code[16]={0x39,0xd1};size_t bytes=2;
+            if(form<2) {
+                const uint8_t push[]={0x64,0xff,0x35,0,0,0,0};
+                memcpy(code+bytes,push,sizeof(push));bytes+=sizeof(push);
+            } else {
+                if(form==3) code[bytes++]=0x64;
+                code[bytes++]=0xd7;
+            }
+            code[bytes++]=0x31;code[bytes++]=0xc0;code[bytes++]=0xc3;
+            memset(guest+CODE,0xcc,DATA-CODE);memcpy(guest+CODE,code,bytes);
+            PwVmBackend vm;PwX86Engine engine;PwX86CacheEntry entries[16];
+            assert(pw_vm_posix_backend(&vm)==PW_OK);
+            assert(pw_x86_engine_init(&engine,&vm,entries,16,16384,1,view,NULL)==PW_OK);
+            assert(pw_x86_engine_set_counters(&engine,0)==PW_OK);
+            assert(pw_x86_engine_set_flat_memory(&engine,low,low+SPAN)==PW_OK);
+            assert(pw_x86_engine_set_reencode(&engine,reencode)==PW_OK);
+            PwX86State state;PwX86StepReport report;initial(&state);
+            state.gpr[1]=1;state.gpr[2]=2;state.gpr[0]=0xaabbcc00;state.eflags=0xed7;
+            state.fs_base=form==0?low+SPAN-3:form==1?low+DATA:form==3?low:0;
+            if(form==1) state.gpr[4]=low+SPAN+1;
+            if(form>=2) state.gpr[3]=(form==3?0:low)+SPAN;
+            PwX86State before=state;
+            assert(pw_x86_engine_step(&engine,&state,&report)==PW_ERR_VM);
+            assert(state.eip==before.eip+2 && state.eflags==0x697);
+            assert(!memcmp(state.gpr,before.gpr,sizeof(state.gpr)));
+            /* The emitter's existing stack-bound exit reports only status;
+             * source guards and the re-encoder also report access metadata. */
+            if(form!=1 || reencode) {
+                assert(state.fault_address==low+SPAN-(form<2?3:0));
+                assert(state.fault_width==(form<2?4:1) && state.fault_write==(form==1));
+            }
+            assert(engine.reencoded_blocks==reencode);
+            assert(pw_x86_engine_destroy(&engine)==PW_OK);
+        }
+}
+
+/* PUSHFD, POPFD, PUSHAD and POPAD against the processor itself. The guest
+ * range is below 4 GiB, so the test runs the same program there natively in
+ * 32-bit compatibility mode (code segment 0x23, as a 32-bit process runs on
+ * x86-64 Linux): a trampoline at NATIVE loads the guest registers and EFLAGS
+ * from NATIVE_CONTEXT, jumps to the program, and the program's ret lands on
+ * an exit that stores them back and far-jumps to a 64-bit stub, which
+ * returns to native32_enter. */
+enum { NATIVE = 0x1c000, NATIVE_CONTEXT = 0x3fc00, POPF_BITS = 0x00240cd5u };
+/* The context: gpr[8], eflags (+32), the program's address (+36), and the
+ * host rsp to return on (+40). */
+uint64_t pw_test_native32_enter(uint32_t entry, uint64_t *rsp_slot);
+__asm__(".text\n"
+        ".globl pw_test_native32_enter\n"
+        ".type pw_test_native32_enter, @function\n"
+        "pw_test_native32_enter:\n"
+        "    push %rbx\n    push %rbp\n    push %r12\n    push %r13\n    push %r14\n    push %r15\n"
+        "    lea 1f(%rip), %rax\n"
+        "    push %rax\n"
+        "    mov %rsp, (%rsi)\n"
+        "    mov %edi, %eax\n"
+        "    pushq $0x23\n"
+        "    push %rax\n"
+        "    lretq\n"
+        "1:  pushq $2\n    popfq\n"   /* DF, AC and ID clear again for C */
+        "    pop %r15\n    pop %r14\n    pop %r13\n    pop %r12\n    pop %rbp\n    pop %rbx\n"
+        "    xor %eax, %eax\n"
+        "    ret\n"
+        ".size pw_test_native32_enter, .-pw_test_native32_enter\n");
+
+static uint32_t native_exit;   /* the return address the native run's program returns to */
+static unsigned native_ok;     /* compatibility mode works here */
+
+static void native32_build(void)
+{
+    static const uint8_t modrm[8] = { 0x05, 0x0d, 0x15, 0x1d, 0x25, 0x2d, 0x35, 0x3d };
+    uint8_t *p = guest + NATIVE;
+    const uint32_t context = low + NATIVE_CONTEXT;
+    size_t n = 0;
+#define B(v) (p[n++] = (uint8_t)(v))
+#define D(v) do { const uint32_t d_ = (v); memcpy(p + n, &d_, 4); n += 4; } while (0)
+    B(0x8c); B(0xd0);                                   /* mov eax, ss */
+    B(0x8e); B(0xd8);                                   /* mov ds, eax */
+    B(0x8e); B(0xc0);                                   /* mov es, eax */
+    B(0xbc); D(context + 32);                           /* mov esp, &eflags */
+    B(0x9d);                                            /* popfd */
+    for (unsigned g = 0; g < 8; g++)
+        if (g != 4) { B(0x8b); B(modrm[g]); D(context + 4 * g); }
+    B(0x8b); B(modrm[4]); D(context + 16);              /* mov esp, [esp's] */
+    B(0xff); B(0x25); D(context + 36);                  /* jmp [program] */
+    native_exit = low + NATIVE + (uint32_t)n;
+    for (unsigned g = 0; g < 8; g++) { B(0x89); B(modrm[g]); D(context + 4 * g); }
+    B(0xbc); D(context + 36);                           /* mov esp, &program */
+    B(0x9c);                                            /* pushfd: to eflags */
+    B(0xea); D(low + NATIVE + (uint32_t)n + 6); B(0x33); B(0x00);   /* jmp 0x33:next */
+    B(0x48); B(0x8b); B(0x24); B(0x25); D(context + 40);            /* mov rsp, [rsp's] */
+    B(0xc3);
+#undef B
+#undef D
+}
+
+/* The program at CODE natively, from gpr and eflags; its ret pops the
+ * return address at ret_slot, which reads 0xdead0000 again afterwards. */
+static void native32_run(uint32_t gpr[8], uint32_t *eflags, uint32_t ret_slot)
+{
+    uint32_t context[10];
+
+    memcpy(context, gpr, 32);
+    context[8] = *eflags;
+    context[9] = low + CODE;
+    memcpy(guest + NATIVE_CONTEXT, context, sizeof(context));
+    memcpy((void *)(uintptr_t)ret_slot, &native_exit, 4);
+    pw_test_native32_enter(low + NATIVE, (uint64_t *)(void *)(guest + NATIVE_CONTEXT + 40));
+    memcpy(context, guest + NATIVE_CONTEXT, sizeof(context));
+    memcpy(gpr, context, 32);
+    *eflags = context[8];
+    memcpy((void *)(uintptr_t)ret_slot, &(uint32_t){ 0xdead0000u }, 4);
+}
+
+/* Whether a 32-bit program runs here at all (an x86-64 kernel without IA-32
+ * emulation refuses code segment 0x23): tried in a child first. */
+static unsigned native32_available(void)
+{
+    static const uint8_t code[] = { 0x40, 0xc3 };              /* inc eax; ret */
+    int status = 0;
+    pid_t child;
+
+    memset(guest + CODE, 0xcc, NATIVE - CODE);
+    memcpy(guest + CODE, code, sizeof(code));
+    native32_build();
+    fflush(NULL);
+    child = fork();
+    assert(child >= 0);
+    if (!child) {
+        uint32_t gpr[8] = { 41, 0, 0, 0, low + STACK_TOP, 0, 0, 0 }, eflags = 0x202;
+        native32_run(gpr, &eflags, low + STACK_TOP);
+        _exit(gpr[0] == 42 && gpr[4] == low + STACK_TOP + 4 ? 0 : 1);
+    }
+    assert(waitpid(child, &status, 0) == child);
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+/* One starting point: registers (gpr[4] is esp), EFLAGS, and words at esp;
+ * the return address follows them. */
+typedef struct StackCase {
+    uint32_t gpr[8], eflags, words[9];
+    unsigned count;
+} StackCase;
+
+enum { WINDOW = 0x200 };    /* the stack bytes compared, below STACK_TOP + 0x20 */
+
+static void stack_case_memory(const StackCase *c)
+{
+    const uint32_t esp = c->gpr[4];
+    for (unsigned i = 0; i < WINDOW; i++) guest[STACK_TOP + 0x20 - WINDOW + i] = (uint8_t)(i * 13 + 5);
+    for (unsigned i = 0; i < 0x1000; i++) guest[DATA + i] = (uint8_t)(i * 7 + 3);
+    memcpy((void *)(uintptr_t)esp, c->words, 4 * c->count);
+    memcpy((void *)(uintptr_t)(esp + 4 * c->count), &(uint32_t){ 0xdead0000u }, 4);
+}
+
+/* The program from each case natively, then on the emitter with the host
+ * fallback (the path before), the re-encoder with the guard, and the
+ * re-encoder as wowprospero runs it: registers, EIP, the arithmetic flags,
+ * DF, AC and ID, the stack and the data all as the processor left them. The
+ * re-encoder runs the program without the host fallback. */
+static void stack_program(const char *name, const uint8_t *code, size_t bytes, const StackCase *cases, unsigned n)
+{
+    static PwX86CacheEntry entries[3][512];
+    static uint8_t native_stack[WINDOW], native_data[0x1000];
+    PwX86Engine engines[3];
+    uint64_t fallbacks[3] = { 0, 0, 0 };
+
+    memset(guest + CODE, 0xcc, NATIVE - CODE);
+    memcpy(guest + CODE, code, bytes);
+    native32_build();
+    setup(&engines[0], entries[0], 0);
+    setup(&engines[1], entries[1], 1);
+    native_fp = fault_markers = superblocks = call_stack = 1;
+    setup(&engines[2], entries[2], 1);
+    native_fp = fault_markers = superblocks = call_stack = 0;
+    for (unsigned i = 0; i < n; i++) {
+        const StackCase *c = &cases[i];
+        uint32_t gpr[8], eflags = (c->eflags & POPF_BITS) | 0x202;
+        if (native_ok) {
+            stack_case_memory(c);
+            memcpy(gpr, c->gpr, sizeof(gpr));
+            native32_run(gpr, &eflags, c->gpr[4] + 4 * c->count);
+            memcpy(native_stack, guest + STACK_TOP + 0x20 - WINDOW, WINDOW);
+            memcpy(native_data, guest + DATA, sizeof(native_data));
+        }
+        for (unsigned m = 0; m < 3; m++) {
+            PwX86State s;
+            PwX86StepReport step;
+            int status = PW_OK;
+            stack_case_memory(c);
+            initial(&s);
+            memcpy(s.gpr, c->gpr, sizeof(s.gpr));
+            s.eflags = c->eflags;
+            current = &engines[m];
+            for (unsigned k = 0; k < 1000 && s.eip != 0xdead0000u; k++) {
+                status = pw_x86_engine_step(&engines[m], &s, &step);
+                if (status == PW_ERR_UNSUPPORTED) {
+                    pw_x86_commit_canonical_flags(&s);
+                    pw_x86_engine_fp_sync(&engines[m], &s);
+                    status = pw_x86_hostexec_step(&hostexec, &s, (const uint8_t *)(uintptr_t)s.eip, 15);
+                    fallbacks[m]++;
+                }
+                if (status != PW_OK) break;
+            }
+            current = NULL;
+            pw_x86_engine_fp_sync(&engines[m], &s);
+            {
+                uint64_t host;
+                __asm__ volatile("pushfq; popq %0" : "=r"(host));
+                assert(!(host & 0x400));                    /* host DF stays clear */
+            }
+            if (status != PW_OK || s.eip != 0xdead0000u)
+                fprintf(stderr, "%s case %u mode %u: status %d eip %08x\n", name, i, m, status, s.eip);
+            assert(status == PW_OK && s.eip == 0xdead0000u);
+            if (!native_ok) continue;
+            for (unsigned g = 0; g < 8; g++) {
+                if (s.gpr[g] != gpr[g])
+                    fprintf(stderr, "%s case %u mode %u: gpr%u %08x != native %08x\n", name, i, m, g, s.gpr[g], gpr[g]);
+                assert(s.gpr[g] == gpr[g]);
+            }
+            if ((s.eflags ^ eflags) & POPF_BITS)
+                fprintf(stderr, "%s case %u mode %u: eflags %08x != native %08x\n", name, i, m,
+                        s.eflags & POPF_BITS, eflags & POPF_BITS);
+            assert(!((s.eflags ^ eflags) & POPF_BITS));
+            assert(!memcmp(guest + STACK_TOP + 0x20 - WINDOW, native_stack, WINDOW));
+            assert(!memcmp(guest + DATA, native_data, sizeof(native_data)));
+        }
+    }
+    for (unsigned m = 0; m < 3; m++) assert(pw_x86_engine_destroy(&engines[m]) == PW_OK);
+    /* The path before stopped at each of them; the re-encoder takes them. */
+    if (fallbacks[0] < n || fallbacks[1] || fallbacks[2])
+        fprintf(stderr, "%s: host fallbacks %llu %llu %llu\n", name, (unsigned long long)fallbacks[0],
+                (unsigned long long)fallbacks[1], (unsigned long long)fallbacks[2]);
+    assert(fallbacks[0] >= n && !fallbacks[1] && !fallbacks[2]);
+}
+
+/* EFLAGS from the k-th of 512 combinations: the six arithmetic flags, DF, AC
+ * and ID, with bit 1 and IF. */
+static uint32_t flag_combination(unsigned k)
+{
+    static const uint32_t bits[9] = { 0x001, 0x004, 0x010, 0x040, 0x080, 0x800, 0x400, 0x40000, 0x200000 };
+    uint32_t flags = 0x202;
+    for (unsigned b = 0; b < 9; b++)
+        if (k >> b & 1) flags |= bits[b];
+    return flags;
+}
+
+static void stack_case(StackCase *c, uint32_t eflags, uint32_t esp)
+{
+    memset(c, 0, sizeof(*c));
+    for (unsigned g = 0; g < 8; g++) c->gpr[g] = 0x9e3779b9u * (g + 1) ^ eflags;
+    c->gpr[4] = esp;
+    c->gpr[6] = low + DATA + 0x40;
+    c->gpr[7] = low + DATA + 0x400;
+    c->eflags = eflags;
+}
+
+static void test_flags_and_all_registers(void)
+{
+    /* popfd; pushfd; pop eax; ret: every combination popped and pushed
+     * back, with bits POPFD leaves clear (IOPL, RF, VM, VIF, VIP, and the
+     * reserved 3, 5 and 15) set in half of them */
+    static const uint8_t round_trip[] = { 0x9d, 0x9c, 0x58, 0xc3 };
+    /* pushfd; pop eax; ret */
+    static const uint8_t push[] = { 0x9c, 0x58, 0xc3 };
+    /* cmp ecx, edx; std; pushfd; pop eax; cld; pushfd; pop ebx; ret */
+    static const uint8_t computed[] = { 0x39, 0xd1, 0xfd, 0x9c, 0x58, 0xfc, 0x9c, 0x5b, 0xc3 };
+    /* popfd; jb +1; inc ecx; movsb; pushfd; pop eax; ret: CF read by a
+     * branch, then DF by a string instruction */
+    static const uint8_t consumers[] = { 0x9d, 0x72, 0x01, 0x41, 0xa4, 0x9c, 0x58, 0xc3 };
+    /* CPUID detection, toggling ID, then the 486 check, toggling AC:
+     * pushfd; pop eax; mov ecx, eax; xor eax, 0x200000; push eax; popfd;
+     * pushfd; pop eax; xor eax, ecx; mov ebx, eax; push ecx; popfd;
+     * pushfd; xor dword [esp], 0x40000; popfd; pushfd; pop edx; push ecx;
+     * popfd; ret */
+    static const uint8_t probe[] = {
+        0x9c, 0x58, 0x89, 0xc1, 0x35, 0x00, 0x00, 0x20, 0x00, 0x50, 0x9d,
+        0x9c, 0x58, 0x31, 0xc8, 0x89, 0xc3, 0x51, 0x9d,
+        0x9c, 0x81, 0x34, 0x24, 0x00, 0x00, 0x04, 0x00, 0x9d, 0x9c, 0x5a, 0x51, 0x9d, 0xc3,
+    };
+    /* pushfd; xor dword [esp], every POPFD bit; popfd; ret */
+    static const uint8_t toggle[] = { 0x9c, 0x81, 0x34, 0x24, 0xd5, 0x0c, 0x24, 0x00, 0x9d, 0xc3 };
+    /* popf; pushfd; pop eax; popf; pushfd; pop ebx; ret: FLAGS only */
+    static const uint8_t narrow_pop[] = { 0x66, 0x9d, 0x9c, 0x58, 0x66, 0x9d, 0x9c, 0x5b, 0xc3 };
+    /* pushf; pushf; pop eax; ret */
+    static const uint8_t narrow_push[] = { 0x66, 0x9c, 0x66, 0x9c, 0x58, 0xc3 };
+    /* pushad; sub every register but esp from itself; popad; ret (sub,
+     * not xor, whose AF is undefined) */
+    static const uint8_t all[] = { 0x60, 0x29, 0xc0, 0x29, 0xc9, 0x29, 0xd2, 0x29, 0xdb, 0x29, 0xed,
+                                   0x29, 0xf6, 0x29, 0xff, 0x61, 0xc3 };
+    /* popad; ret, from a crafted frame whose esp slot is ignored */
+    static const uint8_t frame[] = { 0x61, 0xc3 };
+    /* Open Limit Adjuster's hook stub (III.VC.SA.LimitAdjuster.asi), called
+     * at 00, its handler at 30, which bumps the saved eax, clobbers ecx and
+     * edx and leaves DF and CF set:
+     * 00 call 10; pushfd; pop ebx; ret
+     * 10 pushfd; pushad; add dword [esp+0xc], 8; push esp; call 30;
+     *    add esp, 4; sub dword [esp+0xc], 8; popad; popfd; ret
+     * 30 mov eax, [esp+4]; inc dword [eax+0x1c]; sub ecx, ecx;
+     *    sub edx, edx; std; cmp ecx, 1; ret */
+    static uint8_t ola[0x40];
+    static const uint8_t ola_main[] = { 0xe8, 0x0b, 0, 0, 0, 0x9c, 0x5b, 0xc3 };
+    static const uint8_t ola_stub[] = { 0x9c, 0x60, 0x83, 0x44, 0x24, 0x0c, 0x08, 0x54, 0xe8, 0x13, 0, 0, 0,
+                                        0x83, 0xc4, 0x04, 0x83, 0x6c, 0x24, 0x0c, 0x08, 0x61, 0x9d, 0xc3 };
+    static const uint8_t ola_handler[] = { 0x8b, 0x44, 0x24, 0x04, 0xff, 0x40, 0x1c, 0x29, 0xc9, 0x29, 0xd2,
+                                           0xfd, 0x83, 0xf9, 0x01, 0xc3 };
+    static StackCase cases[1024];
+    const uint32_t top = low + STACK_TOP;
+    unsigned n;
+
+    native_ok = native32_available();
+    if (!native_ok) fprintf(stderr, "reencode: no 32-bit compatibility mode here; flags checked without it\n");
+
+    for (n = 0; n < 1024; n++) {
+        stack_case(&cases[n], 0x8d5 ^ flag_combination(n & 511), top - 4);
+        cases[n].words[0] = flag_combination(n & 511) | (n & 512 ? 0x1bb028u : 0);
+        cases[n].count = 1;
+    }
+    stack_program("popfd round trip", round_trip, sizeof(round_trip), cases, n);
+    for (n = 0; n < 512; n++) stack_case(&cases[n], flag_combination(n), top);
+    stack_program("pushfd", push, sizeof(push), cases, n);
+    stack_program("probe", probe, sizeof(probe), cases, n);
+    stack_program("toggle", toggle, sizeof(toggle), cases, n);
+    for (n = 0; n < 512; n++) {
+        stack_case(&cases[n], flag_combination(n), top);
+        cases[n].gpr[1] = n * 0x01234567u;
+        cases[n].gpr[2] = (n >> 3) * 0x89abcdefu;
+    }
+    stack_program("computed flags", computed, sizeof(computed), cases, n);
+    for (n = 0; n < 512; n++) {
+        stack_case(&cases[n], flag_combination(511 - n) & ~0x40000u, top - 4);
+        cases[n].words[0] = flag_combination(n);
+        cases[n].count = 1;
+    }
+    stack_program("popfd consumers", consumers, sizeof(consumers), cases, n);
+    /* The 16-bit forms; AC stays clear where esp is left unaligned. */
+    for (n = 0; n < 512; n++) {
+        stack_case(&cases[n], flag_combination(n) & ~0x40000u, top - 4);
+        cases[n].words[0] = (flag_combination(n) & 0xffff) | (flag_combination(511 - n) | 0x3000) << 16;
+        cases[n].count = 1;
+    }
+    stack_program("popf", narrow_pop, sizeof(narrow_pop), cases, n);
+    for (n = 0; n < 512; n++) stack_case(&cases[n], flag_combination(n), top);
+    stack_program("pushf", narrow_push, sizeof(narrow_push), cases, n);
+    /* pushad and popad at every alignment of esp and across the guest's
+     * registers' values. */
+    for (n = 0; n < 256; n++) {
+        stack_case(&cases[n], flag_combination(n * 3) & ~0x40000u, top - 0x40 - (n & 3) - 4 * (n >> 6));
+        for (unsigned g = 0; g < 8; g++)
+            if (g != 4) cases[n].gpr[g] = n & 4 ? ~cases[n].gpr[g] : cases[n].gpr[g] * (n + 1);
+    }
+    stack_program("pushad", all, sizeof(all), cases, n);
+    for (n = 0; n < 64; n++) {
+        stack_case(&cases[n], flag_combination(n * 5) & ~0x40000u, top - 0x40 - (n & 3));
+        for (unsigned w = 0; w < 8; w++) cases[n].words[w] = 0x01000193u * (w + 1) * (n + 7);
+        cases[n].count = 8;
+    }
+    stack_program("popad", frame, sizeof(frame), cases, n);
+    memset(ola, 0xcc, sizeof(ola));
+    memcpy(ola, ola_main, sizeof(ola_main));
+    memcpy(ola + 0x10, ola_stub, sizeof(ola_stub));
+    memcpy(ola + 0x30, ola_handler, sizeof(ola_handler));
+    for (n = 0; n < 512; n++) stack_case(&cases[n], flag_combination(n), top);
+    stack_program("ola stub", ola, sizeof(ola), cases, n);
+
+    /* TF and NT never reach the guest: popped, they read back clear, as
+     * the host fallback leaves them. */
+    {
+        static const uint8_t junk[] = { 0x68, 0xff, 0xff, 0xff, 0xff, 0x9d, 0x9c, 0x58, 0xc3 };
+        Run e, r, p;
+        hostexec_fallback = 1;
+        e = run(junk, sizeof(junk), 0);
+        r = run(junk, sizeof(junk), 1);
+        p = run_production(junk, sizeof(junk));
+        hostexec_fallback = 0;
+        assert(e.state.gpr[0] == (POPF_BITS | 0x202) && (e.state.eflags & ~0x202u) == POPF_BITS);
+        same(&r, &e);
+        same(&p, &e);
+        assert(r.state.eflags == e.state.eflags && p.state.eflags == e.state.eflags);
+    }
+    /* The 16-bit pushaw and popaw stay the host fallback's; locked,
+     * repeated and FS-prefixed forms are refused. */
+    {
+        static const uint8_t refused[][2] = { { 0x66, 0x60 }, { 0x66, 0x61 }, { 0xf0, 0x9c }, { 0xf3, 0x9d },
+                                              { 0x64, 0x60 }, { 0xf0, 0x61 } };
+        PwX86TranslateOptions options = { .flat_low = low, .flat_high = low + SPAN, .no_counters = 1 };
+        uint8_t out[16384];
+        PwX86Block block;
+        for (unsigned i = 0; i < sizeof(refused) / sizeof(refused[0]); i++)
+            assert(pw_x86_reencode(refused[i], 2, low + CODE, out, sizeof(out), &block, &options) ==
+                   PW_ERR_UNSUPPORTED);
+        static const uint8_t taken[][2] = { { 0x9c, 0xc3 }, { 0x9d, 0xc3 }, { 0x60, 0xc3 }, { 0x61, 0xc3 },
+                                            { 0x66, 0x9c }, { 0x66, 0x9d } };
+        for (unsigned i = 0; i < sizeof(taken) / sizeof(taken[0]); i++) {
+            assert(pw_x86_reencode(taken[i], 2, low + CODE, out, sizeof(out), &block, &options) == PW_OK);
+            assert(block.instruction_ends[0] == (taken[i][0] == 0x66 ? 2 : 1));
+        }
+    }
+}
+
+/* cmc, clc and stc in re-encoded blocks: the plugins San Andreas loads set
+ * or clear CF in every hook stub, and each one used to end its block and run
+ * on the host. Against the emitter (which still hands them to the host) and
+ * as wowprospero runs them, with CF read back by adc, sbb, setc and a
+ * conditional jump, and the other flags left as the compare set them. */
+static void test_carry_flag_ops(void)
+{
+    static const uint8_t code[] = {
+        0xf9,                               /* stc */
+        0x83, 0xd0, 0x00,                   /* adc eax, 0: +1 */
+        0xf8,                               /* clc */
+        0x83, 0xd1, 0x00,                   /* adc ecx, 0: +0 */
+        0xf5,                               /* cmc: CF 0 -> 1 */
+        0x83, 0xda, 0x00,                   /* sbb edx, 0: -1 */
+        0x39, 0xc0,                         /* cmp eax, eax: ZF, no CF */
+        0xf9,                               /* stc: CF, ZF kept */
+        0x0f, 0x92, 0xc3,                   /* setc bl */
+        0x0f, 0x94, 0xc7,                   /* setz bh */
+        0x66, 0xf5,                         /* cmc with an operand-size prefix */
+        0x72, 0x01,                         /* jc +1 (not taken) */
+        0x45,                               /* inc ebp */
+        0x39, 0xd1,                         /* cmp ecx, edx */
+        0xf5,                               /* cmc on a compare's CF */
+        0x0f, 0x92, 0xc2,                   /* setc dl */
+        0x2e, 0xf8,                         /* clc behind a cs override */
+        0x0f, 0x92, 0xc6,                   /* setc dh */
+        0xc3,
+    };
+    /* A lock, rep or fs prefix still refuses them, as it did before. */
+    static const uint8_t refused[][2] = { { 0xf0, 0xf9 }, { 0xf3, 0xf8 }, { 0xf2, 0xf5 }, { 0x64, 0xf9 } };
+    PwX86TranslateOptions options = { .flat_low = low, .flat_high = low + SPAN, .no_counters = 1 };
+    uint8_t out[16384];
+    PwX86Block block;
+    Run emitter, production;
+
+    hostexec_fallback = 1;
+    compare(code, sizeof(code));
+    emitter = run(code, sizeof(code), 0);
+    production = run_production(code, sizeof(code));
+    hostexec_fallback = 0;
+    assert(emitter.host_steps == 7);         /* the emitter leaves all seven to the host */
+    assert(production.host_steps == 0);      /* the re-encoder takes them in its blocks */
+    assert(production.state.gpr[0] == 0x11111111u + 1);
+    assert(production.state.gpr[1] == 0x22222222u);
+    assert(production.state.gpr[3] == ((0x44444444u & 0xffff0000u) | 0x0101u));
+    assert(production.state.gpr[5] == 0x66666666u + 1);
+    for (unsigned i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        assert(pw_x86_reencode(refused[i], 2, low + CODE, out, sizeof(out), &block, &options) != PW_OK);
+    }
+    assert(pw_x86_reencode(code, 1, low + CODE, out, sizeof(out), &block, &options) == PW_OK);
+}
+
+int main(void)
+{
+    guest = mmap(NULL, SPAN, PROT_READ | PROT_WRITE | PROT_EXEC,
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
+    assert(guest != MAP_FAILED);
+    low = (uint32_t)(uintptr_t)guest;
+    {
+        static PwVmBackend vm;
+        assert(pw_vm_posix_backend(&vm) == PW_OK);
+        assert(pw_x86_hostexec_init(&hostexec, &vm, 1u << 16) == PW_OK);
+    }
+    call_stack_region = mmap(NULL, PW_X86_ENGINE_CALL_STACK_GUARD + CALL_STACK_BYTES, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    assert(call_stack_region != MAP_FAILED);
+    assert(!mprotect(call_stack_region, PW_X86_ENGINE_CALL_STACK_GUARD, PROT_NONE));
+    {
+        struct sigaction action;
+        static uint8_t alternate[1 << 16];
+        stack_t stack = { .ss_sp = alternate, .ss_size = sizeof(alternate) };
+        memset(&action, 0, sizeof(action));
+        action.sa_sigaction = on_fault;
+        action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+        sigemptyset(&action.sa_mask);
+        assert(!sigaltstack(&stack, NULL));
+        assert(!sigaction(SIGSEGV, &action, NULL));
+    }
+    test_options();
+    test_prefixed_padding();
+    test_registers();
+    test_bit_counts();
+    test_xchg();
+    test_atomic_and_segments();
+    test_memory();
+    test_control();
+    test_bnd_branches();
+    test_mixed_and_indirect();
+    test_two_way_calls();
+    test_null_targets();
+    test_chain_hash_flags();
+    test_return_targets();
+    test_unbounded_chains();
+    test_call_stack();
+    test_superblocks();
+    test_call_predict_site();
+    test_call_predict_engine();
+    test_call_landings();
+    test_jump_tables();
+    test_two_level_jump_tables();
+    test_jump_predict();
+    test_strings();
+    test_native_fp();
+    test_native_fp_forms();
+    test_native_fp_gpr();
+    test_native_fp_emitter();
+    test_refused_bit_count_reads();
+    test_main_instruction_coverage();
+    test_main_coverage_cold_flags();
+    test_flags_and_all_registers();
+    test_carry_flag_ops();
+    test_fault();
+    test_divide();
+    test_divide_errors();
+    test_divide_oracle();
+    test_high_bytes();
+    test_high_byte_cmpxchg();
+    test_high_bytes_fs();
+    test_bit_strings();
+    test_bit_string_bounds();
+    test_bit_string_oracle();
+    printf("reencode passed: options, register remapping, xchg, atomics and segments, memory operands, flags across links, "
+           "stack and calls, emitter hand-over, indirect targets, pinned returns, unbounded chains, call stack, superblocks, predicted calls, strings, native FP, fault state, "
+           "div and idiv in every form with their divide errors, cmc clc stc, ah-bh beside memory, bit strings in reach and at the guard's edges, "
+           "pushfd, popfd, pushad and popad against the processor, against the emitter and the host\n");
+    return 0;
+}
