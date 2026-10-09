@@ -8,7 +8,8 @@ Performance remains under development. The shader-layout cache retest reports
 29-40 FPS wandering, about 43-44 still and 32 with F3 at 1440p/8 chunks;
 16 chunks gives 16-23 FPS. The next build uses upstream's existing two-worker
 native command preparation so OpenGL translation can overlap command building.
-Its performance and hardware affinity still require a console test. Stable
+Console logs verify both workers started on cores 10/12. Performance at each
+chunk distance still needs the user retest. Stable
 60 FPS at 16 chunks is unverified.
 FreeSync off resolved the reported bright-area flicker. With the monitor set to
 120 Hz, the user reaches about 120 FPS looking at the sky. Vanilla 1.12.2 limits

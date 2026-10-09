@@ -200,3 +200,10 @@ Exact upstream queue/preflight tests pass underASan/UBSan for1/2workers, includi
 reverse completion, startup/affinity failures, ring wrap andshutdown. Production
 capabilities/archive/importchecks pass. Graphics-onlyupload andELF/bothreport
 readback verified. Console worker startup/affinity andFPS gain await retest.
+
+
+Live console log now verifies both preparation workers: core10/worker0 and
+core12/worker1 report verified affinity. GL swap counters advance at68-79FPS
+in sampled5second windows, while CPU frame-transfer sequence stops updating.
+Those counters serve different paths; no freeze is established. Chunkdistance
+andcamera for these samples are unknown, so terrain FPS gain awaits user results.

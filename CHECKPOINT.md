@@ -571,3 +571,14 @@ Asyncretestquestionasked: sameworld1440p8then16chunks,F3on/off,settle30seconds,
 leaveopenforliveworkerstartup receipts. Needread[ps5-async-prep] cpu=10/12,
 verified1,worker0/1 beforeclaimingbothworkersrunning. FPSgainunverified.
 Afterrequesttreatgameasrunning;freshclosebeforeanyfurtherconsolewrites.
+
+
+Live retest hasstartedwithoutuserFPSreplyyet. Read artifacts/console-worker-startup
+session7: actual[ps5-async-prep] cpu10verified1worker0 andcpu12verified1worker1
+at16921.623. So console workerstartup/affinity isNOWVERIFIED. GLswap logsadvance
+68.3,77.8,78.8FPS in5sec windows16949-16959, butunknownuserchunk/camera atthose
+intervals soNOspecificterrainFPSgainclaimed. frames_put507stalled briefly; that
+counterisPwWineFrameBoxCPUframetransfersequence, NOTGLswap; realPW_GLcounter
+continues. Investigatedratherthanassumingrenderfreeze. Userwasinworld andchat
+commandSettime1000loggedat16952. CPU~3.2sper1s now (includesbusyworkers).
+AppcurrentlyRUNNING, neveruploadwithoutfreshclose. AwaituserFPSat8/16chunks.
