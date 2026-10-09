@@ -15,11 +15,14 @@ reads became much faster, but thousands of draws then use individual submissions
 The strip correction's latest 1440p report reaches 43–55 FPS still and 32–57
 while walking at 8 chunks, but opening F3 can reduce it to 13–22. At 16 chunks
 the report remains 7–22 FPS; looking down or at the sky reaches 60.
-The next correction keeps eligible multi-draw groups in the existing deferred
-queue instead of synchronously retiring each group. This targets the repeated
-waits seen in the text/terrain draw path without adding another queue.
-Vanilla 1.12.2 itself limits the main menu to 30 FPS. The multi-draw correction's
-performance still needs console checks; stable 60 FPS at 16 chunks is not verified.
+Routing multi-draw groups through the deferred queue regressed the user's
+8-chunk result to about32 FPS and is reverted to the prior strip-batching module.
+A controlled comparison with the monitor at120 Hz and FreeSync off is pending.
+FreeSync off resolved the user's bright-area flicker; selecting120 Hz on the
+monitor permits about120 FPS when looking at the sky. Terrain still needs work,
+including a persistent drop reported after rapidly changing the view.
+Vanilla 1.12.2 itself limits the main menu to30 FPS. Stable60 FPS at16 chunks is
+not verified.
 Other versions, mod loaders and online features require separate
 console checks. It is an independent launcher, not an embedded Qt build of PolyMC.
 

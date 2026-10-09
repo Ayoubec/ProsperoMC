@@ -159,3 +159,15 @@ groups retain their existing paths. The routing test extracts the actual block
 and pinned Mesa helper, verifying draw IDs, zero-count subdraws, and fallback
 guards. Existing topology and publication checks pass. Check the same scene with
 F3 on/off, inventory, terrain and TNT before claiming an FPS improvement.
+
+The console retest reports worse performance: about32 FPS at8 chunks,24 at10,
+15–16 at16, and a persistent drop near10 after looking skyward and back down.
+Mouse movement can exacerbate the drop. The monitor was also changed to120 Hz;
+sky views now reach120 FPS. FreeSync off resolved the bright-area flicker.
+Logs were saved in artifacts/console-deferred-multidraw-retest before rollback.
+The multi-draw routing experiment is reverted. The exact checked910c698b module
+and e98b54f8 source patch were restored from the saved backup and uploaded with
+executable/both-report readback verification. Earlier strip, lowered-triangle,
+read-only-map and quad improvements remain. No game options were changed.
+Compare the same scene at1440p/8 and16 chunks with FreeSync off and120 Hz fixed,
+including F3 open/closed and looking up then returning to the same view.

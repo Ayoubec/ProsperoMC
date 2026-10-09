@@ -96,11 +96,11 @@ purpose = "Upstream legacy varying mapping, lowered client-array draws and EGL H
 name = "ProsperoMC legacy quad batching"
 base_source_revision = "738f94cbdf6ff1de0376dc1cd4ce1229fd640730"
 file = "artifacts/graphics-batching/smooth-legacy-batching.patch"
-sha256 = "af938a3b9827e4225cbe4478cf448b6550a7e5af5a6ea012958185a1f60bc901"
-runtime_archive_sha256 = "d3b3ed13d7ad4f324bb7e988f58815dd2ea39d5afcfd4bb7f4e57778a4806392"
-sdk_manifest_sha256 = "867d47117e86c4e2bdb571d800cc152d7180ec9cf6d74b574ea89776518c2223"
+sha256 = "e98b54f8b965aa47735399ac3b6e2d5cd8344149179de57cc4c3f69001a03e53"
+runtime_archive_sha256 = "ddae0d067b8b1ed82c1478a1add4d051bc019aa11d0af5b0fae28cafe0b76089"
+sdk_manifest_sha256 = "87d824fed6dc73bafb7111d7a4a41e2517f6f98a27a88790fd4526dd16da3570"
 license = "GPL-3.0-or-later"
-purpose = "Keep eligible multi-draw groups in the existing deferred queue; batch legacy quads and non-indexed triangles/strips; reuse immutable indices and static publication; retain indexed/GPU-write/export guards"
+purpose = "Batch legacy quads, lowered non-indexed triangles and native non-indexed strips; reuse immutable indices and static publication; skip synchronization only for CPU-owned read-only draw-buffer maps; retain indexed/GPU-write/export guards"
 
 [[local_patch]]
 name = "0672-win32u-ps5-fixed-game-window.patch"

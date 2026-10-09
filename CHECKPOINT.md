@@ -383,3 +383,30 @@ Currentmodule2d25202uploaded/readbackverified; sourcecommitted/pushed0739bf5.
 NeedretestFPSwithF3on/offand8/16chunks plusflickerwithFreeSyncoff; leavegameopen
 forfreshlogs. Latestclosurewasexplicitafteruserreopenedmidbuild. Afternewtest
 requesttreatgamepotentiallyrunning; requirefreshclosebeforeanyfurtherwrites.
+
+## Deferred multi-draw regression reverted — comparison pending
+
+Userlatest:8chunks32FPS,10chunks24,16chunks15–16; lookingupthenbackdown can
+settle10FPS, mousemovement worsens it. FreeSyncOFF removesflicker. Monitorwas
+previouslynotset120Hz; now120, skyreaches120FPS. UserexplicitBOTHCLOSED.
+Savedfresh artifacts/console-deferred-multidraw-retest (sessions2/3/4). Native
+drawpreparation~20us/draw remainslarge; noGPUsubmitfailure orallocationfailure.
+Do nottreatfpsresultsunderdifferentdisplayconfiguration aspreciseapples/apples.
+
+Restoredprepare/compile scripts+versions.lockexactfrom9f23432; removedexperimental
+check-deferred-multidraw.py. Regeneratedpatchmatches e98b54f8b965aa47735399ac3b6e2d5cd8344149179de57cc4c3f69001a03e53.
+One-off artifacts/rollback-last-graphics.py verifiesexactbackup910c698b module,
+patch/provenance andcurrentregressed2d25202c beforemutatingstagedfiles. Regressed
+module/report/notice saved artifacts/graphics-regression-rollback. Restored
+module,patch,notices+bothreports; validate_packagePASS. FTPview refreshed, scoped
+graphics-onlyupload/readback executableandbothreportsPASS. NoJava/native/game
+options/worldchanges. Restoredmodule:
+910c698b7a3437ee878062be2e92a4241cb791df5bbf604e252be28c6a85ae56.
+ItsSDKmanifest87d824fed6dc73bafb7111d7a4a41e2517f6f98a27a88790fd4526dd16da3570;
+runtimearchive ddae0d067b8b1ed82c1478a1add4d051bc019aa11d0af5b0fae28cafe0b76089.
+NOTE: .deps/graphics-sdk-batching and artifacts/wine-graphics-batching stillhold
+rejected2d build. Do notstage them; sourcepatch mismatchguardshouldrejectstaging.
+Nextgraphicsbuild mustprepare/compilefromrestoredsource first. Manualappbuild/send
+usesrestoredstagedWine; don'tfullstageoriginalruntime. Earlierimprovementskeep.
+Needcontrolledsamecamera1440p8/16chunk FPS,F3on/off,lookup/returntest withmonitor
+120Hz andFreeSyncoff; leaveopenforlogs. Freshclosebeforefurtherwritesaftertest.
