@@ -51,6 +51,7 @@ static int next_version(const PmFrontend *f,const PmView *v,int from,int delta) 
 void pm_frontend_init(PmFrontend *f) {
     if(!f) return;
     memset(f,0,sizeof(*f)); f->memory_mb=2048;f->version_filter=1;f->underline_x=583;
+    f->pointer_x=960;f->pointer_y=540;
 }
 static int text_width(const char *s,int size);
 void pm_frontend_tick(PmFrontend *f,unsigned ms) {
@@ -251,6 +252,104 @@ int pm_frontend_update(PmFrontend *f,const PmView *v,PmKey key,PmAction *a) {
         break;
     default: break;
     }
+    return 0;
+}
+
+static int inside(int x,int y,int left,int top,int width,int height) {
+    return x>=left&&x<left+width&&y>=top&&y<top+height;
+}
+int pm_frontend_pointer(PmFrontend *f,const PmView *v,int x,int y,int button,int wheel,PmAction *a) {
+    int n,start,hit=0;PmKey key=PM_KEY_NONE;
+    if(!f||!v||!a)return 0;
+    memset(a,0,sizeof(*a));normalize(f,v);
+    f->pointer_x=bound(x,0,1919);f->pointer_y=bound(y,0,1079);f->pointer_visible=1;
+    x=f->pointer_x;y=f->pointer_y;
+    if(button==2)return pm_frontend_update(f,v,PM_KEY_BACK,a);
+    int tab_x=583;
+    for(int j=0;j<PM_SCREEN_COUNT;j++) {
+        int width=text_width(tabs[j],26)+36;
+        if(button==1&&inside(x,y,tab_x,46,width,66)) {
+            f->screen=(PmScreen)((j+PM_SCREEN_COUNT-1)%PM_SCREEN_COUNT);
+            return pm_frontend_update(f,v,PM_KEY_NEXT_TAB,a);
+        }
+        tab_x+=width+17;
+    }
+    if(wheel) {
+        if(f->screen==PM_SETTINGS&&!f->pack_picker) {
+            if(inside(x,y,137,327,1646,100))f->focus=0;
+            else if(inside(x,y,137,443,1646,64))f->focus=7;
+            else return 0;
+            key=wheel>0?PM_KEY_RIGHT:PM_KEY_LEFT;
+        } else {
+            if(!f->pack_picker&&f->screen!=PM_HOME&&f->screen!=PM_LIBRARY&&f->screen!=PM_VERSIONS&&f->screen!=PM_MODS)return 0;
+            f->focus=0;key=wheel>0?PM_KEY_UP:PM_KEY_DOWN;
+        }
+        return pm_frontend_update(f,v,key,a);
+    }
+    if(f->pack_picker) {
+        n=count(v->pack_count,PM_MAX_INSTANCES);start=f->selected_pack>4?f->selected_pack-4:0;
+        for(int j=start;j<n&&j<start+5;j++)if(inside(x,y,130,327+(j-start)*88,1660,76)&&button==1) {
+            f->selected_pack=j;return pm_frontend_update(f,v,PM_KEY_CONFIRM,a);
+        }
+        return 0;
+    }
+    switch(f->screen) {
+    case PM_HOME:
+        if(inside(x,y,152,519,326,64)){f->focus=0;hit=1;}
+        if(inside(x,y,500,519,274,64)){f->focus=1;hit=1;}
+        n=count(v->instance_count,PM_MAX_INSTANCES);
+        for(int j=0;j<3&&j<n;j++)if(button==1&&inside(x,y,108+j*573,746,550,126)) {
+            f->selected_instance=(f->selected_instance+j)%n;f->focus=0;return 0;
+        }
+        break;
+    case PM_LIBRARY:
+        n=count(v->instance_count,PM_MAX_INSTANCES);start=f->selected_instance>4?f->selected_instance-4:0;
+        for(int j=start;j<n&&j<start+5;j++)if(button==1&&inside(x,y,128,326+(j-start)*100,780,88)) {
+            f->selected_instance=j;f->focus=0;return 0;
+        }
+        for(int j=0;j<4;j++)if(inside(x,y,1010,533+j*76,758,64)){f->focus=j+1;hit=1;}
+        if(!n&&inside(x,y,1010,761,758,64)){f->focus=1;hit=1;}
+        break;
+    case PM_VERSIONS:
+        n=count(v->version_count,PM_MAX_VERSIONS);start=f->selected_version;
+        for(int k=0;k<5;k++){int prev=next_version(f,v,start-1,-1);if(prev<0)break;start=prev;}
+        for(int j=start,row=0;j<n&&row<6;j++) {
+            if(!visible_version(f,&v->versions[j]))continue;
+            if(button==1&&inside(x,y,128,325+row*86,780,74)){f->selected_version=j;f->focus=0;return 0;}
+            row++;
+        }
+        if(inside(x,y,1010,517,758,64)){f->focus=1;hit=1;}
+        if(inside(x,y,1010,725,758,64)){f->focus=2;hit=1;}
+        if(inside(x,y,1010,801,758,64)){f->focus=3;hit=1;}
+        break;
+    case PM_MODS:
+        n=count(v->mod_count,PM_MAX_MODS);start=f->selected_mod>5?f->selected_mod-5:0;
+        for(int j=start;j<n&&j<start+6;j++)if(button==1&&inside(x,y,130,378+(j-start)*77,1660,67)) {
+            f->selected_mod=j;return pm_frontend_update(f,v,PM_KEY_CONFIRM,a);
+        }
+        break;
+    case PM_SETTINGS:
+        if(inside(x,y,137,327,1646,100)) {
+            f->focus=0;
+            if(button==1)f->memory_mb=512+bound((x-173)*30/1569,0,30)*256;
+            return 0;
+        }
+        if(inside(x,y,137,443,1646,64)){f->focus=7;hit=1;}
+        for(int j=0;j<4;j++)if(inside(x,y,137+j*416,580,398,139)){f->focus=j+1;hit=1;}
+        if(inside(x,y,137,804,790,64)){f->focus=5;hit=1;}
+        if(inside(x,y,959,804,824,64)){f->focus=6;hit=1;}
+        break;
+    case PM_ACCOUNTS:
+        if(inside(x,y,151,463,1490,64)){f->focus=0;hit=1;}
+        for(int j=0;j<2;j++)if(inside(x,y,151+j*559,749,530,64)){f->focus=j+1;hit=1;}
+        break;
+    default:break;
+    }
+    if(button==1&&inside(x,y,1047,974,400,55))return pm_frontend_update(f,v,PM_KEY_REFRESH,a);
+    if(button==1&&inside(x,y,1510,974,280,55)&&
+       (f->screen==PM_LIBRARY||f->screen==PM_MODS||f->screen==PM_VERSIONS))
+        return pm_frontend_update(f,v,PM_KEY_SECONDARY,a);
+    if(button==1&&hit)return pm_frontend_update(f,v,PM_KEY_CONFIRM,a);
     return 0;
 }
 
@@ -629,4 +728,9 @@ void pm_frontend_render(const PmFrontend *frontend,const PmView *v,const PwPrese
     default:break;
     }
     footer(&c,&f,v);
+    if(f.pointer_visible) {
+        /* Small outlined arrow, drawn after content in design coordinates. */
+        for(int j=0;j<20;j++)box(&c,f.pointer_x,f.pointer_y+j,j/2+2,1,BASE);
+        for(int j=1;j<17;j++)box(&c,f.pointer_x+1,f.pointer_y+j,j/2,1,TITLE);
+    }
 }

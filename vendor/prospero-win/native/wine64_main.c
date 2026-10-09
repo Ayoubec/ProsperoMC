@@ -811,19 +811,20 @@ static void run_launcher(void)
     const size_t frame_bytes=(size_t)1920*1080*4u;
     uint8_t *frame=mmap(NULL,frame_bytes,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
     int video_status=pw_videoout_ps5_open(&video),pad_status=pw_pad_ps5_platform_ops(&pad_ops);
-    int hid_status;
     uint64_t previous_frame=now_ns();
     uint64_t repeat_at=0;uint32_t held_navigation=0;
+    int previous_r2=0;
     if(audio_port<0 && pw_audio_ps5_platform_ops(&audio_ops)==PW_OK)
         (void)pw_audio_ps5_open_port(&audio_ops,&audio_port);
     if (pad_status==PW_OK) pad_status=pw_pad_ps5_open(&pad,&pad_ops,pad_open_map,sizeof(pad_open_map)/sizeof(pad_open_map[0]));
     {
         int32_t user=pad_status==PW_OK ? pad.user_id : -1;
         if (user<0 && pw_pad_ps5_platform_ops(&pad_ops)==PW_OK) { (void)pad_ops.user_initialize(NULL); (void)pad_ops.foreground_user(&user); }
-        hid_status=pw_hid_ps5_open(&hid,pw_hid_ps5_system_ops(hid_log),user);
+        (void)pw_hid_ps5_open(&hid,pw_hid_ps5_system_ops(hid_log),user);
     }
     for (uint64_t tick=1;;tick++) {
         PmAction action={0}; PmKey key=PM_KEY_NONE;
+        int pointer_dx=0,pointer_dy=0,pointer_button=0,pointer_wheel=0;
         pw_diagnostics_tick(now_ns());
         if (pm_view.busy && tick%15==0) {
             int completed=pm_bridge_response_ready(library_root);
@@ -845,20 +846,45 @@ static void run_launcher(void)
         if (pad_status==PW_OK && pw_pad_ps5_read(&pad)==PW_OK) {
             key=pm_pad_key(pad.core.pressed_edges);
             uint32_t held=pad.core.previous_buttons&(PAD_UP|PAD_DOWN|PAD_LEFT|PAD_RIGHT);
+            /* Stick navigation shares the D-pad's press/repeat timing. */
+            if(pad.left_stick.x<80)held|=PAD_LEFT;
+            if(pad.left_stick.x>176)held|=PAD_RIGHT;
+            if(pad.left_stick.y<80)held|=PAD_UP;
+            if(pad.left_stick.y>176)held|=PAD_DOWN;
             uint64_t now=now_ns();
-            if(held!=held_navigation){held_navigation=held;repeat_at=now+350000000u;}
+            if(held!=held_navigation){held_navigation=held;repeat_at=now+350000000u;if(key==PM_KEY_NONE)key=pm_pad_key(held);}
             else if(held && key==PM_KEY_NONE && now>=repeat_at){key=pm_pad_key(held);repeat_at=now+80000000u;}
+            int sx=(int)pad.right_stick.x-128,sy=(int)pad.right_stick.y-128;
+            if(sx>24||sx<-24)pointer_dx=sx/6;
+            if(sy>24||sy<-24)pointer_dy=sy/6;
+            int r2=pad.r2>100;
+            if(r2&&!previous_r2)pointer_button=1;
+            previous_r2=r2;
         }
         if (hid.ops.load_module) {
             PwHidPs5Poll poll;
-            if (hid_status!=PW_OK && tick%(5*PW_WINE64_TICKS_PER_S)==0) hid_status=pw_hid_ps5_retry(&hid);
+            if (tick%(5*PW_WINE64_TICKS_PER_S)==0) (void)pw_hid_ps5_retry(&hid);
             pw_hid_ps5_poll(&hid,&poll);
-            for (size_t i=0;i<poll.count;i++)
-                if (poll.events[i].kind==PW_HID_EVENT_KEY && poll.events[i].down) key=pm_keyboard_key(poll.events[i].code);
+            pointer_dx+=poll.dx;pointer_dy+=poll.dy;pointer_wheel=poll.wheel;
+            for (size_t i=0;i<poll.count;i++) {
+                if (poll.events[i].kind==PW_HID_EVENT_KEY && poll.events[i].down) {
+                    PmKey mapped=pm_keyboard_key(poll.events[i].code);
+                    if(mapped!=PM_KEY_NONE)key=mapped;
+                }
+                if (poll.events[i].kind==PW_HID_EVENT_BUTTON && poll.events[i].down && poll.events[i].code<=1)
+                    pointer_button=poll.events[i].code+1;
+            }
         }
         uint64_t frame_now=now_ns();
         pm_frontend_tick(&pm_frontend,(unsigned)((frame_now-previous_frame)/1000000));previous_frame=frame_now;
         int invoke=pm_frontend_update(&pm_frontend,&pm_view,key,&action);
+        if(key!=PM_KEY_NONE)pm_frontend.pointer_visible=0;
+        else if(pointer_dx||pointer_dy||pointer_button||pointer_wheel) {
+            invoke=pm_frontend_pointer(&pm_frontend,&pm_view,
+                pm_frontend.pointer_x+pointer_dx,pm_frontend.pointer_y+pointer_dy,
+                pointer_button,pointer_wheel,&action);
+            if(pointer_button)key=pointer_button==1?PM_KEY_CONFIRM:PM_KEY_BACK;
+        }
         pm_click(key);
         if(invoke)pm_invoke(&action);
         if (video_status==PW_OK && frame!=MAP_FAILED) {

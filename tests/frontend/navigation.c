@@ -81,6 +81,27 @@ int main(void) {
     view.pack_count=1;strcpy(view.packs[0].name,"My pack.mrpack");strcpy(view.packs[0].source,"Z:\\data\\ProsperoMC\\imports\\My pack.mrpack");
     assert(press(PM_KEY_CONFIRM));assert(!f.pack_picker && !strcmp(a.command,"import-pack"));
     assert(!strcmp(a.source,view.packs[0].source));
+    /* Pointer selection uses visible rows without accidentally launching them. */
+    pm_frontend_init(&f);view.busy=0;view.instance_count=2;
+    strcpy(view.instances[0].id,"first");strcpy(view.instances[1].id,"second");
+    view.instances[0].installed=view.instances[1].installed=1;
+    assert(!pm_frontend_pointer(&f,&view,800,800,1,0,&a));assert(f.selected_instance==1);
+    assert(pm_frontend_pointer(&f,&view,200,550,1,0,&a));assert(!strcmp(a.id,"second")&&!strcmp(a.command,"prepare-launch"));
+    assert(!pm_frontend_pointer(&f,&view,500,200,1,0,&a));assert(!a.command[0]);
+    assert(!pm_frontend_pointer(&f,&view,0,0,2,0,&a));assert(f.screen==PM_HOME);
+    f.screen=PM_LIBRARY;f.focus=4;
+    assert(!pm_frontend_pointer(&f,&view,400,350,1,0,&a));assert(f.selected_instance==0&&f.focus==0);
+    assert(!pm_frontend_pointer(&f,&view,400,350,0,-1,&a));assert(f.selected_instance==1);
+    assert(pm_frontend_pointer(&f,&view,1100,700,1,0,&a));assert(!strcmp(a.command,"clone"));
+    f.screen=PM_SETTINGS;f.memory_mb=2048;
+    assert(!pm_frontend_pointer(&f,&view,1742,417,1,0,&a));assert(f.memory_mb==8192);
+    assert(pm_frontend_pointer(&f,&view,1200,835,1,0,&a));assert(a.memory_mb==8192);
+    assert(pm_frontend_pointer(&f,&view,500,465,1,0,&a));assert(!strcmp(a.command,"settings"));
+    view.busy=1;
+    assert(!pm_frontend_pointer(&f,&view,1100,835,1,0,&a));assert(!a.command[0]);view.busy=0;
+    assert(!pm_frontend_pointer(&f,&view,-500,50000,0,0,&a));assert(f.pointer_x==0&&f.pointer_y==1079);
+    f.screen=PM_HOME;f.pack_picker=0;
+    assert(!pm_frontend_pointer(&f,&view,800,70,1,0,&a));assert(f.screen==PM_LIBRARY);
     pm_frontend_tick(&f,50);assert(f.focus_ms==50);
     pm_frontend_tick(&f,1000);assert(f.focus_ms==150);
     /* Out-of-range indices/counts are normalized before any array read. */

@@ -65,6 +65,7 @@ typedef struct PmFrontend {
     int pack_picker, selected_pack;
     unsigned animation_ms, focus_ms;
     int underline_x;
+    int pointer_x, pointer_y, pointer_visible;
     char notice[PM_TEXT];
 } PmFrontend;
 
@@ -73,6 +74,10 @@ void pm_frontend_tick(PmFrontend *frontend, unsigned elapsed_ms);
 /* Returns 1 only for a backend command; caller invokes it and reloads PmView. */
 int pm_frontend_update(PmFrontend *frontend, const PmView *view,
                        PmKey key, PmAction *action);
+/* Pointer coordinates use the same 1920x1080 design as rendering. Button is
+ * a press edge: 1 left/select, 2 right/back, 0 motion or wheel only. */
+int pm_frontend_pointer(PmFrontend *frontend, const PmView *view,
+                       int x, int y, int button, int wheel, PmAction *action);
 /* Native BGRX8 framebuffer. Any size is scaled from the 1920 x 1080 design. */
 void pm_frontend_render(const PmFrontend *frontend, const PmView *view,
                         const PwPresentTarget *target);

@@ -83,8 +83,12 @@ notice.write_bytes(text.encode())
 for path in (title / 'STAGE-REPORT.json', title / 'prosperomc/STAGE-REPORT.json'):
     stage = json.loads(path.read_text())
     stage['wine']['win32uSha256'] = entry['sha256']
+    stage['wine'].pop('graphicsRollback', None)
     stage['wine']['graphicsFix'] = {'sdkVersion': provenance['version'], 'sourceCommit': provenance['runtime_source_commit'],
         'sdkManifestSha256': provenance['sdk_manifest_sha256'], 'consoleVerified': False}
+    if 'draw_profile' in provenance:
+        stage['wine']['graphicsFix']['drawProfile'] = provenance['draw_profile']
+        stage['wine']['graphicsFix']['runtimeConfigSha256'] = provenance['runtime_config_sha256']
     if local_patch:
         stage['wine']['graphicsFix']['localPatch'] = local_patch
     if wheel_built:

@@ -216,6 +216,27 @@ eligibility = eligibility.replace(anchor, '''   {
 #endif
    }''')
 after = after[:start] + eligibility + after[end:]
+# Synchronous groups have confirmed retirement here, just like deferred FIFO
+# release. Return their private descriptors to the same bounded cache instead
+# of freeing/reallocating them on every terrain group.
+anchor = '''      for (unsigned slot = 0; slot < slots; ++slot)
+         for (unsigned stage = 0; stage < 3; ++stage)
+            pipe_resource_reference(&storage[slot][stage], NULL);'''
+assert after.count(anchor) == 1
+after = after.replace(anchor, '''      for (unsigned slot = 0; slot < slots; ++slot) {
+#if defined(PS5_NATIVE_TITLE_RUNTIME) && defined(PS5_DEFERRED_DRAW_BATCH)
+         ps5_descriptor_recycle(context, storage[slot]);
+#endif
+         for (unsigned stage = 0; stage < 3; ++stage)
+            pipe_resource_reference(&storage[slot][stage], NULL);
+      }''')
+anchor = '''   printf("[ps5-gallium] multi-draw-batched draws=%u result=%d\\n",
+          num_draws, context->last_draw_status);'''
+assert after.count(anchor) == 1
+after = after.replace(anchor, '''   /* Successful terrain groups must not synchronously log each draw group. */
+   if (context->last_draw_status)
+      fprintf(stderr, "[ps5-gallium] multi-draw-batched draws=%u result=%d\\n",
+              num_draws, context->last_draw_status);''')
 (out / 'ps5_screen.c').write_bytes(after.encode())
 patch = ''.join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
     fromfile='a/src/gallium/ps5/ps5_screen.c', tofile='b/src/gallium/ps5/ps5_screen.c'))

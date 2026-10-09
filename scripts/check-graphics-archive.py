@@ -1,6 +1,7 @@
-"""Verify the renderer archive changes only the intended draw driver object."""
+"""Verify only the intended draw-driver/native-backend objects change."""
 from pathlib import Path
 import hashlib
+import json
 
 root=Path(__file__).resolve().parents[1]
 def members(path):
@@ -25,8 +26,17 @@ before=root/'.deps/graphics-sdk-ci-738f94c/extracted/sdk/lib'
 after=root/'.deps/graphics-sdk-batching/sdk/lib'
 a=members(before/'libps5_opengl_core33.a');b=members(after/'libps5_opengl_core33.a')
 assert a.keys()==b.keys()
-assert [name for name in a if a[name]!=b[name]]==['ps5_screen.o']
+assert [name for name in a if a[name]!=b[name]]==['ps5_screen.o','ps5_agc_runtime_backend.o']
 assert hashlib.sha256((before/'libpsbc.ps5.a').read_bytes()).digest()==hashlib.sha256((after/'libpsbc.ps5.a').read_bytes()).digest()
-message='PASS: only ps5_screen.o changed; every other runtime object and compiler library remains from verified CI SDK'
+if not json.loads((root/'.deps/graphics-sdk-batching/provenance.json').read_text())['draw_profile']:
+    driver=(root/'artifacts/graphics-batching/ps5_screen.o').read_bytes()
+    native=(root/'artifacts/graphics-batching/ps5_agc_runtime_backend.o').read_bytes()
+    assert hashlib.sha256(driver).hexdigest()==b['ps5_screen.o']
+    assert hashlib.sha256(native).hexdigest()==b['ps5_agc_runtime_backend.o']
+    assert b'[ps5-driver-cycles]' not in driver
+    assert b'[ps5-prepare-perf]' not in native
+    assert b'profile=0' in driver
+    assert b'ps5_agc_gate2_batch_end' in native
+message='PASS: only draw driver and native runtime backend changed; every other runtime object and compiler library remains from verified CI SDK'
 (root/'artifacts/graphics-batching/archive-check.log').write_text(message+'\n')
 print(message)

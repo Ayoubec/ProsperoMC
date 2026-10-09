@@ -410,3 +410,58 @@ Nextgraphicsbuild mustprepare/compilefromrestoredsource first. Manualappbuild/se
 usesrestoredstagedWine; don'tfullstageoriginalruntime. Earlierimprovementskeep.
 Needcontrolledsamecamera1440p8/16chunk FPS,F3on/off,lookup/returntest withmonitor
 120Hz andFreeSyncoff; leaveopenforlogs. Freshclosebeforefurtherwritesaftertest.
+
+## Production descriptor-reuse fix and launcher input - uploaded, retest pending
+
+The user explicitly rejected further rollback and requested root-cause fixes
+plus controller/mouse support. Latest report: 8-24 FPS at 8 chunks. Both apps
+were explicitly CLOSED this turn. Fresh read-only logs are saved under
+artifacts/console-root-cause-retest (game session6, prepare5, launcher7).
+The game destruction receipt records 2,522,286 descriptor-cache hits and
+1,952,046 misses. Native command preparation remains about 20 microseconds
+per draw. Successful synchronous groups log hundreds of lines per second.
+
+The synchronous group cleanup already waits for GPU retirement but discards
+its private descriptors. It now returns them to the existing bounded cache,
+matching deferred cleanup. Shared/oversized/full-cache/unretired cases keep
+conservative handling. Successful batches no longer print on the hot path;
+errors remain. PS5_DRAW_PROFILE is disabled in BOTH the generated draw driver
+and unchanged verified native-backend source. All other features and all
+GPU fence/retirement checks stay enabled. PROSPEROMC_DRAW_PROFILE=1 supports
+explicit diagnostic builds. This fixes observed code paths, not proof that
+all terrain bottlenecks are solved or that any particular FPS target is met.
+
+Actual generated cleanup ownership test, read-only map, buffer-publication,
+input predicates, compiled BGRA capabilities and archive object checks PASS.
+Archive check proves only ps5_screen.o and ps5_agc_runtime_backend.o change;
+shader compiler and other runtime objects remain byte-identical to verified CI.
+Production objects contain no per-draw profile reports, retain native batching,
+and report profile=0. WSL graphics/Wine session4441 finished successfully;
+all PRX import/raw-syscall/unbound checks passed.
+
+Launcher now consumes HID motion, left/right click and wheel records, supports
+mouse hit-testing on every page, and renders a pointer. List clicks select
+rather than accidentally launching/downloading. D-pad and left stick navigate;
+right stick moves pointer, R2 clicks; existing X/O/L1/R1 actions remain. HID
+retries missing devices so plugging in a mouse after a keyboard can recover.
+Mouse selection/scroll, busy guards, coordinate clamps and framebuffer tests
+PASS. Native build84345 and runtime bridge/persistence suite PASS.
+
+Both reports were staged with fresh eboot hash. Initial graphics staging
+validation detected old eboot hash after native build; app staging synchronized
+it and the graphics staging was rerun successfully. Full ELF comparison views
+70305 finished. Scoped graphics-only and native-only uploads completed; both
+executable readbacks and stage reports verified. Worlds/options/Java/JAR and
+repaired ntdll remain unchanged. New hashes:
+win32u 5ef251df23c2e00f85478c54a2cd7015d8a12b2e5b7449323579991e6b52a11b
+eboot 5c1c679ed0c75e64329a0387830f06db285569b24b15cf898c52dde588314759
+source patch cc048f1453f4f49049d727da545c9966585e32110b748cb9244e6a951d43da5f
+SDK manifest f40ea2e5e0a9e49455c7f8e4789e13ed09961de81df2ddbdf3da5ba5b85b32ff
+runtime archive 662483cfe466617f0beb2b5b65894a7bbf85c2abd1b1e2d6107785af486fa9d2
+
+Async console retest requested: same world1440p/8chunks, F3 closed for30sec;
+FPS plus look-sky/return persistence, and launcher mouse/controller checks.
+Once requested treat the app as potentially running: need fresh close before
+any further console mutation. Read-only logs remain authorized. The current
+native/graphics source, artifacts and staged modules all match (no stale
+experimental SDK now). Preserve three pre-existing deleted artwork source PNGs.

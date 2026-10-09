@@ -1,4 +1,4 @@
-"""Compile one modified runtime object using the official CI's source/flags."""
+"""Compile the draw driver and native backend from verified CI sources."""
 import hashlib
 import json
 import os
@@ -101,20 +101,34 @@ run(['make','-C',psbc,'-f',source / 'toolchain/Makefile.opengnm-psbc-ps5','-j8',
 run(['gcc','-O2',out / 'check-policy.c','-o',work / 'check-policy'])
 with (out / 'policy-check.log').open('w') as log:
     run([work / 'check-policy'],stdout=log)
-# Reproduce CI flags, changing paths only. Leave profiling enabled to compare
-# draw counts against the previous build; optimization changes no synchronization.
+# Reproduce CI flags. Production draws must not run per-operation clocks,
+# serializing cycle reads, cache atomics or diagnostic I/O. Keep all submission,
+# retirement and rendering features; profiling remains an explicit build option.
 flags = shlex.split('\n'.join(config.splitlines()[1:]))
 prefix = '/home/runner/work/ps5-opengl/ps5-opengl'
 flags = [f.replace(prefix+'/build/mesa-ps5-probe',str(build)).replace(prefix,str(source)) for f in flags]
+profile = os.environ.get('PROSPEROMC_DRAW_PROFILE', '0') == '1'
+if not profile:
+    flags = [f for f in flags if not f.startswith('-DPS5_DRAW_PROFILE')]
+(out / 'runtime-config.txt').write_text(shlex.join(flags)+'\n')
 cache_id = hashlib.sha256((out / 'ps5_screen.c').read_bytes()+(ci / 'sdk/lib/libpsbc.ps5.a').read_bytes()).hexdigest()
 (work / 'shader-cache-build-id.h').write_text('#define PS5_SHADER_CACHE_BUILD_ID "'+cache_id+'"\n')
 run([payload / 'bin/prospero-clang',*flags,'-I'+str(build / 'src/compiler'),'-include',work / 'shader-cache-build-id.h',
      '-I'+str(source / 'src/platform'),'-c',source / 'src/gallium/ps5/ps5_screen.c','-o',work / 'ps5_screen.o'])
+# The backend includes the native runtime. Match its profiling configuration to
+# the draw driver, using the verified source and the original entry-point rename.
+run([payload / 'bin/prospero-clang',*flags,'-I'+str(build / 'src/compiler'),
+     '-I'+str(source / 'src/platform'),'-Wno-error=unused-function',
+     '-Dmain=ps5_agc_gate2_run','-DAGC_TRIANGLE_SUBMIT=1','-DAGC_RUNTIME_PACKAGES=1',
+     '-c',source / 'src/platform/ps5_agc_runtime_backend.c',
+     '-o',work / 'ps5_agc_runtime_backend.o'])
 modified.mkdir(parents=True, exist_ok=True)
+shutil.copy2(out / 'runtime-config.txt',modified / 'runtime-config.txt')
 shutil.copytree(ci / 'sdk',modified / 'sdk',dirs_exist_ok=True)
 runtime = modified / 'sdk/lib/libps5_opengl_core33.a'
-run(['llvm-ar-18','r',runtime,work / 'ps5_screen.o'])
+run(['llvm-ar-18','r',runtime,work / 'ps5_screen.o',work / 'ps5_agc_runtime_backend.o'])
 shutil.copy2(work / 'ps5_screen.o',out / 'ps5_screen.o')
+shutil.copy2(work / 'ps5_agc_runtime_backend.o',out / 'ps5_agc_runtime_backend.o')
 manifest = modified / 'sdk/manifest.sha256'
 lines = []
 for path in sorted((modified / 'sdk').rglob('*')):
@@ -127,7 +141,9 @@ provenance.update(version=provenance['version']+'-prosperomc-quad-batching',
     sdk_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
     runtime_archive_sha256=hashlib.sha256(runtime.read_bytes()).hexdigest(),
     local_patch={'file':'smooth-legacy-batching.patch','sha256':patch_hash,
-                 'description':'Batch legacy quads, lowered non-indexed triangles and native non-indexed strips; reuse immutable indices and static publication, and avoid synchronization for CPU-owned read-only draw-buffer maps; retain indexed/GPU-write/export guards'},
+                 'description':'Retain legacy batching and owned-buffer fixes; recycle retired synchronous descriptors, log only batch errors, and ' + ('enable diagnostic profiling' if profile else 'disable hot-path profiling') + ' in the draw driver and native backend'},
+    draw_profile=profile,
+    runtime_config_sha256=hashlib.sha256((out / 'runtime-config.txt').read_bytes()).hexdigest(),
     hardware_validation='pending console retest of modified draw driver')
 (modified / 'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
 print('MODIFIED_RUNTIME_ARCHIVE',provenance['runtime_archive_sha256'],flush=True)

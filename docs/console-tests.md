@@ -171,3 +171,13 @@ executable/both-report readback verification. Earlier strip, lowered-triangle,
 read-only-map and quad improvements remain. No game options were changed.
 Compare the same scene at1440p/8 and16 chunks with FreeSync off and120 Hz fixed,
 including F3 open/closed and looking up then returning to the same view.
+
+
+Production update, October 9: the latest pre-update report remains 8-24 FPS at
+8 chunks. Fresh logs show 1,952,046 descriptor-cache misses and ~20us native draw
+preparation. Synchronous retired descriptors now use the existing bounded cache;
+success logging and per-draw profiling are removed. Compiled capability,
+retirement ownership, input and resource-publication checks pass. New graphics
+and native launcher executables were uploaded and their executable contents
+verified over FTP. Launcher mouse selection/scrolling and stick navigation pass
+host checks. Console FPS gain and device behavior await the user's retest.

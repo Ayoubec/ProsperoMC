@@ -36,7 +36,7 @@ the user confirms movement and saved-world reopening. Higher-distance frame
 pacing remains under test.
 Other Wine modules stay from the verified release.
 
-The performance candidate modifies only the runtime's `ps5_screen.o` against
+The performance candidate modifies the runtime's `ps5_screen.o` against
 that pinned CI source. Indexed and non-indexed quads use Mesa's index translator/generator to preserve
 the first or last provoking vertex across both triangles, then use one indexed
 draw and existing batching even for flat shading. Restart/complex
@@ -44,7 +44,9 @@ geometry retains the conservative conversion path; smooth converted geometry
 also uses batching. Geometry shaders, transform feedback and active occlusion
 are excluded from the new quad path.
 The source patch is staged in `WINE_PATCHES/smooth-legacy-batching.patch` and
-recorded in `versions.lock` and the stage report. Every other runtime object
+recorded in `versions.lock` and the stage report. The production update also
+recompiles `ps5_agc_runtime_backend.o` from the unchanged verified source with
+`PS5_DRAW_PROFILE` disabled, matching the draw driver. All other runtime objects
 and the compiled shader compiler library remain byte-identical to the CI SDK.
 Host policy and compiled texture-capability checks pass. The console retest
 loads the saved vanilla 1.12.2 world; the user reports 30–60 FPS at 2 chunks
@@ -63,7 +65,19 @@ exported and GPU-written buffers retain per-use flushing. Hardware retest is
 required for any performance claim about this new module.
 The actual generated Mesa quad indices
 pass first/last provoking-color and winding checks. Only the draw-driver object
-changes; the existing shader compiler and resource synchronization remain.
+changes in that earlier update; the existing shader compiler and resource synchronization remain.
+
+The next production update fixes synchronous descriptor allocation churn. The
+latest session's destruction receipt records 2,522,286 cache hits and 1,952,046
+misses. Synchronous groups already wait for confirmed retirement, but their
+cleanup discarded private descriptors instead of returning them to the existing
+bounded cache. The corrected cleanup reuses only private, retired, correctly
+sized buffers; shared buffers and a full cache retain normal reference release.
+Unconfirmed GPU retirement still pins resources or terminates safely. Successful
+groups no longer write a log line each time. Per-draw and cache profiling is
+disabled in both compiled objects; errors and lifecycle receipts remain enabled.
+Set `PROSPEROMC_DRAW_PROFILE=1` when building a diagnostic renderer. These are
+verified code-path fixes; their FPS gain still requires a console retest.
 
 Mouse-wheel support extends the existing motion event's code field, retaining
 the deployed ntdll queue layout and validator. Patch 0671 sends a normal Windows

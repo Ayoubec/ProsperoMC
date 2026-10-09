@@ -4,25 +4,13 @@ Minecraft Java launcher for homebrew-enabled PS5, rebuilt on [prospero-win](http
 
 This project is under development and uses Windows x64 Java through Wine.
 Vanilla 1.12.2 now loads saved worlds on the tested PS5, with movement and audio.
-The latest user reports are 60 FPS at 3 chunks, 16–32 FPS at 8 chunks and
-8–24 FPS at 16 chunks. An earlier snapshot had VBO disabled, but the fresh
-config already has it enabled and the user reports no improvement from it.
-This update preserves the current graphics choices.
-At higher game resolutions the latest report is about 25 FPS at 1080p and
-18 FPS at 1440p. After the read-only buffer update, the user measured an initial
-32 FPS at 1440p/8 chunks, falling to 13–14 after moving. Profiling confirms buffer
-reads became much faster, but thousands of draws then use individual submissions.
-The strip correction's latest 1440p report reaches 43–55 FPS still and 32–57
-while walking at 8 chunks, but opening F3 can reduce it to 13–22. At 16 chunks
-the report remains 7–22 FPS; looking down or at the sky reaches 60.
-Routing multi-draw groups through the deferred queue regressed the user's
-8-chunk result to about32 FPS and is reverted to the prior strip-batching module.
-A controlled comparison with the monitor at120 Hz and FreeSync off is pending.
-FreeSync off resolved the user's bright-area flicker; selecting120 Hz on the
-monitor permits about120 FPS when looking at the sky. Terrain still needs work,
-including a persistent drop reported after rapidly changing the view.
-Vanilla 1.12.2 itself limits the main menu to30 FPS. Stable60 FPS at16 chunks is
-not verified.
+Performance remains under development: the latest user retest reports 8-24 FPS
+at 8 chunks. The production renderer update fixes repeated descriptor allocation
+and removes per-draw diagnostic timing and successful-batch logging. Its
+performance gain needs a console retest; stable 60 FPS at 16 chunks is unverified.
+FreeSync off resolved the reported bright-area flicker. With the monitor set to
+120 Hz, the user reaches about 120 FPS looking at the sky. Vanilla 1.12.2 limits
+its main menu to 30 FPS. Current game graphics choices are preserved.
 Other versions, mod loaders and online features require separate
 console checks. It is an independent launcher, not an embedded Qt build of PolyMC.
 
@@ -43,8 +31,8 @@ is the initial test case, not the application's fixed or main version.
 Settings selects 1280×720, 1920×1080, 2560×1440 (2K/1440p) or
 3840×2160 (4K). Changing the resolution saves it immediately for the next
 launch; memory changes still use Save Settings. These are game-rendering
-resolutions: the current HDMI output remains 1080p, with higher game
-resolutions downscaled. Higher resolution can reduce performance.
+resolutions; the HDMI output mode depends on the console/display. Higher
+resolution can reduce performance.
 Game windows have edge resizing disabled on PS5.
 
 To add a modpack, copy a PolyMC/MultiMC ZIP or Modrinth `.mrpack` into
@@ -60,8 +48,10 @@ The display profile requests 120 Hz with the upstream SDK's 60 Hz fallback;
 actual refresh depends on the console/display accepting the mode. Minecraft's
 own FPS and VSync settings are preserved. The launcher has focus transitions,
 animated progress feedback, held-D-pad scrolling and quiet navigation sounds.
-The reported 60 FPS ceiling still needs a display-mode check; requesting
-120 Hz does not prove that the connected display negotiated that mode.
+In the launcher, the D-pad or left stick navigates, X selects, and L1/R1 switch
+tabs. The right stick moves the pointer and R2 clicks. USB mouse movement,
+left-click, right-click (back), and wheel scrolling are supported. Lists select
+on click; use the Play or Download button to start an operation.
 
 Recent upstream Wine changes are reviewed selectively; see the
 [October 9 upstream review](docs/upstream-review-2026-10-09.md). New Minecraft
