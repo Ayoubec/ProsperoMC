@@ -85,6 +85,15 @@ public final class Main {
         boolean ok=false;
         try(FileChannel channel=FileChannel.open(app.root.resolve("launcher.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE); FileLock lock=channel.tryLock()) {
             if(lock==null)throw new IOException("Another launcher operation is running");
+            final Main current=app;
+            FilesUtil.downloadProgress.set(new FilesUtil.DownloadProgress() {
+                public void update(Path file,long done,long total)throws IOException {
+                    String mb=String.format(Locale.ROOT,"%.1f",done/(1024.0*1024.0));
+                    String size=total>0?" / "+String.format(Locale.ROOT,"%.1f",total/(1024.0*1024.0))+" MB":" MB";
+                    current.progress("downloading","Downloading "+file.getFileName()+": "+mb+size,
+                        done/1024,total>0?total/1024:0);
+                }
+            });
             app.command(command);
             ok=true;
         }
@@ -97,6 +106,7 @@ public final class Main {
                 for(StackTraceElement frame:t.getStackTrace())System.err.println("  at "+frame);
             }
         }
+        finally { FilesUtil.downloadProgress.remove(); }
         try {
             app.view();
             app.progress(app.status, app.message, ok?1:0, 1);
@@ -183,6 +193,9 @@ public final class Main {
         else if(cmd.equals("mod-download")) {
             downloadMod();
         }
+        else if(cmd.equals("pack-search")) { new ModrinthPacks(this).search(); }
+        else if(cmd.equals("pack-versions")) { new ModrinthPacks(this).versions(); }
+        else if(cmd.equals("pack-download")) { new ModrinthPacks(this).download(); }
         else if(cmd.equals("settings")) {
             updateSettings();
         }
@@ -246,7 +259,7 @@ public final class Main {
         for(Map.Entry<String, String> e:request.entrySet()) {
             String k=e.getKey();
             if(k.equals("command"))continue;
-            if(k.matches("java[0-9]+")||Arrays.asList("resolution", "memoryMb", "microsoftClientId", "manifestUrl", "assetsUrl", "fabricApi", "quiltApi", "graphics", "accountMode", "username", "modrinthApi", "javaApi").contains(k)) {
+            if(k.matches("java[0-9]+")||Arrays.asList("resolution", "memoryMb", "microsoftClientId", "manifestUrl", "assetsUrl", "fabricApi", "quiltApi", "graphics", "accountMode", "username", "modrinthApi", "javaApi", "javaGithubApi").contains(k)) {
                 if(k.equals("resolution")&&!Arrays.asList("1280x720","1920x1080","2560x1440","3840x2160").contains(e.getValue()))throw new IOException("Choose 720p, 1080p, 1440p or 2160p");
                 if(k.equals("memoryMb"))memory(e.getValue());
                 if(k.equals("accountMode")&&!Arrays.asList("microsoft", "offline").contains(e.getValue()))throw new IOException("accountMode must be microsoft or offline");
@@ -677,6 +690,7 @@ public final class Main {
         }
         v.put("java.count",Integer.toString(n));
         v.putAll(authView);
+        v.putAll(FilesUtil.properties(root.resolve("cache/modrinth-view.properties")));
         FilesUtil.properties(root.resolve("launcher-view.properties"), v);
     }
     static List<String> argumentValues(Object args) {

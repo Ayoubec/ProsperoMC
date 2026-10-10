@@ -868,6 +868,11 @@ static void run_launcher(void)
             pointer_dx+=poll.dx;pointer_dy+=poll.dy;pointer_wheel=poll.wheel;
             for (size_t i=0;i<poll.count;i++) {
                 if (poll.events[i].kind==PW_HID_EVENT_KEY && poll.events[i].down) {
+                    unsigned vk=poll.events[i].code;
+                    if(pm_frontend.search_editor && vk==13) {key=PM_KEY_REFRESH;continue;}
+                    if(pm_frontend.search_editor && ((vk>=0x30&&vk<=0x5a)||vk==0x20||vk==8||vk==0xbd)) {
+                        pm_frontend_text(&pm_frontend,vk==0xbd?'-':vk);continue;
+                    }
                     PmKey mapped=pm_keyboard_key(poll.events[i].code);
                     if(mapped!=PM_KEY_NONE)key=mapped;
                 }

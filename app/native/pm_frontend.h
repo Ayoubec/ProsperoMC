@@ -20,6 +20,8 @@ typedef struct PmInstance {
 typedef struct PmVersion { char id[64], type[32]; int java; } PmVersion;
 typedef struct PmMod { char name[PM_TEXT]; int enabled; } PmMod;
 typedef struct PmPack { char name[PM_TEXT], source[512]; } PmPack;
+typedef struct PmRemotePack { char id[64], name[PM_TEXT], description[512]; } PmRemotePack;
+typedef struct PmPackRelease { char id[64], name[PM_TEXT], game[64], loader[32]; } PmPackRelease;
 typedef struct PmJavaRuntime {
     int major, valid;
     char version[64], path[512], detail[PM_TEXT];
@@ -30,6 +32,9 @@ typedef struct PmView {
     PmVersion versions[PM_MAX_VERSIONS]; int version_count;
     PmMod mods[PM_MAX_MODS]; int mod_count;
     PmPack packs[PM_MAX_INSTANCES]; int pack_count;
+    PmRemotePack remote_packs[24]; int remote_count, remote_offset, remote_total;
+    PmPackRelease remote_versions[64]; int remote_version_count;
+    char remote_project[64];
     PmJavaRuntime java_runtimes[PM_MAX_JAVA]; int java_count;
     int memory_mb, busy, progress_done, progress_total, resolution_height;
     char java_path[512], username[PM_TEXT];
@@ -52,6 +57,8 @@ typedef struct PmAction {
     char loader[32], loader_version[64], source[512], username[PM_TEXT];
     char mod[PM_TEXT], enabled[8], java_path[512];
     char account_mode[16];
+    char project_id[64], pack_version[64], query[129];
+    int offset;
     int memory_mb;
     int resolution_height;
     int java_major;
@@ -63,6 +70,9 @@ typedef struct PmFrontend {
     int initialized_settings;
     int resolution_index;
     int pack_picker, selected_pack;
+    int remote_browser, remote_stage, selected_remote, selected_release;
+    int search_editor, search_key;
+    char query[129];
     unsigned animation_ms, focus_ms;
     int underline_x;
     int pointer_x, pointer_y, pointer_visible;
@@ -71,6 +81,8 @@ typedef struct PmFrontend {
 
 void pm_frontend_init(PmFrontend *frontend);
 void pm_frontend_tick(PmFrontend *frontend, unsigned elapsed_ms);
+/* Printable USB keys and backspace feed the same search field as the pad. */
+void pm_frontend_text(PmFrontend *frontend, unsigned key);
 /* Returns 1 only for a backend command; caller invokes it and reloads PmView. */
 int pm_frontend_update(PmFrontend *frontend, const PmView *view,
                        PmKey key, PmAction *action);

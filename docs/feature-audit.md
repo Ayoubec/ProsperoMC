@@ -19,8 +19,8 @@ still need separate console runs.
 | Installed mod management | Local JAR add/remove and enable/disable; native mod toggles |
 | Online mod discovery | Modrinth search/download through backend requests; console online search is not implemented |
 | Mod dependencies | Compatible required Modrinth project dependencies resolved; unusual version-only dependencies need manual installation |
-| Instance packs | PolyMC/MultiMC ZIP import/export; Library/Mods pack picker reads `/data/ProsperoMC/imports` |
-| Modrinth packs | `.mrpack` manifests, verified downloads, client filtering and override layers; native pack picker; host integration tests pass |
+| Instance packs | PolyMC/MultiMC ZIP import/export; Library pack picker reads `/data/ProsperoMC/imports` |
+| Modrinth packs | Native project search/pagination and release selection; direct `.mrpack` download with SHA1/SHA512, client filtering and overrides; installs required Minecraft/loader/Java and resumes failed installs; console download retest pending |
 | CurseForge packs | Manifest/service integration not implemented |
 | Microsoft accounts | Device OAuth, Xbox/XSTS, Minecraft entitlement/profile flow; publisher's own registered client ID required; no live account test performed |
 | Offline play | Explicit local single-player mode; no multiplayer authentication |

@@ -8,6 +8,8 @@ import java.security.*;
 import java.util.*;
 import java.util.zip.*;
 final class FilesUtil {
+    interface DownloadProgress { void update(Path file,long done,long total)throws IOException; }
+    static final ThreadLocal<DownloadProgress> downloadProgress=new ThreadLocal<DownloadProgress>();
     static String read(Path p)throws IOException {
         if(Files.size(p)>32*1024*1024)throw new IOException("Metadata too large: "+p.getFileName());
         return new String(Files.readAllBytes(p), StandardCharsets.UTF_8);
@@ -111,6 +113,10 @@ final class FilesUtil {
                 if(status!=200)throw new IOException("HTTP "+status+" downloading "+url.getHost());
             }
             long total=0;
+            long expectedSize=size>=0?size:connection.getContentLengthLong();
+            long reported=System.nanoTime();
+            DownloadProgress progress=downloadProgress.get();
+            if(progress!=null)progress.update(target,0,expectedSize);
             try(InputStream in=connection.getInputStream(); OutputStream out=Files.newOutputStream(t)) {
                 byte[] b=new byte[65536];
                 int n;
@@ -118,10 +124,15 @@ final class FilesUtil {
                     total+=n;
                     if(total>2L*1024*1024*1024||(size>=0&&total>size))throw new IOException("Download exceeds expected size");
                     out.write(b, 0, n);
+                    long now=System.nanoTime();
+                    if(progress!=null&&now-reported>=1000000000L) {
+                        progress.update(target,total,expectedSize);reported=now;
+                    }
                 }
             }
             if(!valid(t, hash, size))throw new IOException("Download integrity mismatch: "+target.getFileName());
             atomic(t, target);
+            if(progress!=null)progress.update(target,total,expectedSize);
         }
         finally {
             Files.deleteIfExists(t);

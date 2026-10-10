@@ -52,6 +52,7 @@ void pm_frontend_init(PmFrontend *f) {
     if(!f) return;
     memset(f,0,sizeof(*f)); f->memory_mb=2048;f->version_filter=1;f->underline_x=583;
     f->pointer_x=960;f->pointer_y=540;
+    copy(f->query,sizeof(f->query),"Fabulously Optimized");
 }
 static int text_width(const char *s,int size);
 void pm_frontend_tick(PmFrontend *f,unsigned ms) {
@@ -94,6 +95,64 @@ static int action(PmAction *a,const char *command,const PmInstance *i) {
 static int unavailable(PmFrontend *f,const char *reason) {
     copy(f->notice,sizeof(f->notice),reason); return 0;
 }
+static const char search_keys[]="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -";
+void pm_frontend_text(PmFrontend *f,unsigned key) {
+    if(!f||!f->search_editor)return;
+    size_t n=strlen(f->query);
+    if(key==8) {if(n)f->query[n-1]=0;}
+    else if(key>=32&&key<=126&&n<sizeof(f->query)-1) {f->query[n]=(char)key;f->query[n+1]=0;}
+}
+static int remote_search(PmFrontend *f,PmAction *a,int offset) {
+    copy(a->query,sizeof(a->query),f->query);a->offset=offset;
+    f->remote_stage=0;f->selected_remote=0;f->search_editor=0;
+    return action(a,"pack-search",NULL);
+}
+static int remote_update(PmFrontend *f,const PmView *v,PmKey key,PmAction *a) {
+    int releases=f->remote_stage, n=count(releases?v->remote_version_count:v->remote_count,releases?64:24);
+    int *selected=releases?&f->selected_release:&f->selected_remote;
+    *selected=bound(*selected,0,n?n-1:0);
+    if(f->search_editor) {
+        /* 40 keys: printable characters, erase, and search. */
+        if(key==PM_KEY_BACK){f->search_editor=0;return 0;}
+        if(key==PM_KEY_LEFT)f->search_key=bound(f->search_key-1,0,39);
+        if(key==PM_KEY_RIGHT)f->search_key=bound(f->search_key+1,0,39);
+        if(key==PM_KEY_UP)f->search_key=bound(f->search_key-10,0,39);
+        if(key==PM_KEY_DOWN)f->search_key=bound(f->search_key+10,0,39);
+        if(key==PM_KEY_SECONDARY)pm_frontend_text(f,8);
+        if(key==PM_KEY_REFRESH||(key==PM_KEY_CONFIRM&&f->search_key==39)) {
+            if(v->busy)return unavailable(f,"Wait for the current download or search.");
+            return remote_search(f,a,0);
+        }
+        if(key==PM_KEY_CONFIRM)pm_frontend_text(f,f->search_key==38?8:(unsigned)search_keys[f->search_key]);
+        return 0;
+    }
+    if(key==PM_KEY_BACK) {
+        if(releases)f->remote_stage=0;else f->remote_browser=0;
+        return 0;
+    }
+    if(key==PM_KEY_SECONDARY){f->search_editor=1;f->search_key=0;return 0;}
+    if(key==PM_KEY_UP||key==PM_KEY_DOWN)*selected=bound(*selected+(key==PM_KEY_DOWN?1:-1),0,n?n-1:0);
+    if(v->busy)return 0;
+    if(!releases&&(key==PM_KEY_LEFT||key==PM_KEY_RIGHT)) {
+        int offset=v->remote_offset+(key==PM_KEY_RIGHT?24:-24);
+        if(offset<0||offset>=v->remote_total)return 0;
+        return remote_search(f,a,offset);
+    }
+    if(key==PM_KEY_REFRESH)return remote_search(f,a,0);
+    if(key==PM_KEY_CONFIRM&&n) {
+        if(!releases) {
+            copy(a->project_id,sizeof(a->project_id),v->remote_packs[*selected].id);
+            f->remote_stage=1;f->selected_release=0;
+            return action(a,"pack-versions",NULL);
+        }
+        if(!v->remote_project[0])return unavailable(f,"Choose a project first.");
+        copy(a->project_id,sizeof(a->project_id),v->remote_project);
+        copy(a->pack_version,sizeof(a->pack_version),v->remote_versions[*selected].id);
+        copy(a->name,sizeof(a->name),v->remote_versions[*selected].name);
+        return action(a,"pack-download",NULL);
+    }
+    return 0;
+}
 
 int pm_frontend_update(PmFrontend *f,const PmView *v,PmKey key,PmAction *a) {
     const PmInstance *i;
@@ -104,7 +163,8 @@ int pm_frontend_update(PmFrontend *f,const PmView *v,PmKey key,PmAction *a) {
     i=n?&v->instances[f->selected_instance]:NULL;
     if(key==PM_KEY_NONE) return 0;
     f->focus_ms=0;
-    if(key==PM_KEY_PREVIOUS_TAB||key==PM_KEY_NEXT_TAB)f->pack_picker=0;
+    if(key==PM_KEY_PREVIOUS_TAB||key==PM_KEY_NEXT_TAB) {f->pack_picker=0;f->remote_browser=0;f->search_editor=0;}
+    if(f->remote_browser)return remote_update(f,v,key,a);
     if(f->pack_picker) {
         n=count(v->pack_count,PM_MAX_INSTANCES);
         f->selected_pack=bound(f->selected_pack,0,n?n-1:0);
@@ -202,7 +262,7 @@ int pm_frontend_update(PmFrontend *f,const PmView *v,PmKey key,PmAction *a) {
             copy(a->enabled,sizeof(a->enabled),v->mods[f->selected_mod].enabled?"false":"true");
             return action(a,"mod-toggle",i);
         }
-        if(key==PM_KEY_SECONDARY) {f->pack_picker=1;return action(a,"scan-packs",NULL);}
+        if(key==PM_KEY_SECONDARY) {f->remote_browser=1;return remote_search(f,a,0);}
         break;
     case PM_SETTINGS:
         if(key==PM_KEY_SECONDARY) {
@@ -265,6 +325,26 @@ int pm_frontend_pointer(PmFrontend *f,const PmView *v,int x,int y,int button,int
     f->pointer_x=bound(x,0,1919);f->pointer_y=bound(y,0,1079);f->pointer_visible=1;
     x=f->pointer_x;y=f->pointer_y;
     if(button==2)return pm_frontend_update(f,v,PM_KEY_BACK,a);
+    if(f->remote_browser) {
+        if(f->search_editor) {
+            for(int j=0;j<40;j++)if(button==1&&inside(x,y,140+(j%10)*164,405+(j/10)*92,150,76)) {
+                f->search_key=j;return pm_frontend_update(f,v,PM_KEY_CONFIRM,a);
+            }
+            return 0;
+        }
+        if(wheel)return pm_frontend_update(f,v,wheel>0?PM_KEY_UP:PM_KEY_DOWN,a);
+        int releases=f->remote_stage,selected=releases?f->selected_release:f->selected_remote;
+        n=count(releases?v->remote_version_count:v->remote_count,releases?64:24);
+        selected=bound(selected,0,n?n-1:0);start=selected>4?selected-4:0;
+        for(int j=start;j<n&&j<start+5;j++)if(button==1&&inside(x,y,130,327+(j-start)*88,1660,76)) {
+            if(releases)f->selected_release=j;else f->selected_remote=j;
+            return pm_frontend_update(f,v,PM_KEY_CONFIRM,a);
+        }
+        if(button==1&&inside(x,y,130,803,500,64))return pm_frontend_update(f,v,PM_KEY_SECONDARY,a);
+        if(button==1&&inside(x,y,650,803,500,64))return pm_frontend_update(f,v,PM_KEY_LEFT,a);
+        if(button==1&&inside(x,y,1170,803,620,64))return pm_frontend_update(f,v,PM_KEY_RIGHT,a);
+        return 0;
+    }
     int tab_x=583;
     for(int j=0;j<PM_SCREEN_COUNT;j++) {
         int width=text_width(tabs[j],26)+36;
@@ -323,6 +403,7 @@ int pm_frontend_pointer(PmFrontend *f,const PmView *v,int x,int y,int button,int
         if(inside(x,y,1010,801,758,64)){f->focus=3;hit=1;}
         break;
     case PM_MODS:
+        if(button==1&&inside(x,y,1420,315,340,54))return pm_frontend_update(f,v,PM_KEY_SECONDARY,a);
         n=count(v->mod_count,PM_MAX_MODS);start=f->selected_mod>5?f->selected_mod-5:0;
         for(int j=start;j<n&&j<start+6;j++)if(button==1&&inside(x,y,130,378+(j-start)*77,1660,67)) {
             f->selected_mod=j;return pm_frontend_update(f,v,PM_KEY_CONFIRM,a);
@@ -505,16 +586,16 @@ static void header(Canvas *c,const PmFrontend *f,const PmView *v) {
     small(c,v->busy?"WORKING":issue?"ISSUE":"READY",1713,59,v->busy||issue?WARN:MUTED,134);
 }
 static void footer(Canvas *c,const PmFrontend *f,const PmView *v) {
-    const char *hint=f->pack_picker?"Import pack":f->screen==PM_MODS?"Toggle mod":f->screen==PM_VERSIONS?"Download version":f->screen==PM_SETTINGS?"Apply / download":"Select";
+    const char *hint=f->remote_browser?(f->search_editor?"Type":f->remote_stage?"Install release":"Choose pack"):f->pack_picker?"Import pack":f->screen==PM_MODS?"Toggle mod":f->screen==PM_VERSIONS?"Download version":f->screen==PM_SETTINGS?"Apply / download":"Select";
     box(c,84,961,1752,1,EDGE);
     small(c,"L1 / R1  Navigate",88,990,TEXT,300);
     controller_symbol(c,'X',438,990);small(c,hint,478,990,TEXT,285);
-    controller_symbol(c,'O',783,990);small(c,f->pack_picker?"Back":"Home",823,990,TEXT,220);
+    controller_symbol(c,'O',783,990);small(c,f->pack_picker||f->remote_browser?"Back":"Home",823,990,TEXT,220);
     controller_symbol(c,'T',1047,990);
     small(c,f->screen==PM_SETTINGS?"Detect Java":"Refresh",1086,990,TEXT,330);
     if(f->screen==PM_SETTINGS||f->screen==PM_VERSIONS||f->screen==PM_MODS||f->screen==PM_LIBRARY) {
         controller_symbol(c,'S',1510,990);
-        small(c,f->pack_picker?"Back":f->screen==PM_SETTINGS?"Runtime info":f->screen==PM_VERSIONS?"Filter":"Modpacks",1550,990,TEXT,295);
+        small(c,f->remote_browser?"Search":f->pack_picker?"Back":f->screen==PM_SETTINGS?"Runtime info":f->screen==PM_VERSIONS?"Filter":f->screen==PM_LIBRARY?"Local import":"Modrinth",1550,990,TEXT,295);
     } else small(c,"D-PAD / ARROWS",1510,990,FAINT,335);
     if(f->notice[0]) {
         roundbox(c,114,896,1692,48,12,0x40392c);
@@ -624,12 +705,13 @@ static void mods(Canvas *c,const PmFrontend *f,const PmView *v) {
     int instances=count(v->instance_count,PM_MAX_INSTANCES);char b[256];
     screen_title(c,"Make it your own","Enable and disable individual .jar mods for the selected instance.");
     panel(c,108,302,1704,578,0);
-    snprintf(b,sizeof(b),"INSTANCE / %s",instances?v->instances[bound(f->selected_instance,0,instances-1)].name:"None selected");small(c,b,150,328,LIME,1610);
+    snprintf(b,sizeof(b),"INSTANCE / %s",instances?v->instances[bound(f->selected_instance,0,instances-1)].name:"None selected");small(c,b,150,328,LIME,1200);
+    button(c,"MODRINTH MODPACKS",1420,315,340,0,0);
     if(!n) {
         text(c,"No mods in this instance.",150,428,36,TITLE,1512);
         small(c,"Place compatible .jar files in the instance's mods folder, then refresh.",150,496,MUTED,1570);
         small(c,"Choose Fabric, Quilt or legacy Forge for a modded instance.",150,543,FAINT,1570);
-        small(c,"Press Square to import a modpack as a separate instance.",150,638,FAINT,1570);
+        small(c,"Press Square to find and download Modrinth modpacks as separate instances.",150,638,FAINT,1570);
     }
     for(j=start;j<n&&j<start+6;j++) {
         int y=378+(j-start)*77;
@@ -710,6 +792,41 @@ static void packs(Canvas *c,const PmFrontend *f,const PmView *v) {
     }
     small(c,"After import, select the instance to download its game and loader dependencies.",150,830,MUTED,1600);
 }
+static void remote_packs(Canvas *c,const PmFrontend *f,const PmView *v) {
+    char b[512];int releases=f->remote_stage;
+    screen_title(c,releases?"Choose a modpack release":"Modrinth modpacks",
+        releases?"X downloads the pack, Minecraft, its mod loader and the required Java.":"Search with Square. Left / right changes pages. Local imports are in Library.");
+    panel(c,108,302,1704,578,0);
+    if(f->search_editor) {
+        snprintf(b,sizeof(b),"Search: %s_",f->query);text(c,b,140,330,30,LIME,1630);
+        for(int j=0;j<40;j++) {
+            char label[16];
+            if(j==38)copy(label,sizeof(label),"ERASE");
+            else if(j==39)copy(label,sizeof(label),"SEARCH");
+            else if(search_keys[j]==' ')copy(label,sizeof(label),"SPACE");
+            else {label[0]=search_keys[j];label[1]=0;}
+            button(c,label,140+(j%10)*164,405+(j/10)*92,150,f->search_key==j,j==39);
+        }
+        small(c,"USB keyboard also works. Triangle searches; Square erases; Circle returns.",140,815,MUTED,1620);
+        return;
+    }
+    int n=count(releases?v->remote_version_count:v->remote_count,releases?64:24);
+    int selected=bound(releases?f->selected_release:f->selected_remote,0,n?n-1:0),start=selected>4?selected-4:0;
+    if(!n)empty(c,v->busy?"Loading Modrinth...":"No results","Use Search or Triangle to try again.");
+    for(int j=start;j<n&&j<start+5;j++) {
+        int y=327+(j-start)*88;panel(c,130,y,1660,76,j==selected);
+        text(c,releases?v->remote_versions[j].name:v->remote_packs[j].name,159,y+5,28,TITLE,1580);
+        if(releases)snprintf(b,sizeof(b),"Minecraft %s / %s",v->remote_versions[j].game,v->remote_versions[j].loader);
+        else copy(b,sizeof(b),v->remote_packs[j].description);
+        text(c,b,159,y+44,20,MUTED,1580);
+    }
+    button(c,"SEARCH MODPACKS",130,803,500,0,1);
+    if(!releases) {
+        button(c,"< PREVIOUS PAGE",650,803,500,0,0);
+        snprintf(b,sizeof(b),"NEXT PAGE >   (%d / %d)",v->remote_offset/24+1,(v->remote_total+23)/24);
+        button(c,b,1170,803,620,0,0);
+    } else small(c,"Fabric / Quilt supported; legacy Forge is limited to 1.12.2.",650,817,FAINT,1120);
+}
 void pm_frontend_render(const PmFrontend *frontend,const PmView *v,const PwPresentTarget *target) {
     PmFrontend f;Canvas c;int y;
     if(!frontend||!v||!target||!target->pixels||!target->width||!target->height||target->width>16384||target->height>16384) return;
@@ -717,7 +834,8 @@ void pm_frontend_render(const PmFrontend *frontend,const PmView *v,const PwPrese
     c.t=target;f=*frontend;normalize(&f,v);c.focus_alpha=140+bound((int)f.focus_ms,0,180)*115/180;
     for(y=0;y<1080;y++) box(&c,0,y,1920,1,mix(BASE,0x112016,(unsigned)(y*26/1080)));
     header(&c,&f,v);
-    if(f.pack_picker)packs(&c,&f,v);
+    if(f.remote_browser)remote_packs(&c,&f,v);
+    else if(f.pack_picker)packs(&c,&f,v);
     else switch(f.screen) {
     case PM_HOME:home(&c,&f,v);break;
     case PM_LIBRARY:library(&c,&f,v);break;

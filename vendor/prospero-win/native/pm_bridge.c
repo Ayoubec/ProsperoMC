@@ -146,11 +146,16 @@ static void view_property(void *context, const char *key, const char *value)
     TEXT("username", username); TEXT("auth.username", username); TEXT("auth.url", auth_url); TEXT("auth.code", auth_code);
     TEXT("auth.verificationUri", auth_url); TEXT("auth.userCode", auth_code);
     TEXT("account.status", account_status);
+    TEXT("remote.projectId", remote_project);
 #undef TEXT
     if (!strcmp(key,"instance.count")) { int n=integer(value,2147483647); view->instance_count=n>PM_MAX_INSTANCES?PM_MAX_INSTANCES:n; }
     else if (!strcmp(key,"version.count")) { int n=integer(value,2147483647); view->version_count=n>PM_MAX_VERSIONS?PM_MAX_VERSIONS:n; }
     else if (!strcmp(key,"mod.count")) { int n=integer(value,2147483647); view->mod_count=n>PM_MAX_MODS?PM_MAX_MODS:n; }
     else if (!strcmp(key,"java.count")) { int n=integer(value,2147483647); view->java_count=n>PM_MAX_JAVA?PM_MAX_JAVA:n; }
+    else if (!strcmp(key,"remote.pack.count")) view->remote_count=integer(value,24);
+    else if (!strcmp(key,"remote.version.count")) view->remote_version_count=integer(value,64);
+    else if (!strcmp(key,"remote.offset")) view->remote_offset=integer(value,100000);
+    else if (!strcmp(key,"remote.total")) view->remote_total=integer(value,2147483647);
     else if (!strcmp(key,"memoryMb") || !strcmp(key,"settings.memoryMb")) view->memory_mb = integer(value,32768);
     else if (!strcmp(key,"resolution") || !strcmp(key,"settings.resolution")) view->resolution_height=!strcmp(value,"3840x2160")?2160:!strcmp(value,"2560x1440")?1440:!strcmp(value,"1920x1080")?1080:720;
     else if (!strcmp(key,"auth.signedIn")) copy(view->account_status,sizeof(view->account_status),!strcmp(value,"true") ? "Signed in" : "Sign in to Minecraft");
@@ -172,6 +177,17 @@ static void view_property(void *context, const char *key, const char *value)
         PmMod *item = &view->mods[i]; const char *field = key + chars;
         if (!strcmp(field,"name")) copy(item->name,sizeof(item->name),value);
         else if (!strcmp(field,"enabled")) item->enabled = !strcmp(value,"true") || !strcmp(value,"1");
+    } else if (sscanf(key,"remote.pack.%u.%n", &i, &chars) == 1 && chars && i < 24) {
+        PmRemotePack *item=&view->remote_packs[i];const char *field=key+chars;
+        if(!strcmp(field,"id"))copy(item->id,sizeof(item->id),value);
+        else if(!strcmp(field,"name"))copy(item->name,sizeof(item->name),value);
+        else if(!strcmp(field,"description"))copy(item->description,sizeof(item->description),value);
+    } else if (sscanf(key,"remote.version.%u.%n", &i, &chars) == 1 && chars && i < 64) {
+        PmPackRelease *item=&view->remote_versions[i];const char *field=key+chars;
+        if(!strcmp(field,"id"))copy(item->id,sizeof(item->id),value);
+        else if(!strcmp(field,"name"))copy(item->name,sizeof(item->name),value);
+        else if(!strcmp(field,"game"))copy(item->game,sizeof(item->game),value);
+        else if(!strcmp(field,"loader"))copy(item->loader,sizeof(item->loader),value);
     } else if (sscanf(key,"java.%u.%n", &i, &chars) == 1 && chars && i < PM_MAX_JAVA) {
         PmJavaRuntime *item=&view->java_runtimes[i]; const char *field=key+chars;
         if (!strcmp(field,"major")) item->major=integer(value,99);
@@ -243,7 +259,7 @@ int pm_bridge_request(const char *root, const PmAction *action)
         if(n==10000)return -1;
         action=&resolved;
     }
-    static const char *const commands[] = {"catalog","create","create-install","install","install-java","detect-java","import","prepare-launch","mods","mod-toggle","mod-add","settings","auth-device","auth-poll","clone","export","import-pack"};
+    static const char *const commands[] = {"catalog","create","create-install","install","install-java","detect-java","import","prepare-launch","mods","mod-toggle","mod-add","settings","auth-device","auth-poll","clone","export","import-pack","pack-search","pack-versions","pack-download"};
     char name[768], temporary[768]; FILE *file; int allowed = 0, failed = 0;
     for (size_t i=0; i<sizeof(commands)/sizeof(commands[0]); i++) allowed |= !strcmp(action->command,commands[i]);
     if (!allowed || action->java_major<0 || action->java_major>99 ||
@@ -260,8 +276,10 @@ int pm_bridge_request(const char *root, const PmAction *action)
     FIELD("loader",loader); FIELD("loaderVersion",loader_version); FIELD("source",source);
     FIELD("username",username); FIELD("mod",mod); FIELD("enabled",enabled); FIELD("java8",java_path);
     FIELD("accountMode",account_mode);
+    FIELD("projectId",project_id);FIELD("packVersion",pack_version);FIELD("query",query);
 #undef FIELD
     if (action->memory_mb) failed |= fprintf(file,"memoryMb=%d\n",action->memory_mb) < 0;
+    if (!strcmp(action->command,"pack-search")) failed |= fprintf(file,"offset=%d\n",action->offset)<0;
     if(action->resolution_height)failed |= fprintf(file,"resolution=%s\n",resolution_name(action->resolution_height))<0;
     if (action->java_major) failed |= fprintf(file,"major=%d\n",action->java_major) < 0;
     if (!strcmp(action->command,"install-java")) failed |= write_property(file,"repair","true") != 0;

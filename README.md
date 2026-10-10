@@ -39,8 +39,23 @@ resolutions; the HDMI output mode depends on the console/display. Higher
 resolution can reduce performance.
 Game windows have edge resizing disabled on PS5.
 
-To add a modpack, copy a PolyMC/MultiMC ZIP or Modrinth `.mrpack` into
-`/data/ProsperoMC/imports` over FTP. In Library or Mods, press Square, choose
+To download a Modrinth modpack, open Mods and press Square or select
+**Modrinth Modpacks**. Search with the controller's on-screen keyboard or a
+USB keyboard, choose a project, then choose its release. The installer downloads
+the pack, Minecraft, its loader and required Java as a separate instance.
+Fabulously Optimized is the initial search. Alpha/beta/release labels are shown;
+the latest pack's PS5 execution still needs its own test.
+Failed game installation can be resumed by selecting the release again or its
+instance in Library. Downloads show byte progress and verify archive hashes.
+If Adoptium's API is unreachable, Java uses official Temurin GitHub releases
+with the same SHA256 and Windows x64 validation.
+The PS5 Java 8 backend resolves public hostnames through certificate-verified
+DNS over HTTPS, bootstrapped from Cloudflare's numeric resolver addresses.
+The bundled Wine title resolver supports only numeric addresses and localhost;
+without this compatibility service, downloads fail with UnknownHostException.
+
+For a local pack, copy a PolyMC/MultiMC ZIP or Modrinth `.mrpack` into
+`/data/ProsperoMC/imports` over FTP. In Library, press Square, choose
 the pack, and press X. Select the new instance to install its game and loader
 dependencies. Each pack keeps its own mods, configuration and worlds. Fabric,
 Quilt and Forge 1.12.2 manifests are supported; modern Forge/NeoForge and

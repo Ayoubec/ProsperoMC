@@ -6,7 +6,7 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 s = (root / 'artifacts/graphics-batching/ps5_screen.c').read_text()
 draw_start = s.index('static bool\nps5_try_deferred_draw(')
-start = s.index('   if (ps5_inflight_count &&', draw_start)
+start = s.index('   if (!ps5_deferred.count && ps5_inflight_count &&', draw_start)
 end = s.index('   if (!ps5_batch_copy_descriptors(', start)
 gate = s[start:end]
 assert s.index('simple_mtx_lock(&ps5_deferred_mutex);', draw_start) < start
@@ -19,6 +19,7 @@ c = r'''
 #include <stdio.h>
 struct ps5_context {unsigned descriptor_cache_count[3];};
 static unsigned ps5_inflight_count, polls, releases, creates;
+static struct {unsigned count;} ps5_deferred;
 static bool ready;
 static struct ps5_context *owner;
 static bool ps5_draw_batch_retire_one_locked(bool wait) {
@@ -40,6 +41,9 @@ static void copy(struct ps5_context *context) {
 }
 int main(void) {
  struct ps5_context ctx={0};
+ ready=true;ps5_inflight_count=1;ps5_deferred.count=1;copy(&ctx);
+ assert(!polls && !releases && creates==3 && ps5_inflight_count==1);
+ ps5_deferred.count=0;creates=0;
  ready=true;ps5_inflight_count=1;copy(&ctx);
  assert(releases==1 && !creates && !ps5_inflight_count);
  for(unsigned i=0;i<3;i++)assert(ctx.descriptor_cache_count[i]==255);

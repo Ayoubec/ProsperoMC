@@ -64,14 +64,16 @@ class LauncherTests(unittest.TestCase):
         self.root.mkdir()
         self.blobs = {}
         self.hits = []
+        self.codes = {}
         blobs = self.blobs
         hits = self.hits
+        codes = self.codes
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(handler):
                 hits.append(handler.path)
                 if handler.path in blobs:
-                    handler.send_response(200)
+                    handler.send_response(codes.get(handler.path,200))
                     handler.end_headers()
                     handler.wfile.write(blobs[handler.path])
                 else:
@@ -304,6 +306,65 @@ class LauncherTests(unittest.TestCase):
         pack.write_bytes(zipped({"modrinth.index.json": json.dumps(manifest)}))
         self.request(ok=False, command="import-pack", id="bad", source=pack)
         self.assertFalse((self.root / "instances/bad").exists())
+
+    def remote_pack_fixture(self):
+        self.request(command="settings", modrinthApi=self.url + "/modrinth")
+        archive=zipped({"modrinth.index.json":json.dumps({"formatVersion":1,"game":"minecraft",
+            "name":"Remote Pack","dependencies":{"minecraft":"1.12.2"},"files":[]}),
+            "overrides/config/test.cfg":b"pack config"})
+        cache=self.root / "imports/project-release.mrpack"
+        cache.parent.mkdir(exist_ok=True)
+        cache.write_bytes(archive)
+        file={"filename":"pack.mrpack","primary":True,"url":"https://cdn.modrinth.com/data/project/versions/release/pack.mrpack",
+              "size":len(archive),"hashes":{"sha1":hashlib.sha1(archive).hexdigest(),"sha512":hashlib.sha512(archive).hexdigest()}}
+        metadata={"id":"release","project_id":"project","name":"Remote Pack release",
+                  "game_versions":["1.12.2"],"loaders":["minecraft"],"files":[file]}
+        self.blobs["/modrinth/version/release"]=json.dumps(metadata).encode()
+        self.blobs["/modrinth/project/project/version"]=json.dumps([metadata]).encode()
+        return metadata
+
+    def test_remote_modpack_search_pagination_and_release_selection(self):
+        self.remote_pack_fixture()
+        query="Fabulously Optimized"
+        suffix="?limit=24&offset=24&index=relevance&facets="+urllib.parse.quote_plus('[["project_type:modpack"]]')+"&query="+urllib.parse.quote_plus(query)
+        self.blobs["/modrinth/search"+suffix]=json.dumps({"total_hits":25,"hits":[
+            {"project_type":"modpack","project_id":"project","title":"Pack","description":"Description\nline"}]}).encode()
+        self.request(command="pack-search",query=query,offset="24")
+        view=props(self.root / "launcher-view.properties")
+        self.assertEqual(view["remote.pack.0.id"],"project")
+        self.assertEqual(view["remote.offset"],"24")
+        self.assertEqual(view["remote.pack.0.description"],"Description line")
+        self.request(command="pack-versions",projectId="project")
+        self.assertEqual(props(self.root / "launcher-view.properties")["remote.version.0.id"],"release")
+        self.request(ok=False,command="pack-versions",projectId="missing")
+        self.assertEqual(props(self.root / "launcher-view.properties")["remote.version.count"],"0")
+
+    def test_remote_pack_installs_game_runtime_and_resumes_failed_install(self):
+        self.remote_pack_fixture()
+        self.remove_runtime(8);self.publish_java(8)
+        client=self.blobs.pop("/client.jar")
+        self.request(ok=False,command="pack-download",projectId="project",packVersion="release")
+        folder=self.root / "instances/modrinth-project-release"
+        self.assertEqual(props(folder / "instance.properties")["installed"],"false")
+        self.assertEqual((folder / ".minecraft/config/test.cfg").read_bytes(),b"pack config")
+        self.blobs["/client.jar"]=client
+        self.request(command="pack-download",projectId="project",packVersion="release")
+        self.assertEqual(props(folder / "instance.properties")["installed"],"true")
+        self.assertTrue((self.root / "runtimes/java8/bin/server/jvm.dll").exists())
+        self.assertTrue((folder / "natives/lwjgl64.dll").exists())
+        self.assertTrue((self.root / "assets/objects" / self.asset_hash[:2] / self.asset_hash).exists())
+        before=len(self.hits)
+        self.request(command="pack-download",projectId="project",packVersion="release")
+        self.assertEqual(self.hits[before:],["/modrinth/version/release"])
+
+    def test_remote_pack_rejects_archive_hash_and_project_mismatch(self):
+        metadata=self.remote_pack_fixture()
+        self.request(ok=False,command="pack-download",projectId="other",packVersion="release")
+        metadata["files"][0]["hashes"]["sha512"]="0"*128
+        self.blobs["/modrinth/version/release"]=json.dumps(metadata).encode()
+        response=self.request(ok=False,command="pack-download",projectId="project",packVersion="release")
+        self.assertIn("SHA512 mismatch",response["message"])
+        self.assertFalse((self.root / "instances/modrinth-project-release").exists())
 
     def test_pack_zip_traversal_and_unsupported_components(self):
         pack = self.base / "evil.zip"
@@ -567,6 +628,23 @@ class LauncherTests(unittest.TestCase):
         self.request(command="install-java", major="16")
         self.assertTrue((self.root / "runtimes/java16/bin/java.exe").is_file())
         self.assertEqual(props(self.root / "launcher-view.properties")["java.1.major"], "16")
+
+    def test_java_api_failure_uses_official_release_asset_and_hash(self):
+        key=self.publish_java(17)
+        self.codes[key]=503
+        archive=self.blobs["/java17.zip"]
+        asset={"name":"OpenJDK17U-jre_x64_windows_hotspot_17.0.0_1.zip","size":len(archive),
+               "browser_download_url":self.url+"/java17.zip","digest":"sha256:"+hashlib.sha256(archive).hexdigest()}
+        self.blobs["/github/repos/adoptium/temurin17-binaries/releases/latest"]=json.dumps({"assets":[asset]}).encode()
+        self.request(command="settings",javaGithubApi=self.url+"/github")
+        self.request(command="install-java",major="17")
+        self.assertTrue((self.root / "runtimes/java17/bin/server/jvm.dll").is_file())
+        self.remove_runtime(17)
+        asset["digest"]="sha256:"+"0"*64
+        self.blobs["/github/repos/adoptium/temurin17-binaries/releases/latest"]=json.dumps({"assets":[asset]}).encode()
+        response=self.request(ok=False,command="install-java",major="17")
+        self.assertIn("SHA256 mismatch",response["message"])
+        self.assertFalse((self.root / "runtimes/java17").exists())
 
     def test_java_no_jre_or_jdk_descriptive_error(self):
         self.request(command="settings", javaApi=self.url + "/java")

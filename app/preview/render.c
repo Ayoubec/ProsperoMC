@@ -38,7 +38,23 @@ static void load(const char *path) {
         else if(!strcmp(line,"auth.username")) snprintf(view.username,sizeof(view.username),"%s",value);
         else if(!strcmp(line,"username")||!strcmp(line,"settings.username")) snprintf(view.username,sizeof(view.username),"%s",value);
         else if(!strcmp(line,"settings.accountMode")) snprintf(view.account_mode,sizeof(view.account_mode),"%s",value);
-        else if(sscanf(line,"instance.%d.%99s",&n,prop)==2&&n>=0&&n<PM_MAX_INSTANCES) {
+        else if(!strcmp(line,"remote.pack.count"))view.remote_count=atoi(value);
+        else if(!strcmp(line,"remote.version.count"))view.remote_version_count=atoi(value);
+        else if(!strcmp(line,"remote.offset"))view.remote_offset=atoi(value);
+        else if(!strcmp(line,"remote.total"))view.remote_total=atoi(value);
+        else if(!strcmp(line,"remote.projectId"))snprintf(view.remote_project,sizeof(view.remote_project),"%s",value);
+        else if(sscanf(line,"remote.pack.%d.%99s",&n,prop)==2&&n>=0&&n<24) {
+            PmRemotePack *p=&view.remote_packs[n];
+            if(!strcmp(prop,"id"))snprintf(p->id,sizeof(p->id),"%s",value);
+            if(!strcmp(prop,"name"))snprintf(p->name,sizeof(p->name),"%s",value);
+            if(!strcmp(prop,"description"))snprintf(p->description,sizeof(p->description),"%s",value);
+        } else if(sscanf(line,"remote.version.%d.%99s",&n,prop)==2&&n>=0&&n<64) {
+            PmPackRelease *p=&view.remote_versions[n];
+            if(!strcmp(prop,"id"))snprintf(p->id,sizeof(p->id),"%s",value);
+            if(!strcmp(prop,"name"))snprintf(p->name,sizeof(p->name),"%s",value);
+            if(!strcmp(prop,"game"))snprintf(p->game,sizeof(p->game),"%s",value);
+            if(!strcmp(prop,"loader"))snprintf(p->loader,sizeof(p->loader),"%s",value);
+        } else if(sscanf(line,"instance.%d.%99s",&n,prop)==2&&n>=0&&n<PM_MAX_INSTANCES) {
             PmInstance *i=&view.instances[n];
             if(!strcmp(prop,"id")) snprintf(i->id,sizeof(i->id),"%s",value);
             if(!strcmp(prop,"name")) snprintf(i->name,sizeof(i->name),"%s",value);
@@ -69,6 +85,7 @@ int main(int argc,char **argv) {
     if(argc<3) {fprintf(stderr,"Usage: render output.ppm screen-number [launcher-view.properties|--empty]\n");return 2;}
     fixture();if(argc>3) {if(!strcmp(argv[3],"--empty")) memset(&view,0,sizeof(view));else if(strcmp(argv[3],"--packs"))load(argv[3]);}
     pm_frontend_init(&f);f.screen=(PmScreen)atoi(argv[2]);
+    if(argc>4) {f.remote_browser=1;f.remote_stage=!strcmp(argv[4],"--releases");f.search_editor=!strcmp(argv[4],"--search");}
     if(argc>3 && !strcmp(argv[3],"--packs")) {
         f.pack_picker=1;view.pack_count=2;
         strcpy(view.packs[0].name,"My Forge 1.12.2.zip");strcpy(view.packs[1].name,"Forest adventures.mrpack");

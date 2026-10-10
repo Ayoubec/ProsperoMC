@@ -246,7 +246,9 @@ after = after.replace(anchor, '''   /* Successful terrain groups must not synchr
 start = after.index('static bool\nps5_try_deferred_draw(')
 anchor = '   if (!ps5_batch_copy_descriptors(base, saved, storage)) {'
 assert after[start:].count(anchor) == 1
-after = after[:start] + after[start:].replace(anchor, '''   if (ps5_inflight_count &&
+after = after[:start] + after[start:].replace(anchor, '''   /* Retire between batches only: queued draws retain publication intervals
+    * and resources until their batch is submitted. */
+   if (!ps5_deferred.count && ps5_inflight_count &&
        (!context->descriptor_cache_count[0] ||
         !context->descriptor_cache_count[1] ||
         !context->descriptor_cache_count[2]))

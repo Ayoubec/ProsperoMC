@@ -96,12 +96,12 @@ purpose = "Upstream legacy varying mapping, lowered client-array draws and EGL H
 name = "ProsperoMC legacy quad batching"
 base_source_revision = "738f94cbdf6ff1de0376dc1cd4ce1229fd640730"
 file = "artifacts/graphics-batching/smooth-legacy-batching.patch"
-sha256 = "c075a8acfab2e1725c68cca2288f8785dca1eba526ed5d3a2b8ab54417222a9a"
-runtime_archive_sha256 = "f2b19b5daa13dd29ab0bf06a3e6c3ee1a89f396f8e68131adc76ae90e4beb19d"
-sdk_manifest_sha256 = "0998a1203128c3b1caba082ada5c048fbb30da8ba07e7b7dc85c9c8bb3dc8e1f"
+sha256 = "5d1859516250dbd5991385c5ad5d2078f1816cc27926125111b69d0d97aabc23"
+runtime_archive_sha256 = "2e08f5b57fc6734a9b726cbc80332d86e58ad54ce515d93b4c2dd23e12108dc3"
+sdk_manifest_sha256 = "78bf6f91e7450554cd83dc3ae04be562930aa97fba035d257cef1ab9535cb8fe"
 batch_timings = true
 license = "GPL-3.0-or-later"
-purpose = "Retain legacy batching and owned-buffer fixes; reclaim ready FIFO descriptors without waiting before empty-cache allocation, recycle retired descriptors, reuse byte-verified shader layouts, enable upstream two-worker native command preparation and worker-local byte-verified shader hits, log only batch errors, and disable hot-path profiling in the draw driver and native backend"
+purpose = "Retain legacy batching and owned-buffer fixes; reclaim ready FIFO descriptors only between batches without waiting before empty-cache allocation, recycle retired descriptors, reuse byte-verified shader layouts, enable upstream two-worker native command preparation and worker-local byte-verified shader hits, log only batch errors, and disable hot-path profiling in the draw driver and native backend"
 
 [[local_patch]]
 name = "0672-win32u-ps5-fixed-game-window.patch"

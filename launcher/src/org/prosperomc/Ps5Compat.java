@@ -33,6 +33,7 @@ public final class Ps5Compat {
             private static final long serialVersionUID=1L;
             { put("SecureRandom.PS5Kernel",KernelRandom.class.getName()); }
         },1);
+        Ps5Dns.install();
         // Netty otherwise enumerates adapters to identify even local channels.
         // Its supported override uses a random local identifier, as its own
         // fallback does on a machine with no suitable adapter.

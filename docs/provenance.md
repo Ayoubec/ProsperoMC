@@ -168,3 +168,17 @@ Cross-device joining remains unverified (one PC status connection was refused).
 The supplied Windows runtime is Eclipse Adoptium Temurin JRE 8.0.504+1, x64.
 Its license/notices are retained when copied into the local data package.
 User Minecraft content and credentials are not checked into source control.
+
+Direct Modrinth pack discovery uses the official v2 search, project-version and
+version endpoints, matching PolyMC's project/release flow. The downloaded
+`.mrpack` goes through the existing verified importer and Minecraft installer.
+See [Modrinth API](https://docs.modrinth.com/api/operations/searchprojects/).
+Java's fallback downloads official Eclipse Temurin release assets from GitHub,
+using the release asset SHA256 or its publisher-provided checksum file.
+
+The packaged prospero-win `wine/ps5/pw_ws2_32_libc.c` explicitly rejects public
+names with EAI_NONAME. A Java 8 name-service proxy supplies IPv4 records through
+[Cloudflare's JSON DoH endpoint](https://developers.cloudflare.com/1.1.1.1/encryption/dns-over-https/make-api-requests/dns-json/),
+using numeric resolver addresses to bootstrap. Standard resolver and destination
+TLS certificate checks remain enabled. The packaged Java 8 passed a real DoH
+lookup plus Modrinth HTTPS 200 on the host; PS5 verification remains pending.

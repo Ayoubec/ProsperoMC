@@ -13,6 +13,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -136,9 +137,49 @@ final class JavaRuntime {
                 "/hotspot?architecture=x64&image_type="+kind+"&os=windows&vendor=eclipse",metadata);
         } catch(IOException e) {
             if(e.getMessage()!=null&&e.getMessage().startsWith("HTTP 404"))return Collections.emptyList();
+            if(!app.settings.containsKey("javaApi")||app.settings.containsKey("javaGithubApi")) {
+                app.progress("installing","Java API unavailable; checking official Temurin releases",0,4);
+                return githubRelease(major,kind);
+            }
             throw e;
         }
         return Json.arr(Json.parse(FilesUtil.read(metadata)));
+    }
+
+    /** Same publisher and hash checks, when the Adoptium API cannot be reached. */
+    private List<Object> githubRelease(int major,String kind)throws IOException {
+        String base=app.settings.getOrDefault("javaGithubApi","https://api.github.com").replaceAll("/+$","");
+        Path metadata=app.root.resolve("cache/java"+major+"-github.json");
+        FilesUtil.refresh(base+"/repos/adoptium/temurin"+major+"-binaries/releases/latest",metadata);
+        Map<String,Object> release=Json.obj(Json.parse(FilesUtil.read(metadata)));
+        if(Boolean.TRUE.equals(release.get("draft"))||Boolean.TRUE.equals(release.get("prerelease")))
+            throw new IOException("Java provider returned a non-release build");
+        for(Object item:Json.arr(release.get("assets"))) {
+            Map<String,Object> asset=Json.obj(item);
+            String name=Json.text(asset,"name");
+            if(!name.startsWith("OpenJDK"+major+"U-"+kind+"_x64_windows_hotspot_")||!name.endsWith(".zip"))continue;
+            String checksum=Json.text(asset,"digest");
+            if(checksum.startsWith("sha256:"))checksum=checksum.substring(7);
+            if(!checksum.matches("[a-fA-F0-9]{64}")) {
+                Map<String,Object> checksumAsset=null;
+                for(Object candidate:Json.arr(release.get("assets"))) {
+                    Map<String,Object> a=Json.obj(candidate);
+                    if((name+".sha256.txt").equals(Json.text(a,"name")))checksumAsset=a;
+                }
+                if(checksumAsset==null)throw new IOException("Official Java SHA256 file missing");
+                Path check=app.root.resolve("cache/java"+major+"-sha256.txt");
+                FilesUtil.refresh(Json.text(checksumAsset,"browser_download_url"),check);
+                checksum=FilesUtil.read(check).trim().split("\\s+")[0];
+            }
+            if(!checksum.matches("[a-fA-F0-9]{64}"))throw new IOException("Official Java SHA256 invalid");
+            Map<String,Object> pkg=new LinkedHashMap<String,Object>();
+            pkg.put("checksum",checksum);pkg.put("link",Json.text(asset,"browser_download_url"));pkg.put("size",asset.get("size"));
+            Map<String,Object> binary=new LinkedHashMap<String,Object>();
+            binary.put("architecture","x64");binary.put("os","windows");binary.put("image_type",kind);binary.put("package",pkg);
+            Map<String,Object> result=new LinkedHashMap<String,Object>();result.put("binary",binary);
+            return Collections.<Object>singletonList(result);
+        }
+        return Collections.emptyList();
     }
 
     private Info provision(int major,Path destination,boolean repair) throws IOException {

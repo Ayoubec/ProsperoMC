@@ -699,3 +699,68 @@ baseline27.8%; normalizeforview/drawcount/time. Currenttimersremainoptin1.
 AssumegameRUNNINGuntilreplyconfirmsclosed; do notwriteconsolebinarywithoutfreshclose.
 Ifmissesimprovebutqueuepersameworkloadunchanged, targetGLproducer/driver cost
 with sparse sampling, not another blanket GPU/presenter/worker change.
+
+
+## Current checkpoint — 2026-10-10: native Modrinth downloads and DNS
+This section supersedes earlier active-build/retest instructions. All builds and
+uploads have finished. User confirmed closed before both app update and later
+JAR-only DNS fix; user now intends to restart the PS5. Do not replace files after
+that without a new close confirmation.
+
+Implemented Mods -> Modrinth Modpacks/Square: search with pad keyboard/USB,
+24-result pages, project/release selection (up to64 latest releases), alpha/beta
+labels and direct download into a separate instance. Uses SHA1/SHA512 mrpack
+verification and existing importer -> Minecraft/Fabric/Quilt/legacyForge/Java
+installer. Library Square retains local pack import. A failed game install can
+resume; unrelated existing instance IDs are refused. Byte progress is visible.
+Adoptium API TLS failed on this host with Java8, Java21 and Python; fallback to
+official Temurin GitHub assets verifies SHA256 and existing x64 PE/runtime checks.
+
+37 backend integration tests passed; 3 remote tests repeated against final pack
+logic; native frontend and bridge +4 staging checks passed; native browser,
+release picker and search previews visually inspected. Actual packaged Java8
+installed latest listed Fabulously Optimized 15.0.0-alpha.5 for Minecraft26.3,
+Fabric0.19.5 and Java25.0.4.1 in artifacts/live-downloads/data. RealJava17.0.20.1
+also downloaded/verified. Entire host installation passed, NOT PS5 gameplay.
+Receipt: artifacts/live-downloads/receipt.json. Nothing from this large host
+smoke folder was copied unnecessarily to PS5.
+
+First PS5 Modrinth test failed with UnknownHostException. Read artifacts/
+console-modrinth-first-search/logs_session-2.log. Exact upstream resolver
+wine/ps5/pw_ws2_32_libc.c deliberately rejects every public hostname. Added small
+Ps5Dns Java8 name-service proxy using certificate-verified JSON DoH through
+1.1.1.1/1.0.0.1 numeric bootstrap. No disabled TLS checks or hardcoded CDN IPs.
+Invoked from existing Ps5Compat.localAddress for PS5 Java8 only. Real bundledJava8
+DNS lookup + Modrinth HTTPS200 passed on host; tests/launcher/test_dns.py checks
+actual Java8 service, alias records, loopback and rejection of invalidIPv4. PASS.
+Only JAR/reports reuploaded after user freshly confirmed closed. Console download
+retest still required after restart. Latest Fabulously Optimized game execution
+requires a separate modern Java/Minecraft/LWJGL compatibility check.
+
+Renderer: restrict opportunistic descriptor retirement to empty/current batch
+boundaries; retain workers2, TLS shader cache, publication/legacy fixes and coarse
+timing counters. Generated source gate/retirement tests plus build's ASan/UBSan
+checks, compiled capabilities/archive checks PASS. Missing chunks no longer occur
+according to user's retest. FPS is NOT improved:8chunks max65,drops40s;16chunks
+18-21;back8 41-63. Root remaining producer cost (~20us/draw, high count at16)
+remains unsolved; do not call the safe boundary restriction a performance fix.
+Previous reuse miss ratio dropped27.8%->~1.88% without meaningful queue savings.
+
+Current deployed hashes:
+- launcher JAR: 049b879c2970b5321dcb8724203f97adcb90e67e2b98556a87292b084f8d38ab
+- eboot: afa8ac0d8c157adc3e7247851d6e321d518b0aaa5af994d9263e906db34a678f
+- win32u: 0bd1db010064c2c801e479aa68f787241886df3e9b5c022b9f9068ff338a508c
+- ntdll preserved: 1c86a5eab801b5a2246f17543b5b7a938d3825b64e618fa9f58cb2f129906bd8
+
+Deployment: /data/ProsperoMC and /data/homebrew/PPSA99888 only. Worlds, options,
+mods, runtimes and music preserved. Final ELF/JAR readback passed before DNS-only
+JAR update; latter upload verified pending JAR bytes and reports before rename.
+App-update first attempt stopped on stale EBOOT comparison before publishing
+EBOOT; regenerated its comparison and completed the same scoped deployment.
+No active tool sessions/builds/uploads remain. Do not spawn subagents.
+
+User asked to launch then notify before restart: FTP does not support opening the
+app; explained they can restart now and reopen themselves. Await download results.
+If still failing, read fresh backend logs; do not infer empty search or disableTLS.
+Three preexisting deleted sce_sys source PNGs are USER changes; leave them
+untouched/excluded from commit. Commit/push source and docs to Ayoubec/ProsperoMC.

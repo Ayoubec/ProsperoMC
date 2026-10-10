@@ -81,6 +81,25 @@ int main(void) {
     view.pack_count=1;strcpy(view.packs[0].name,"My pack.mrpack");strcpy(view.packs[0].source,"Z:\\data\\ProsperoMC\\imports\\My pack.mrpack");
     assert(press(PM_KEY_CONFIRM));assert(!f.pack_picker && !strcmp(a.command,"import-pack"));
     assert(!strcmp(a.source,view.packs[0].source));
+    /* Remote packs keep project/release selection separate and accept pad/USB searches. */
+    f.screen=PM_MODS;assert(press(PM_KEY_SECONDARY));assert(f.remote_browser&&!strcmp(a.command,"pack-search"));
+    assert(!strcmp(a.query,"Fabulously Optimized"));
+    view.remote_count=1;strcpy(view.remote_packs[0].id,"project");
+    view.remote_total=25;
+    assert(press(PM_KEY_RIGHT));assert(a.offset==24&&!strcmp(a.command,"pack-search"));
+    view.remote_offset=24;assert(!press(PM_KEY_RIGHT));
+    assert(press(PM_KEY_LEFT));assert(a.offset==0);
+    assert(press(PM_KEY_CONFIRM));assert(!strcmp(a.command,"pack-versions")&&!strcmp(a.project_id,"project"));
+    view.remote_version_count=1;strcpy(view.remote_project,"project");strcpy(view.remote_versions[0].id,"release");
+    view.busy=1;assert(!press(PM_KEY_CONFIRM));view.busy=0;
+    assert(press(PM_KEY_CONFIRM));assert(!strcmp(a.command,"pack-download")&&!strcmp(a.pack_version,"release"));
+    assert(!press(PM_KEY_BACK));assert(!f.remote_stage);
+    assert(!press(PM_KEY_SECONDARY));assert(f.search_editor);
+    f.query[0]=0;pm_frontend_text(&f,'A');pm_frontend_text(&f,'B');pm_frontend_text(&f,8);
+    assert(!strcmp(f.query,"A"));
+    f.search_key=39;assert(press(PM_KEY_CONFIRM));assert(!strcmp(a.query,"A"));
+    assert(!f.search_editor);
+    assert(!press(PM_KEY_BACK));assert(!f.remote_browser);
     /* Pointer selection uses visible rows without accidentally launching them. */
     pm_frontend_init(&f);view.busy=0;view.instance_count=2;
     strcpy(view.instances[0].id,"first");strcpy(view.instances[1].id,"second");

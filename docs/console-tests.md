@@ -249,3 +249,9 @@ Ready-descriptor reuse module uploaded and executable+bothreports verified:
 9d2b8f1534f0d371c19e840c7990724500d6067230a1ceed00efbc77a1cbfb56.
 Retains the coarse counters and two workers. FPS/queue-time/miss-rate effect
 awaits same-world8/16 still/turning retest followed by clean close.
+
+2026-10-10: batch-boundary candidate removes reported missing chunks, but no FPS
+improvement (8max65/drops40s;16 18-21;back8 41-63). Native Modrinth browser deployed.
+First search failed UnknownHostException: upstream numeric-only resolver. DNS
+JAR fix uploaded after fresh closed confirmation. Host Java8 DoH/HTTPS200 passed;
+console downloads and modern Fabulously Optimized launch remain unverified.

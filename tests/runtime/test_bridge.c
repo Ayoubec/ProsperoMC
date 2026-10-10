@@ -27,6 +27,11 @@ int main(void)
     assert(!strcmp(view.java_runtimes[0].version,"1.8.0_504") && view.java_runtimes[1].major==21 && !view.java_runtimes[1].valid);
     assert(!pm_bridge_auto_catalog(root,&view));
     view.version_count=0; assert(pm_bridge_auto_catalog(root,&view)); assert(!pm_bridge_auto_catalog(root,&view));
+    write_file(name,"remote.pack.count=1\nremote.offset=24\nremote.total=25\nremote.pack.0.id=project\nremote.pack.0.name=Pack\nremote.pack.0.description=Description\nremote.projectId=project\nremote.version.count=1\nremote.version.0.id=release\nremote.version.0.game=1.12.2\nremote.version.0.loader=fabric\nremote.pack.24.id=out-of-bounds\n");
+    assert(!pm_bridge_view(root,&view));
+    assert(view.remote_count==1&&view.remote_offset==24&&view.remote_total==25);
+    assert(!strcmp(view.remote_packs[0].id,"project")&&!strcmp(view.remote_versions[0].id,"release"));
+    assert(!strcmp(view.remote_versions[0].loader,"fabric")&&!strcmp(view.remote_project,"project"));
     strcpy(action.command,"install-java"); action.java_major=21; assert(!pm_bridge_request(root,&action));
     snprintf(name,sizeof(name),"%s/request.properties",root);
     FILE *request=fopen(name,"rb"); assert(request); size_t request_bytes=fread(content,1,sizeof(content)-1,request); fclose(request); content[request_bytes]=0;
@@ -35,6 +40,12 @@ int main(void)
     strcpy(action.command,"detect-java"); assert(!pm_bridge_request(root,&action));
     strcpy(action.command,"create-install"); strcpy(action.version,"1.12.2"); assert(!pm_bridge_request(root,&action));
     strcpy(action.command,"catalog"); assert(!pm_bridge_request(root,&action));
+    strcpy(action.command,"pack-search");strcpy(action.query,"Fabulously Optimized");action.offset=24;
+    assert(!pm_bridge_request(root,&action));
+    request=fopen(name,"rb");assert(request);request_bytes=fread(content,1,sizeof(content)-1,request);fclose(request);content[request_bytes]=0;
+    assert(strstr(content,"query=Fabulously Optimized\n")&&strstr(content,"offset=24\n"));
+    action.query[0]=0;action.offset=0;
+    strcpy(action.command,"catalog");
     strcpy(action.name,"bad\ncommand=export"); assert(pm_bridge_request(root,&action));
     action.name[0]=0; strcpy(action.command,"run-exe"); assert(pm_bridge_request(root,&action));
     snprintf(name,sizeof(name),"%s/profiles",root); assert(!mkdir(name,0700));
