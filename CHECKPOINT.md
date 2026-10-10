@@ -764,3 +764,29 @@ app; explained they can restart now and reopen themselves. Await download result
 If still failing, read fresh backend logs; do not infer empty search or disableTLS.
 Three preexisting deleted sce_sys source PNGs are USER changes; leave them
 untouched/excluded from commit. Commit/push source and docs to Ayoubec/ProsperoMC.
+
+## 2026-10-10 — Fabulously Optimized alpha.4 / Minecraft 26.3 launch
+
+Console pack `modrinth-1KVo5zza-9toQ7Bv7` is installed and Java 25 starts.
+Fresh evidence: `artifacts/console-fo-launch-failure/logs_session-7.log`, seq566
+Wine NtCreateFile reports too many open files; Fabric's terminal exception
+cannot open its processed `fabric-command-api-v2` JAR (Windows FileSystemException
+Too many open files). CrashAssistant also logs unsupported CreateProcess error50,
+but Fabric continues afterwards; do not confuse that with this terminal failure.
+
+Native `pm_file_limit.h` prepares this process's RLIMIT_NOFILE before Wine starts:
+request at least4096 soft/hard handles, preserve higher limits, fall back to the
+existing hard limit if raising it is denied, and log before/after/error. No global
+kernel limits or game files changed. Wine in-process server skips init_limits;
+Wine ntdll also normally raises soft to existing hard, so the console readback is
+needed to establish whether the title hard limit was the binding constraint.
+
+Real host fixture lowered soft to64, raised to4096, opened1024 real descriptors,
+then confirmed a higher existing soft limit remained unchanged. Bridge and four
+package staging tests passed; PS5 cross-compile and executable ELF upload
+verification passed. User confirmed both apps closed before upload.
+Deployed only EBOOT and two reports; no Java/JAR/graphics/mods/world changes.
+EBOOT SHA256 `a5fe373469201d2f3b0f6c4c847820bd4527d545ef2862827d742c6978fc5383`.
+Await user launch retest, then read fresh logs for `PROSPEROMC file-limit` and
+next actual game exception if any. This is an uploaded fix for the observed
+failure, NOT a confirmed Minecraft26.3 gameplay pass. No builds/uploads running.

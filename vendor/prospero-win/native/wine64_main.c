@@ -24,6 +24,7 @@
 #include "pw_diagnostics.h"
 #undef PS5LOG_LOG
 #define PS5LOG_LOG(...) pw_diagnostics_log(__VA_ARGS__)
+#include "pm_file_limit.h"
 #ifndef PW_BUILD_ID
 #define PW_BUILD_ID "unknown"
 #endif
@@ -1050,6 +1051,7 @@ int main(int argc, char **argv)
     (void)pw_wine_launch_parse(argc, argv, catalog, catalog_count, &launch);
     (void)pw_diagnostics_open(library_root, PW_BUILD_ID,
                               launch.app ? launch.app->id : "launcher", launch.cycle);
+    pm_prepare_file_limit();
     PS5LOG_LOG("PW_WINE64 args argc=%d mode=%s profile=%s cycle=%u refused=%u", argc,
                launch.mode == PW_WINE_LAUNCH_GAME ? "game" : "launcher",
                launch.app ? launch.app->id : "-", (unsigned)launch.cycle, launch.refused);

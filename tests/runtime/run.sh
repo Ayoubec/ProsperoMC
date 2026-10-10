@@ -8,4 +8,7 @@ cc=${HOST_CC:-clang-18}
     "$root/vendor/prospero-win/src/pw_wine_launch.c" "$root/vendor/prospero-win/src/pw_app_profile.c" "$root/vendor/prospero-win/src/pw_game_profile.c" \
     -o "$root/build/tests/runtime-bridge"
 "$root/build/tests/runtime-bridge"
+"$cc" -std=c11 -O2 -Wall -Wextra -Werror -I"$root/vendor/prospero-win/native" \
+    "$root/tests/runtime/test_file_limit.c" -o "$root/build/tests/runtime-file-limit"
+"$root/build/tests/runtime-file-limit"
 python3 "$root/tests/runtime/test_stage.py"
