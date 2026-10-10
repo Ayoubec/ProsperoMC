@@ -41,8 +41,11 @@ public final class Main {
             else throw new IllegalArgumentException("Usage: --root PATH --request PATH | --execute-plan PATH");
         }
         if(root==null)throw new IllegalArgumentException("--root is required");
-        if(root.toString().replace('\\','/').equalsIgnoreCase("Z:/data/ProsperoMC")
-                &&System.getProperty("java.specification.version").equals("1.8"))Ps5Compat.localAddress();
+        if(root.toString().replace('\\','/').equalsIgnoreCase("Z:/data/ProsperoMC")) {
+            System.setProperty("prosperomc.ps5Dns","true");
+            System.setProperty("java.net.preferIPv4Stack","true");
+            if(System.getProperty("java.specification.version").equals("1.8"))Ps5Compat.localAddress();
+        }
         if(serve) {
             if(plan!=null||requestPath!=null)throw new IllegalArgumentException("--serve cannot be combined with a request or plan");
             serve(root);

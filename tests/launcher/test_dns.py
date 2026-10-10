@@ -17,6 +17,43 @@ JAVAC=next((p for p in (jdk/'bin/javac.exe',jdk/'bin/javac') if p.is_file()),Pat
 JAR=REPO/'artifacts/launcher/prosperomc-launcher.jar'
 
 class DnsTests(unittest.TestCase):
+    def test_modern_service_loader_resolves_and_rejects_invalid_answers(self):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                good='good.invalid' in self.path
+                self.send_response(200);self.end_headers()
+                self.wfile.write(json.dumps({'Status':0,'Answer':[
+                    {'type':5,'data':'alias.invalid'},
+                    {'type':1,'data':'127.0.0.1' if good else '999.0.0.1'}]}).encode())
+            def log_message(*args):pass
+        modern_home=Path(os.environ.get('JAVA25_HOME',str(REPO/'artifacts/live-downloads/data/runtimes/java25')))
+        modern=next((p for p in (modern_home/'bin/java.exe',modern_home/'bin/java',jdk/'bin/java.exe',jdk/'bin/java') if p.is_file()),Path(shutil.which('java') or 'java'))
+        server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
+        threading.Thread(target=server.serve_forever,daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory(dir=REPO/'artifacts') as temporary:
+                folder=Path(temporary);source=folder/'ModernDnsCheck.java'
+                source.write_text('''
+import java.net.*;
+public class ModernDnsCheck {
+ public static void main(String[] args)throws Exception {
+  if(!InetAddress.getByName("good.invalid").getHostAddress().equals("127.0.0.1"))throw new AssertionError();
+  if(!InetAddress.getByName("localhost").isLoopbackAddress())throw new AssertionError();
+  if(!InetAddress.getByName("127.0.0.1").isLoopbackAddress())throw new AssertionError();
+  try { InetAddress.getByName("bad.invalid");throw new AssertionError("Invalid answer accepted"); }
+  catch(UnknownHostException expected){}
+  System.out.println("MODERN_DNS_PASS Java "+System.getProperty("java.specification.version"));
+ }
+}''',encoding='utf-8')
+                subprocess.run([str(JAVAC),'--release','18','-cp',str(JAR),'-d',str(folder),str(source)],check=True,capture_output=True)
+                result=subprocess.run([str(modern),'-Dprosperomc.ps5Dns=true','-Djava.net.preferIPv4Stack=true',
+                    '-Dprosperomc.dnsEndpoint=http://127.0.0.1:%d/dns-query'%server.server_port,
+                    '-cp',str(folder)+os.pathsep+str(JAR),'ModernDnsCheck'],capture_output=True,text=True,timeout=30)
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertIn('MODERN_DNS_PASS',result.stdout)
+        finally:
+            server.shutdown();server.server_close()
+
     def test_java8_service_resolves_aliases_rejects_bad_answers_and_keeps_loopback(self):
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):

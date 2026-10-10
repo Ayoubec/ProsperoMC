@@ -1019,3 +1019,46 @@ then verify-graphics-upload.py 192.168.1.111. No rebuild required. Ask user to
 reopen, check actual name, run same Sodium-only26.2 world for at least a minute;
 retrieve latest logs to confirm GPU allocation exhaustion is gone before claiming
 crash fixed. All settings/worlds/mod enable-disable choices must be preserved.
+
+## 2026-10-10: Vulkan comparison, Java 25 DNS, first leak-fix deployment
+
+User reports OpenGL Sodium world still crashes; unmodded OpenGL is ~0.5 FPS;
+switching the game's Graphics API to Vulkan gives stable 59-60 FPS at16 chunks,
+including Sodium. VRR/FreeSync previously caused flicker; no monitor changes made.
+Read all eight scoped diagnostic slots into artifacts/console-gl-vulkan-comparison.
+They confirm real Vulkan backend: 1.4.354 radv Mesa26.2.0 (sessions1 and4), and
+OpenGL in session7. Minecraft reports Setting user: Ayoubec, so launch identity
+is not offline Player. Skin/profile/key API requests fail UnknownHostException
+for sessionserver.mojang.com and api.minecraftservices.com under Java25.
+Actual26.2 Hud.extractPlayerList bytecode checks keyPlayerList and suppresses
+Tab in a local single-player session with one listed player/no LIST objective.
+Absence of the Tab list alone is not evidence of offline authentication.
+
+Remote public stage report still had diagnostic EBOOT947a9d/JAR26082f/win32u9ecb80.
+Thus these OpenGL retests did NOT exercise the previously staged upload-lifetime
+fix or native profile-name field. User now explicitly confirms both apps closed.
+
+Added standard Java18+ InetAddressResolverProvider via a multi-release JAR:
+base classes still Java8; only provider classes under META-INF/versions/18 use
+Java18 API. Ps5ResolverProvider reuses Ps5Dns's existing bounded HTTPS lookup,
+address validation and normal certificate verification. Main enables it only
+for Z:/data/ProsperoMC; host invocations delegate to JVM built-in DNS. Java8 keeps
+its existing name-service implementation. No account tokens read or logged.
+Build scripts compile provider with --release18 using existingJDK21, add service
+registration and Multi-Release manifest. All42 launcher tests PASS, including
+DNS service loading with actual packaged WindowsJava25, Java8 DNS, bad answers,
+loopback/numeric addresses and correct class versions.
+
+Staged updated JAR and --app-update uploaded/byte-verified EBOOT, win32u,
+JAR, source patch, notices and both reports. Existing ntdll/music/art verified
+unchanged. Worlds/options/Vulkan selection/Java/mod choices/account data untouched.
+verify-graphics-upload receipt PASS; console world verification still pending.
+EBOOT9d0db696ac3bed10d1d338abb99ee6261abb1902e8ba2575aa41b199631281f6
+JAR5e62715284451204c10e461fefb77f0b147a49af0df7835f1f92d2070473cfa4
+win32u355d06be604ce8f07f61956a07a2a062dfac2b43842d77edd94bd77106a55c62
+
+User test questions pending: fully reopen, confirmAccountsAyoubec and skin with
+Vulkan; then explicitly selectOpenGL/restart and sameSodium-only26.2world for
+at least1minute, FPS/flashing/crash, leaveopenforlogs. Do not claim the console
+crash fixed until that test. Keep working Vulkan backend unchanged as reference.
+User artwork deletions still excluded from commits. Push DNS source changes.
