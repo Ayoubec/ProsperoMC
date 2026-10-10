@@ -25,6 +25,7 @@ c = r'''
 #include <stdio.h>
 #define VB_NUM 3
 #define VB_VERTEX 0
+#define PIPE_MAX_ATTRIBS 32
 #define PIPE_OK 0
 #define PIPE_ERROR_OUT_OF_MEMORY 1
 #define align(x,a) (((x)+(a)-1)/(a)*(a))
@@ -80,7 +81,7 @@ static int append_user(unsigned *release_count,struct pipe_resource **releasebuf
 int main(void){
  struct u_vbuf mgr={0};mgr.caps.attrib_element_unaligned=true;
  for(unsigned t=0;t<3;t++)mgr.fallback_vbs[t]=t;
- struct pipe_resource *queue[19],*driver[3]={0};unsigned count;
+ struct pipe_resource *queue[PIPE_MAX_ATTRIBS+VB_NUM],*driver[3]={0};unsigned count;
  for(unsigned d=0;d<1500;d++){
   count=0;assert(translation(&mgr,&count,queue,3,true));assert(count<=3);
   /* No retired owner is dropped before all borrowed buffers are bound. */
@@ -92,8 +93,8 @@ int main(void){
   assert(count==2);release_draw(NULL,count,queue);
  }
  count=0;assert(translation(&mgr,&count,queue,3,true));assert(count==3);
- for(unsigned i=0;i<16;i++)assert(append_user(&count,queue,true)==PIPE_OK);
- assert(count==19);release_draw(NULL,count,queue);
+ for(unsigned i=0;i<PIPE_MAX_ATTRIBS;i++)assert(append_user(&count,queue,true)==PIPE_OK);
+ assert(count==PIPE_MAX_ATTRIBS+VB_NUM);release_draw(NULL,count,queue);
  count=0;assert(append_user(&count,queue,false)==PIPE_ERROR_OUT_OF_MEMORY);
  assert(count==1);release_failure(NULL,count,queue);
  count=0;fail_type=1;assert(!translation(&mgr,&count,queue,3,true));assert(count==2);

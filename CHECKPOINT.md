@@ -996,3 +996,26 @@ Closed-state confirmation requested again because latest crash returned to the
 launcher; do not replace live app files. Console success/performance remains
 unverified for this ownership fix. Full-pack TooManyOpenFiles remains separate.
 User-deleted sce_sys source PNGs stay excluded from commits.
+
+Final build/staging completed successfully. Expanded sanitizer fixture to all
+32 PIPE_MAX_ATTRIBS plus three translated classes (35 retired-owner slots): PASS.
+Verified original libgallium.a member name util_u_vbuf.c.o is replaced exactly
+once. New patched library is linked into win32u; SDK and patch hashes verified.
+Signed FTP comparison views refreshed for both EBOOT and win32u.
+Public console launcher-view.properties reports Microsoft/signedIn=true and
+already contains a non-Player profile name in settings.username, confirming
+that Java received it and native raw-settings overlay caused the display bug.
+Private account file/tokens were NOT accessed.
+
+Source 03e6e27 pushed; CI run 38053942855 succeeded.
+Staged EBOOT 9d0db696ac3bed10d1d338abb99ee6261abb1902e8ba2575aa41b199631281f6
+JAR 5d31461f43354821fa517f8a14b8d9cc015cfefe59dfb67806d4b346e4444167
+win32u 355d06be604ce8f07f61956a07a2a062dfac2b43842d77edd94bd77106a55c62
+ntdll unchanged 1c86a5eab801b5a2246f17543b5b7a938d3825b64e618fa9f58cb2f129906bd8
+Combined source patch 0d1508900b4d3dffb0215fe79254f5da975ca11a6067e199b668dfdc21c2715c
+NOT YET UPLOADED: awaiting answer to async closed-state question. Once user
+confirms both apps closed, run deploy-ps5-patch.py --host192.168.1.111 --app-update,
+then verify-graphics-upload.py 192.168.1.111. No rebuild required. Ask user to
+reopen, check actual name, run same Sodium-only26.2 world for at least a minute;
+retrieve latest logs to confirm GPU allocation exhaustion is gone before claiming
+crash fixed. All settings/worlds/mod enable-disable choices must be preserved.
