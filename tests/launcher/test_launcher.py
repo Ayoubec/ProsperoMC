@@ -397,6 +397,19 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(props(self.root / "settings.properties")["microsoftClientId"],custom)
         self.assertEqual(props(self.root / "launcher-view.properties")["auth.provider"], "Custom application")
 
+    def test_account_display_name_and_completed_check(self):
+        private=self.root / "private"
+        private.mkdir()
+        (private / "account.json").write_text(json.dumps({"name":"OwnedPlayer","uuid":"a"*32,"accessToken":"PRIVATE-TOKEN"}))
+        self.request(command="settings",accountMode="microsoft",username="OfflineName")
+        view=props(self.root / "launcher-view.properties")
+        self.assertEqual(view["settings.username"],"OwnedPlayer")
+        self.assertNotIn("PRIVATE-TOKEN",(self.root / "launcher-view.properties").read_text())
+        response=self.request(command="auth-poll")
+        self.assertIn("already signed in",response["message"])
+        self.request(command="settings",accountMode="offline")
+        self.assertEqual(props(self.root / "launcher-view.properties")["settings.username"],"OfflineName")
+
     def test_prepare_jvm_exact_logging_dynamic_java_and_no_secrets(self):
         self.version["javaVersion"]["majorVersion"] = 25
         self.version["arguments"] = {"jvm": ["-Djava.library.path=${natives_directory}", "-cp", "${classpath}", {"rules": [{"action": "allow", "os": {"name": "windows"}}], "value": "-Dos.name=Windows 10"}], "game": ["--accessToken", "${auth_access_token}", "--username", "${auth_player_name}"]}

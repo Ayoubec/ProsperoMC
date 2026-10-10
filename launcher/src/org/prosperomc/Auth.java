@@ -106,7 +106,13 @@ final class Auth {
     }
     void poll()throws IOException {
         Path p=privateDir.resolve("auth-pending.json");
-        if(!Files.isRegularFile(p))throw new IOException("Start Microsoft device sign-in first");
+        if(!Files.isRegularFile(p)) {
+            if(Files.isRegularFile(privateDir.resolve("account.json"))) {
+                app.message="Microsoft account already signed in";
+                return;
+            }
+            throw new IOException("Start Microsoft device sign-in first");
+        }
         Map<String, Object> pending=Json.obj(Json.parse(FilesUtil.read(p)));
         // The provider owns expiry. A console wall-clock change must neither
         // discard a valid code nor make us hammer Microsoft's token endpoint.

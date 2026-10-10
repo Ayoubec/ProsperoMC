@@ -1,15 +1,19 @@
 """Use the packaged Java 8 name-service API, with numeric HTTP DNS fixtures."""
 import http.server
 import json
+import os
 from pathlib import Path
 import subprocess
+import shutil
 import tempfile
 import threading
 import unittest
 
 REPO=Path(__file__).resolve().parents[2]
-JAVA=REPO/'dist/PPSA99888/prosperomc/runtimes/java8/bin/java.exe'
-JAVAC=REPO/'.deps/host-jdk/jdk-21.0.8+9/bin/javac.exe'
+java8_home=Path(os.environ.get('JAVA8_HOME',os.environ.get('JAVA_HOME_8_X64',str(REPO/'dist/PPSA99888/prosperomc/runtimes/java8'))))
+JAVA=next((p for p in (java8_home/'bin/java.exe',java8_home/'bin/java') if p.is_file()),java8_home/'bin/java')
+jdk=Path(os.environ.get('JAVA_HOME',str(REPO/'.deps/host-jdk/jdk-21.0.8+9')))
+JAVAC=next((p for p in (jdk/'bin/javac.exe',jdk/'bin/javac') if p.is_file()),Path(shutil.which('javac') or 'javac'))
 JAR=REPO/'artifacts/launcher/prosperomc-launcher.jar'
 
 class DnsTests(unittest.TestCase):
@@ -42,7 +46,7 @@ public class DnsCheck {
  }
 }''',encoding='utf-8')
                 subprocess.run([str(JAVAC),'--release','8','-cp',str(JAR),'-d',str(folder),str(source)],check=True,capture_output=True)
-                result=subprocess.run([str(JAVA),'-Djava.net.preferIPv4Stack=true','-cp',str(folder)+';'+str(JAR),
+                result=subprocess.run([str(JAVA),'-Djava.net.preferIPv4Stack=true','-cp',str(folder)+os.pathsep+str(JAR),
                     'DnsCheck','http://127.0.0.1:%d/dns-query'%server.server_port],capture_output=True,text=True,timeout=30)
                 self.assertEqual(result.returncode,0,result.stdout+result.stderr)
                 self.assertIn('DNS_PASS',result.stdout)
