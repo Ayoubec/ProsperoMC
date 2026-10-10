@@ -20,9 +20,9 @@ still need separate console runs.
 | Online mod discovery | Modrinth search/download through backend requests; console online search is not implemented |
 | Mod dependencies | Compatible required Modrinth project dependencies resolved; unusual version-only dependencies need manual installation |
 | Instance packs | PolyMC/MultiMC ZIP import/export; Library pack picker reads `/data/ProsperoMC/imports` |
-| Modrinth packs | Native project search/pagination and release selection; direct `.mrpack` download with SHA1/SHA512, client filtering and overrides; installs required Minecraft/loader/Java and resumes failed installs; console download retest pending |
+| Modrinth packs | Native search, release selection and verified `.mrpack` installation; console downloads confirmed. Fabulously Optimized 26.2/26.3 runtime failures remain unresolved |
 | CurseForge packs | Manifest/service integration not implemented |
-| Microsoft accounts | Device OAuth, Xbox/XSTS, Minecraft entitlement/profile flow; publisher's own registered client ID required; no live account test performed |
+| Microsoft accounts | Phone QR/code with automatic device OAuth polling, Xbox/XSTS and Minecraft ownership checks; requested PolyMC public ID or optional custom ID. Complete console account sign-in remains unverified |
 | Offline play | Explicit local single-player mode; no multiplayer authentication |
 | Controller support | Native navigation with held-D-pad repeat; L1/R1 wheel bindings cycle the hotbar; USB wheel forwarding |
 | Launcher feedback | Focus transitions, animated progress and quiet navigation/confirmation sounds; native build verified, hardware retest pending |

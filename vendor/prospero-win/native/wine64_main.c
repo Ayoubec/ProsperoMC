@@ -832,6 +832,8 @@ static void run_launcher(void)
         PmAction action={0}; PmKey key=PM_KEY_NONE;
         int pointer_dx=0,pointer_dy=0,pointer_button=0,pointer_wheel=0;
         pw_diagnostics_tick(now_ns());
+        if (!pm_view.busy && pm_frontend.screen==PM_ACCOUNTS && tick%30==0)
+            (void)pm_bridge_view(library_root,&pm_view);
         if (pm_view.busy && tick%15==0) {
             int completed=pm_bridge_response_ready(library_root);
             (void)pm_bridge_view(library_root,&pm_view);

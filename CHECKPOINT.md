@@ -892,3 +892,55 @@ same26.2worldSodium-only one minute/FPS. Full pack/26.3 mod-loading failure rema
 unresolved; retrieve file-inventory from next full-mod run to guide that fix.
 Three USER deleted sce_sys source PNGs remain excluded. Push requested project
 source changes/checkpoint to Ayoubec/ProsperoMC; no other title/system changes.
+
+## 2026-10-10: device-flow polling and modern resource census
+
+Retest of 075db68: user says launcher reports expired/invalid device codes; modern
+Sodium-only 26.2 spends about a minute loading terrain, runs 4–7 FPS, then crashes.
+Both apps confirmed closed. Electricity interruption temporarily stopped FTP;
+user restored FTP before this upload. The 1 GiB GPU pool did NOT fix the crash.
+
+Full scoped session-3 log saved in artifacts/console-pool-signin-retest/game-full.log.
+Actual pool capacity confirmed 1 GiB. 5,223 arena exhaustion lines precede native
+allocation EAGAIN (80020023), then GL_OUT_OF_MEMORY in glNamedBufferStorage and
+Sodium GlBufferArena allocating 7,002,640 bytes. Wine CPU direct memory reaches
+2.59 GiB / 5,864 runs; GPU live-allocation count/bytes were not previously logged.
+No proof yet whether GPU backing leaks, fragments, or genuinely fills memory.
+Existing 8 rotated logs contain no fresh device-expiry exception; pending code
+had a 900-second lifetime. Console clock is about an hour behind the PC, which
+alone does not explain provider rejection. Do not claim a proven expiry cause.
+
+Auth now lets Microsoft determine code expiry, uses a monotonic polling gate,
+retains pending public code/URI in launcher views and binds polling to the client
+that issued it. Main.serve checks pending authorization automatically at the
+provider interval. Background checks do not overwrite user command responses;
+native Accounts reloads the view periodically without a title restart. Provider
+expired_token/authorization_declined/bad_verification_code clears the stale code
+and tells the user to request another. No TLS or ownership checks bypassed.
+
+Graphics adds O(1) allocation/lifetime accounting under the existing resource
+mutex. Only the first four arena/kernel failures print used/capacity/largest
+free interval and live counts/bytes for arena buffers, direct buffers and images,
+plus creation/destruction counts. Eliminates thousands of repeated failure lines;
+no new pool increase or rendering/synchronization change. Aliases are uncounted.
+This is a diagnostic build, NOT a claim that the world crash is fixed.
+
+Validation: all 39 launcher integration tests PASS. Fake HTTPS AuthSmoke also
+passed with the actual packaged Java 8: past/future wall-clock deadlines, polling
+interval, provider expiry, public-code persistence, automatic serve polling and
+user-command response isolation. Device tests do not call real Microsoft servers.
+Native frontend/bridge/real-handle/stage checks PASS; graphics cross-build and
+existing shader/cache/retirement/ASan/UBSan gates PASS.
+
+Staged complete package validated, --app-update upload and executable/JAR/report
+verification PASS; preserved ntdll, art/music, Java, worlds, mods and settings.
+EBOOT 947a9d429ecae60b6b9e75cfa0f72d873fb89ff107eb5279193ab1dece13fc1f
+JAR a130e1b8329559368f1494816db440098b4c218b878c5444813469be09321dbc
+win32u 6cedf3c3e59263f3b8e46037514965fc853852310799be8e425b08c1c27c295f
+SDK archive ed07d2c7874cff6c166d83b555ffc9094b150d9c2b2c0b0c8b36685f0cdb5b02
+
+Pending user tests requested asynchronously: fresh Microsoft Start sign-in and
+phone authorization while launcher stays open; then same Sodium-only 26.2 world.
+Read new resource census directly via FTP after the world test; diagnose the
+actual retaining path or memory budget before more allocator experiments.
+Full-pack TooManyOpenFiles remains unresolved and needs its next file census.

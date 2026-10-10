@@ -98,7 +98,8 @@ Requests use UTF-8 `key=value` lines. See the launcher documentation and [archit
 
 Microsoft sign-in shows a phone QR code, website address and short code in the
 launcher. This build uses the requested PolyMC public-client sign-in option and
-supports a custom client ID; see [Microsoft sign-in](docs/microsoft-sign-in.md).
+checks authorization automatically while kept open. It also supports a custom
+client ID; see [Microsoft sign-in](docs/microsoft-sign-in.md).
 
 Only Minecraft instances and internally generated Java profiles are offered. General PC-game importing and emulator functionality are absent. The previous JavaCraft probe is preserved locally in `artifacts/previous-javacraft-source.zip` and `artifacts/previous-project-tooling.zip`.
 

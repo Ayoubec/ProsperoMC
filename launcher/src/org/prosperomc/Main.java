@@ -61,8 +61,15 @@ public final class Main {
         Files.createDirectories(root);
         Path queued=root.resolve("request.properties"), active=root.resolve("request.inflight.properties");
         FilesUtil.properties(root.resolve("backend-ready.properties"),stringMap("ready","true"));
+        long nextAuthPoll=System.nanoTime()+5000000000L;
         for(;;) {
-            if(!Files.isRegularFile(queued)) { Thread.sleep(50); continue; }
+            if(!Files.isRegularFile(queued)) {
+                if(Files.isRegularFile(root.resolve("private/auth-pending.json"))&&System.nanoTime()-nextAuthPoll>=0) {
+                    perform(root,stringMap("command","auth-poll"),true);
+                    nextAuthPoll=System.nanoTime()+5000000000L;
+                }
+                Thread.sleep(50); continue;
+            }
             FilesUtil.atomic(queued,active);
             String command=FilesUtil.properties(active).getOrDefault("command","");
             boolean ok=perform(root,active);
@@ -72,8 +79,14 @@ public final class Main {
         }
     }
     static boolean perform(Path root,Path requestPath)throws Exception {
+        return perform(root,FilesUtil.properties(requestPath));
+    }
+    static boolean perform(Path root,Map<String,String> request)throws Exception {
+        return perform(root,request,false);
+    }
+    static boolean perform(Path root,Map<String,String> request,boolean background)throws Exception {
         Main app;
-        try { app=new Main(root,FilesUtil.properties(requestPath)); }
+        try { app=new Main(root,request); }
         catch(IOException e) {
             String failure="Invalid launcher request/settings: "+e.getMessage();
             FilesUtil.properties(root.resolve("response.properties"),stringMap("ok","false","command","","message",failure));
@@ -117,7 +130,8 @@ public final class Main {
             app.status="error";
             FilesUtil.properties(app.root.resolve("launcher-view.properties"),stringMap("status","error","detail",app.message,"instance.count","0","version.count","0","mod.count","0"));
         }
-        FilesUtil.properties(app.root.resolve("response.properties"), stringMap("ok", Boolean.toString(ok), "command", command, "message", app.message));
+        // Background authorization must not complete a queued user command.
+        if(!background)FilesUtil.properties(app.root.resolve("response.properties"), stringMap("ok", Boolean.toString(ok), "command", command, "message", app.message));
         System.out.println((ok?"OK: ":"ERROR: ")+app.message);
         return ok;
     }
@@ -679,6 +693,7 @@ public final class Main {
         for(Map.Entry<String, String> e:settings.entrySet())if(e.getKey().matches("java[0-9]+"))v.put("settings."+e.getKey(), e.getValue());
         v.put("auth.signedIn", Boolean.toString(Files.isRegularFile(root.resolve("private/account.json"))));
         v.put("auth.provider",auth.provider());
+        auth.pendingView();
         n=0;
         for(JavaRuntime.Info info:runtimes.inventory()) {
             if(n>=16)break;

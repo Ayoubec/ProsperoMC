@@ -63,7 +63,91 @@ after = after.replace('   bool legacy_primitive_conversion;',
     '   struct pipe_resource *quad_index_cache[2];\n'
     '   unsigned quad_index_vertices[2], quad_index_size[2];')
 after = after.replace('   bool external_cpu_access;',
-    '   bool external_cpu_access;\n   bool buffer_published;')
+    '   bool external_cpu_access;\n   bool buffer_published;\n   bool census_accounted;')
+# Count resource lifetime without per-draw output. Report only the first arena
+# and kernel-allocation failures, so a modern-game crash identifies retained
+# backing versus fragmentation without thousands of diagnostic writes.
+anchor = '   simple_mtx_t resource_mutex;'
+assert after.count(anchor) == 1
+after = after.replace(anchor, '''   size_t census_bytes[3];
+   unsigned census_live[3];
+   uint64_t census_created, census_destroyed;
+   unsigned census_arena_failures, census_direct_failures;
+''' + anchor)
+anchor = 'static bool\nps5_render_arena_allocate('
+assert after.count(anchor) == 1
+after = after.replace(anchor, '''static unsigned
+ps5_resource_census_kind(const struct ps5_resource *resource)
+{
+   return resource->render_arena_slot_count ? 0 :
+      resource->base.target == PIPE_BUFFER ? 1 : 2;
+}
+
+static void
+ps5_resource_census_report(struct ps5_screen *screen, const char *reason,
+                           size_t requested)
+{
+   unsigned used = 0, run = 0, largest = 0;
+   for (unsigned slot = 0; slot < PS5_RENDER_ARENA_SLOT_COUNT; ++slot) {
+      if (screen->render_arena_bitmap[slot / 64u] &
+          (UINT64_C(1) << (slot % 64u))) {
+         ++used;
+         run = 0;
+      } else {
+         largest = MAX2(largest, ++run);
+      }
+   }
+   printf("[ps5-resource-census] reason=%s requested=%zu pool-present=%u "
+          "arena-used=%zu arena-capacity=%zu largest-free=%zu "
+          "live-arena=%u/%zu live-direct-buffers=%u/%zu "
+          "live-direct-images=%u/%zu created=%" PRIu64 " destroyed=%" PRIu64 "\\n",
+          reason, requested, screen->render_pool != NULL,
+          used * (size_t)PS5_RENDER_ARENA_SLOT_BYTES,
+          (size_t)PS5_RENDER_ARENA_SLOT_COUNT * PS5_RENDER_ARENA_SLOT_BYTES,
+          largest * (size_t)PS5_RENDER_ARENA_SLOT_BYTES,
+          screen->census_live[0], screen->census_bytes[0],
+          screen->census_live[1], screen->census_bytes[1],
+          screen->census_live[2], screen->census_bytes[2],
+          screen->census_created, screen->census_destroyed);
+}
+
+''' + anchor)
+anchor = '''         printf("[ps5-gallium] shared-resource exhausted bytes=%zu alignment=%zu\\n",
+                allocation_size, allocation_alignment);'''
+assert after.count(anchor) == 1
+after = after.replace(anchor, '''         if (ps5->census_arena_failures++ < 4)
+            ps5_resource_census_report(ps5, "arena", allocation_size);''')
+anchor = '''      static unsigned failures;
+      if (failures++ < 8)
+         printf("[ps5-gallium] resource-allocate-failed'''
+assert after.count(anchor) == 1
+after = after.replace(anchor, '''      if (ps5->census_direct_failures++ < 4)
+         ps5_resource_census_report(ps5, "direct", allocation_size);
+''' + anchor)
+anchor = '''   resource = ps5_resource_create_unlocked(screen, templ);
+   simple_mtx_unlock(&ps5->resource_mutex);'''
+assert after.count(anchor) == 1
+after = after.replace(anchor, '''   resource = ps5_resource_create_unlocked(screen, templ);
+   if (resource) {
+      struct ps5_resource *owned = (struct ps5_resource *)resource;
+      unsigned kind = ps5_resource_census_kind(owned);
+      ++ps5->census_live[kind];
+      ps5->census_bytes[kind] += owned->allocation_size + owned->stencil_allocation_size;
+      ++ps5->census_created;
+      owned->census_accounted = true;
+   }
+   simple_mtx_unlock(&ps5->resource_mutex);''')
+anchor = '''   simple_mtx_lock(&ps5->resource_mutex);
+   if (render_pool_owner) {'''
+assert after.count(anchor) == 1
+after = after.replace(anchor, '''   simple_mtx_lock(&ps5->resource_mutex);
+   if (resource->census_accounted) {
+      unsigned kind = ps5_resource_census_kind(resource);
+      --ps5->census_live[kind];
+      ps5->census_bytes[kind] -= resource->allocation_size + resource->stencil_allocation_size;
+      ++ps5->census_destroyed;
+   }
+   if (render_pool_owner) {''')
 destroy = '   ps5_context_profile_report(context);\n   for (index = 0; index < PS5_COMPUTE_BUFFER_SLOTS; ++index)'
 assert after.count(destroy) == 1
 after = after.replace(destroy,

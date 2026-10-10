@@ -3,7 +3,10 @@
 ProsperoMC uses Microsoft's device authorization flow. Select
 Accounts → Microsoft → Start sign-in. The launcher shows a QR code, verification
 address and short code. Scan the QR or open the address on your phone or PC, enter the code, and sign in
-on Microsoft's site. Return to ProsperoMC and select Check sign-in. Your Microsoft
+on Microsoft's site. Keep ProsperoMC open: it checks automatically at the provider's
+poll interval. Check sign-in can also request a check. Microsoft decides whether
+a code has expired; changing the console's clock cannot locally invalidate it.
+Choose Start sign-in to replace an expired code with a fresh one. Your Microsoft
 password is never entered into or stored by ProsperoMC.
 
 At the project owner's request, this build defaults to PolyMC's published public

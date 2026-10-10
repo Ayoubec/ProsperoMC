@@ -245,7 +245,7 @@ class LauncherTests(unittest.TestCase):
         result = self.request(ok=False, command="create", id="forge", version="1.20.1", loader="forge")
         self.assertIn("Forge support", result["message"])
         self.request(ok=False, command="anything")
-        self.request(ok=False, command="auth-device")
+        self.request(ok=False, command="auth-poll")
 
     def test_fabric_mods_clone_and_export_import(self):
         profile = {"mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient", "libraries": []}
@@ -513,14 +513,24 @@ class LauncherTests(unittest.TestCase):
             timer.join()
             handle.close()
 
-    def test_device_poll_preserves_public_code_without_secret(self):
+    def test_device_view_preserves_public_code_without_secret(self):
         pending = self.root / "private/auth-pending.json"
         pending.parent.mkdir()
         pending.write_text(json.dumps({"user_code": "PUBLIC-CODE", "verification_uri": "https://microsoft.com/link", "device_code": "PRIVATE-DEVICE-CODE", "interval": 5, "expiresAt": int(time.time()*1000)+100000, "nextPollAt": int(time.time()*1000)+100000}))
-        self.request(command="auth-poll")
+        self.request(command="view")
         view = props(self.root / "launcher-view.properties")
         self.assertEqual(view["auth.userCode"], "PUBLIC-CODE")
         self.assertNotIn("PRIVATE-DEVICE-CODE", (self.root / "launcher-view.properties").read_text())
+
+    def test_device_poll_clock_and_automatic_checks(self):
+        classes=self.base / "auth-classes"
+        classes.mkdir()
+        subprocess.run([str(JAVAC),"--release","8","-cp",str(JAR),"-d",str(classes),
+                        str(REPO / "tests/runtime/AuthSmoke.java")],check=True,capture_output=True)
+        run=subprocess.run([str(JAVA),"-cp",str(classes)+os.pathsep+str(JAR),
+                            "org.prosperomc.AuthSmoke",str(self.root)],capture_output=True,text=True,timeout=20)
+        self.assertEqual(run.returncode,0,run.stdout+run.stderr)
+        self.assertIn("PASS:",run.stdout)
 
     def test_dynamic_catalog_search_and_unadvertised_library_hash(self):
         self.request(command="catalog")

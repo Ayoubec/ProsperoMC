@@ -787,7 +787,7 @@ static void accounts(Canvas *c,const PmFrontend *f,const PmView *v) {
         auth_qr(c,v->auth_url[0]?v->auth_url:"https://microsoft.com/link");
         small(c,"Scan the QR or open this address:",968,549,TEXT,792);
         text(c,v->auth_url[0]?v->auth_url:"https://microsoft.com/link",968,592,29,LIME,792);
-        small(c,"Return here, then choose Check sign-in.",968,650,MUTED,792);
+        small(c,"Waiting for sign-in automatically. Keep this app open.",968,650,MUTED,792);
     } else {
         small(c,offline?"Offline mode opens local worlds using the configured username.":"Start sign-in to receive a short code and a verification address.",153,575,TEXT,1520);
         small(c,offline?"Online servers may require a licensed Microsoft account.":"Sign in on your phone or PC using the address and code shown here.",153,629,FAINT,1520);

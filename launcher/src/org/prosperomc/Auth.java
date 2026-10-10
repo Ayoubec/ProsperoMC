@@ -7,6 +7,15 @@ import java.util.*;
 /** Microsoft device authorization with a configurable public client ID. */
 final class Auth {
     static final String POLYMC_CLIENT_ID="6b329578-bfec-42a3-b503-303ab3f2ac96";
+    private static String pollingCode="";
+    private static long nextPollNanos;
+    static final class ServiceError extends IOException {
+        final String code;
+        ServiceError(int status,String code) {
+            super("Authentication rejected (HTTP "+status+"): "+(code.matches("[a-zA-Z0-9_]+")?code:"service error"));
+            this.code=code;
+        }
+    }
     final Main app;
     final Path privateDir;
     Auth(Main a) {
@@ -64,7 +73,7 @@ final class Auth {
         if(status>=400) {
             String error=Json.text(result, "error");
             if(error.equals("authorization_pending")||error.equals("slow_down"))return result;
-            throw new IOException("Authentication rejected (HTTP "+status+"): "+(error.matches("[a-zA-Z0-9_]+")?error:"service error"));
+            throw new ServiceError(status,error);
         }
         return result;
     }
@@ -73,40 +82,65 @@ final class Auth {
         long expires=((Number)r.get("expires_in")).longValue();
         r.put("expiresAt", System.currentTimeMillis()+expires*1000);
         r.put("nextPollAt", System.currentTimeMillis()+((Number)r.get("interval")).longValue()*1000);
+        r.put("client_id",client());
         save("auth-pending.json", r);
-        app.authView.put("auth.userCode", Json.text(r, "user_code"));
-        app.authView.put("auth.verificationUri", Json.text(r, "verification_uri"));
-        app.authView.put("auth.interval", Json.str(r.get("interval")));
-        app.authView.put("auth.expiresIn", Long.toString(expires));
+        deferPoll(r);
+        pendingView();
         app.message="Open "+Json.text(r, "verification_uri")+" and enter "+Json.text(r, "user_code");
+    }
+    static long pollSeconds(Map<String,Object> pending) {
+        Object value=pending.get("interval");
+        return value instanceof Number?Math.max(5,Math.min(300,((Number)value).longValue())):5;
+    }
+    static void deferPoll(Map<String,Object> pending) {
+        pollingCode=Json.text(pending,"device_code");
+        nextPollNanos=System.nanoTime()+pollSeconds(pending)*1000000000L;
+    }
+    void pendingView()throws IOException {
+        Path p=privateDir.resolve("auth-pending.json");
+        if(!Files.isRegularFile(p))return;
+        Map<String,Object> pending=Json.obj(Json.parse(FilesUtil.read(p)));
+        app.authView.put("auth.userCode",Json.text(pending,"user_code"));
+        app.authView.put("auth.verificationUri",Json.text(pending,"verification_uri"));
+        app.authView.put("auth.interval",Long.toString(pollSeconds(pending)));
     }
     void poll()throws IOException {
         Path p=privateDir.resolve("auth-pending.json");
         if(!Files.isRegularFile(p))throw new IOException("Start Microsoft device sign-in first");
         Map<String, Object> pending=Json.obj(Json.parse(FilesUtil.read(p)));
-        if(System.currentTimeMillis()>((Number)pending.get("expiresAt")).longValue()) {
-            Files.delete(p);
-            throw new IOException("Device code expired; start sign-in again");
-        }
-        app.authView.put("auth.userCode", Json.text(pending, "user_code"));
-        app.authView.put("auth.verificationUri", Json.text(pending, "verification_uri"));
-        app.authView.put("auth.interval", Json.str(pending.get("interval")));
-        if(System.currentTimeMillis()<((Number)pending.get("nextPollAt")).longValue()) {
+        // The provider owns expiry. A console wall-clock change must neither
+        // discard a valid code nor make us hammer Microsoft's token endpoint.
+        pendingView();
+        if(pollingCode.equals(Json.text(pending,"device_code"))&&System.nanoTime()-nextPollNanos<0) {
             app.message="Waiting for authorization (poll interval)";
             return;
         }
-        Map<String, Object> result=request("https://login.microsoftonline.com/consumers/oauth2/v2.0/token", "POST", form(map("client_id", client(), "grant_type", "urn:ietf:params:oauth:grant-type:device_code", "device_code", pending.get("device_code"))), null);
+        deferPoll(pending);
+        String pendingClient=Json.text(pending,"client_id");
+        Map<String,Object> result;
+        try {
+            result=request("https://login.microsoftonline.com/consumers/oauth2/v2.0/token", "POST", form(map("client_id",pendingClient.isEmpty()?client():pendingClient, "grant_type", "urn:ietf:params:oauth:grant-type:device_code", "device_code", pending.get("device_code"))), null);
+        } catch(ServiceError error) {
+            if(error.code.equals("expired_token")||error.code.equals("authorization_declined")||error.code.equals("bad_verification_code")) {
+                Files.deleteIfExists(p);
+                app.authView.clear();
+                throw new IOException("Microsoft rejected this device code ("+error.code+"); choose Start sign-in for a new code");
+            }
+            throw error;
+        }
         if(result.containsKey("error")) {
             long interval=((Number)pending.get("interval")).longValue();
             if("slow_down".equals(result.get("error")))interval+=5;
             pending.put("interval", interval);
             pending.put("nextPollAt", System.currentTimeMillis()+interval*1000);
             save("auth-pending.json", pending);
+            deferPoll(pending);
             app.message="Waiting for Microsoft authorization";
             return;
         }
         exchange(result);
         Files.delete(p);
+        app.authView.clear();
         app.message="Microsoft account signed in and Minecraft ownership verified";
     }
     void exchange(Map<String, Object> oauth)throws IOException {
