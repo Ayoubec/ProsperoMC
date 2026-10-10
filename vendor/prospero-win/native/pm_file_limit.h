@@ -4,6 +4,27 @@
 
 #include <errno.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
+
+static void pm_report_file_inventory(void)
+{
+    struct rlimit limit;
+    struct stat st;
+    unsigned open_count = 0, regular = 0, directories = 0, sockets = 0;
+    int saved = errno;
+    if (!getrlimit(RLIMIT_NOFILE, &limit) && limit.rlim_cur <= 32768) {
+        for (int fd = 0; (rlim_t)fd < limit.rlim_cur; ++fd) {
+            if (fstat(fd, &st)) continue;
+            ++open_count;
+            regular += S_ISREG(st.st_mode) != 0;
+            directories += S_ISDIR(st.st_mode) != 0;
+            sockets += S_ISSOCK(st.st_mode) != 0;
+        }
+        PS5LOG_LOG("PROSPEROMC file-inventory open=%u regular=%u directories=%u sockets=%u limit=%llu",
+            open_count, regular, directories, sockets, (unsigned long long)limit.rlim_cur);
+    }
+    errno = saved;
+}
 
 /* Fabric keeps its nested mod JARs open. Wine's in-process server skips
  * the normal server init_limits(), so prepare the title before Wine starts.

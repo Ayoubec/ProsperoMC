@@ -816,6 +816,10 @@ public final class Main {
         // PS5 Wine backs the Java heap above the compressed-pointer address range.
         jvm.add("-XX:-UseCompressedOops");
         jvm.add("-XX:-UseCompressedClassPointers");
+        // G1 commits many small heap regions through Wine's direct-memory
+        // backend. Parallel GC uses contiguous generations, reducing native
+        // allocation pressure while retaining compiled Java and GC workers.
+        if(major>=17)jvm.add("-XX:+UseParallelGC");
         jvm.add("-Djava.library.path="+windows(natives));
         List<String> gameArgs;
         if(meta.containsKey("arguments")) {

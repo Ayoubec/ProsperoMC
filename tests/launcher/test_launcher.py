@@ -404,6 +404,7 @@ class LauncherTests(unittest.TestCase):
         profile = (self.root / "profiles/launch.profile").read_text()
         plan = (self.root / "profiles/launch-plan.json").read_text()
         self.assertIn("java25", profile)
+        self.assertIn("-XX:+UseParallelGC", profile)
         self.assertIn("desktop=1920x1080", profile)
         arguments=json.loads(plan)["arguments"]
         self.assertEqual(arguments[arguments.index("--width")+1], "1920")

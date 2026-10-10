@@ -1,4 +1,5 @@
 /* Verify the real process limit, rather than just the requested value. */
+#define _DEFAULT_SOURCE
 #include <assert.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -21,6 +22,9 @@ int main(void)
         files[i] = open("/dev/null", O_RDONLY);
         assert(files[i] >= 0);
     }
+    errno = EACCES;
+    pm_report_file_inventory();
+    assert(errno == EACCES);
     for (unsigned i = 0; i < 1024; ++i) close(files[i]);
     assert(!setrlimit(RLIMIT_NOFILE, &saved));
     pm_prepare_file_limit();

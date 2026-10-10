@@ -790,3 +790,47 @@ EBOOT SHA256 `a5fe373469201d2f3b0f6c4c847820bd4527d545ef2862827d742c6978fc5383`.
 Await user launch retest, then read fresh logs for `PROSPEROMC file-limit` and
 next actual game exception if any. This is an uploaded fix for the observed
 failure, NOT a confirmed Minecraft26.3 gameplay pass. No builds/uploads running.
+
+## 2026-10-10 — file-limit retest and Minecraft26.2 Sodium crash
+
+The file-limit hypothesis did NOT resolve Fabric startup. Actual console readback
+is soft=hard=13952, unchanged. Evidence in
+`artifacts/console-fo-file-limit-retest/logs_session-2.log`; same terminal error.
+Do not call the limit preparation a proven fix. Wine also maps failed descriptor
+transfer to STATUS_TOO_MANY_OPENED_FILES. Native now counts open descriptors
+(regular/directory/socket) once when that Wine error is emitted; preserves errno.
+Use the next full-pack log to distinguish actual exhaustion from other failure.
+
+User installed FO for26.2 (`modrinth-1KVo5zza-HiDsl7yh`); full pack fails while
+ConfigManager copies `config/modpack_defaults`, again Too many open files.
+User disabled all mods except Sodium: menu works at60FPS, world works briefly
+at2-4FPS, then exits. Two reproduced logs saved in
+`artifacts/console-fo262-sodium-crash`. Actual terminal exception is
+GpuOutOfMemoryException allocating Sodium GlBufferArena buffer8152320/9697600
+bytes; driver resource-allocate-failed rc80020023(EAGAIN), even for1.5-4.7MB.
+Wine backing telemetry near failure: dmem~2.4GB, ~5900runs; flexible free~35-55MB.
+Do not mistake secondary crash-report compiler-replay output for primary failure.
+
+New Java17+ launch profiles select UseParallelGC instead of default G1, to test
+whether fewer/larger committed heap generations alleviate native allocation
+pressure. This is a targeted hypothesis, not proven allocator root cause. Java8
+and graphics settings unchanged; no graphics module replaced. Native now logs
+actual file inventory on the misleading file error. Account help now explicitly
+describes phone/PC device flow; missing client-ID error is clearer.
+
+Microsoft device flow never starts because microsoftClientId is empty. User has
+NO registered ProsperoMC client ID. This remains an external setup dependency;
+do not reuse PolyMC's ID (its CMake asks rebranded projects to change API keys),
+disable ownership checks, or request/store user's password. Setup documented in
+docs/microsoft-sign-in.md and linked from README. API access/ownership verification
+must still be tested after a legitimate public client registration is provided.
+
+Validation: actual downloaded WindowsTemurinJava25 accepted ParallelGC flags;
+two targeted launch-plan/privacy/resolution tests PASS, native bridge/real-fd
+inventory/fourstage tests PASS, frontend checks PASS, PS5crosscompile PASS.
+User confirmed both apps closed. Uploaded/verified only EBOOT,JARs,two reports.
+EBOOT `a62c50da13e98844a635f8fffbc2be5c4799559e16f35023aa63a1835e5c331b`.
+JAR `2b67f63851f434960412be2cd524d67de5ccaa0fa518021acd9d83a4be3a71c2`.
+All graphics/ntdll/worlds/mod choices/options preserved. Await user Sodium-only
+26.2 world test (one minute and FPS), then retrieve fresh logs to compare runs,
+allocator errors and collector. No build/upload/test sessions running.

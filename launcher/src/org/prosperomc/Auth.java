@@ -19,7 +19,7 @@ final class Auth {
     }
     String client()throws IOException {
         String s=app.settings.getOrDefault("microsoftClientId", "");
-        if(s.isEmpty())throw new IOException("Set microsoftClientId to your registered Microsoft public client application ID before signing in");
+        if(s.isEmpty())throw new IOException("Microsoft sign-in setup is incomplete: ProsperoMC needs its own registered public client ID (microsoftClientId in settings.properties). No login code can be issued yet.");
         return s;
     }
     static String form(Map<String, Object> m)throws IOException {

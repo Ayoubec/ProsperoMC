@@ -770,7 +770,7 @@ static void accounts(Canvas *c,const PmFrontend *f,const PmView *v) {
         small(c,"Return here, then choose Check sign-in.",968,650,MUTED,792);
     } else {
         small(c,offline?"Offline mode opens local worlds using the configured username.":"Start sign-in to receive a short code and a verification address.",153,575,TEXT,1520);
-        small(c,offline?"Online servers may require a licensed Microsoft account.":"Configure a Microsoft client ID on the host before the first sign-in.",153,629,FAINT,1520);
+        small(c,offline?"Online servers may require a licensed Microsoft account.":"Sign in on your phone or PC using the address and code shown here.",153,629,FAINT,1520);
     }
     button(c,"START SIGN-IN",151,749,530,f->focus==1,1);
     button(c,"CHECK SIGN-IN",710,749,530,f->focus==2,0);

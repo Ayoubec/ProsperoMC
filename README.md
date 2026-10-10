@@ -96,6 +96,10 @@ java -jar artifacts/launcher/prosperomc-launcher.jar --root game-data/prosperomc
 
 Requests use UTF-8 `key=value` lines. See the launcher documentation and [architecture](docs/architecture.md). All writable Java, Minecraft instances, mods and downloads live together under `/data/ProsperoMC`; the loader package is `/data/homebrew/PPSA99888`.
 
+Microsoft sign-in uses a code shown in the launcher and Microsoft's website on
+your phone or PC. The current build requires ProsperoMC's own registered public
+client ID before it can issue that code; see [Microsoft sign-in setup](docs/microsoft-sign-in.md).
+
 Only Minecraft instances and internally generated Java profiles are offered. General PC-game importing and emulator functionality are absent. The previous JavaCraft probe is preserved locally in `artifacts/previous-javacraft-source.zip` and `artifacts/previous-project-tooling.zip`.
 
 See [feature audit](docs/feature-audit.md), [console checks](docs/console-tests.md), [provenance](docs/provenance.md), and [acceptance gates](GATES.md) for implemented features, limitations and verification evidence.

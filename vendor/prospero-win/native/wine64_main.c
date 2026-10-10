@@ -340,12 +340,17 @@ static volatile unsigned long sink_calls;
 
 static void wine_output_sink(const char *str, size_t len)
 {
+    static int reported_file_inventory;
     sink_calls++;
     pthread_mutex_lock(&sink_lock);
     for (size_t i = 0; i < len; i++) {
         if (str[i] == '\n' || sink_used == sizeof(sink_line) - 1) {
             sink_line[sink_used] = 0;
             PS5LOG_LOG("WINE %s", sink_line);
+            if (!reported_file_inventory && strstr(sink_line, "Too many open files")) {
+                reported_file_inventory = 1;
+                pm_report_file_inventory();
+            }
             sink_used = 0;
             if (str[i] == '\n') continue;
         }
