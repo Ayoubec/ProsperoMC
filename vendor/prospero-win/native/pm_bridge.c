@@ -143,7 +143,7 @@ static void view_property(void *context, const char *key, const char *value)
     TEXT("settings.accountMode", account_mode);
     TEXT("accountMode", account_mode);
     TEXT("settings.username", username);
-    TEXT("username", username); TEXT("auth.username", username); TEXT("auth.url", auth_url); TEXT("auth.code", auth_code);
+    TEXT("username", username); TEXT("auth.username", account_username); TEXT("auth.url", auth_url); TEXT("auth.code", auth_code);
     TEXT("auth.verificationUri", auth_url); TEXT("auth.userCode", auth_code);
     TEXT("account.status", account_status);
     TEXT("auth.provider", auth_provider);

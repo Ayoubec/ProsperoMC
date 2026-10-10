@@ -63,7 +63,7 @@ after = after.replace('   bool legacy_primitive_conversion;',
     '   struct pipe_resource *quad_index_cache[2];\n'
     '   unsigned quad_index_vertices[2], quad_index_size[2];')
 after = after.replace('   bool external_cpu_access;',
-    '   bool external_cpu_access;\n   bool buffer_published;\n   bool census_accounted;')
+    '   bool external_cpu_access;\n   bool buffer_published;\n   bool census_accounted;\n   unsigned census_origin;')
 # Count resource lifetime without per-draw output. Report only the first arena
 # and kernel-allocation failures, so a modern-game crash identifies retained
 # backing versus fragmentation without thousands of diagnostic writes.
@@ -73,10 +73,18 @@ after = after.replace(anchor, '''   size_t census_bytes[3];
    unsigned census_live[3];
    uint64_t census_created, census_destroyed;
    unsigned census_arena_failures, census_direct_failures;
+   struct {
+      uintptr_t caller;
+      size_t bytes;
+      unsigned live, bind, usage, flags;
+   } census_origins[16];
 ''' + anchor)
 anchor = 'static bool\nps5_render_arena_allocate('
 assert after.count(anchor) == 1
-after = after.replace(anchor, '''static unsigned
+after = after.replace(anchor, '''static struct pipe_resource *
+ps5_resource_create(struct pipe_screen *screen, const struct pipe_resource *templ);
+
+static unsigned
 ps5_resource_census_kind(const struct ps5_resource *resource)
 {
    return resource->render_arena_slot_count ? 0 :
@@ -109,6 +117,16 @@ ps5_resource_census_report(struct ps5_screen *screen, const char *reason,
           screen->census_live[1], screen->census_bytes[1],
           screen->census_live[2], screen->census_bytes[2],
           screen->census_created, screen->census_destroyed);
+   for (unsigned i = 0; i < 16; ++i) {
+      if (!screen->census_origins[i].live)
+         continue;
+      printf("[ps5-resource-origin] slot=%u caller-delta=%" PRIxPTR
+             " live=%u bytes=%zu bind=%x usage=%u flags=%x\\n",
+             i, screen->census_origins[i].caller - (uintptr_t)ps5_resource_create,
+             screen->census_origins[i].live, screen->census_origins[i].bytes,
+             screen->census_origins[i].bind, screen->census_origins[i].usage,
+             screen->census_origins[i].flags);
+   }
 }
 
 ''' + anchor)
@@ -135,6 +153,24 @@ after = after.replace(anchor, '''   resource = ps5_resource_create_unlocked(scre
       ps5->census_bytes[kind] += owned->allocation_size + owned->stencil_allocation_size;
       ++ps5->census_created;
       owned->census_accounted = true;
+      owned->census_origin = 16;
+      if (owned->allocation_size >= 256u * 1024u && templ->target == PIPE_BUFFER) {
+         uintptr_t caller = (uintptr_t)__builtin_return_address(0);
+         unsigned origin;
+         for (origin = 0; origin < 15; ++origin)
+            if (!ps5->census_origins[origin].caller ||
+                ps5->census_origins[origin].caller == caller)
+               break;
+         if (!ps5->census_origins[origin].caller) {
+            ps5->census_origins[origin].caller = caller;
+            ps5->census_origins[origin].bind = templ->bind;
+            ps5->census_origins[origin].usage = templ->usage;
+            ps5->census_origins[origin].flags = templ->flags;
+         }
+         owned->census_origin = origin;
+         ++ps5->census_origins[origin].live;
+         ps5->census_origins[origin].bytes += owned->allocation_size;
+      }
    }
    simple_mtx_unlock(&ps5->resource_mutex);''')
 anchor = '''   simple_mtx_lock(&ps5->resource_mutex);
@@ -146,6 +182,10 @@ after = after.replace(anchor, '''   simple_mtx_lock(&ps5->resource_mutex);
       --ps5->census_live[kind];
       ps5->census_bytes[kind] -= resource->allocation_size + resource->stencil_allocation_size;
       ++ps5->census_destroyed;
+      if (resource->census_origin < 16) {
+         --ps5->census_origins[resource->census_origin].live;
+         ps5->census_origins[resource->census_origin].bytes -= resource->allocation_size;
+      }
    }
    if (render_pool_owner) {''')
 destroy = '   ps5_context_profile_report(context);\n   for (index = 0; index < PS5_COMPUTE_BUFFER_SLOTS; ++index)'

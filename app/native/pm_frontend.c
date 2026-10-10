@@ -778,7 +778,8 @@ static void accounts(Canvas *c,const PmFrontend *f,const PmView *v) {
     int offline=!strcmp(v->account_mode,"offline");
     screen_title(c,"Your Minecraft account","Choose local offline play or sign in using Microsoft's device flow.");
     panel(c,108,302,1704,578,0);
-    text(c,v->username[0]?v->username:offline?"Player":"Microsoft sign-in",151,339,38,TITLE,1580);
+    const char *name=!offline&&v->account_username[0]?v->account_username:v->username;
+    text(c,name[0]?name:offline?"Player":"Microsoft sign-in",151,339,38,TITLE,1580);
     small(c,offline?"Local offline play / username shown above":v->account_status[0]?v->account_status:"A Minecraft Java license is required for online authentication.",153,399,MUTED,1580);
     button(c,offline?"MODE: OFFLINE  /  SWITCH TO MICROSOFT":"MODE: MICROSOFT  /  SWITCH TO OFFLINE",151,463,1490,f->focus==0,0);
     if(v->auth_code[0]&&!offline) {

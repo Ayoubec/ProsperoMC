@@ -23,6 +23,13 @@ int main(void)
     assert(view.instance_count==PM_MAX_INSTANCES && view.version_count==PM_MAX_VERSIONS && view.mod_count==PM_MAX_MODS);
     assert(view.instances[0].installed && !strcmp(view.versions[2047].id,"1.12.2") && view.memory_mb==4096);
     assert(!strcmp(view.auth_code,"ABCD-EFGH"));
+    FILE *profile_view=fopen(name,"ab");assert(profile_view);
+    assert(fputs("auth.username=OwnedPlayer\nauth.signedIn=true\n",profile_view)>=0);assert(!fclose(profile_view));
+    char account_settings[1024];snprintf(account_settings,sizeof(account_settings),"%s/settings.properties",root);
+    write_file(account_settings,"accountMode=microsoft\nusername=Player\n");
+    assert(!pm_bridge_view(root,&view));
+    assert(!strcmp(view.account_username,"OwnedPlayer")&&!strcmp(view.username,"Player"));
+    assert(!unlink(account_settings));
     assert(view.java_count==PM_MAX_JAVA && view.java_runtimes[0].valid && view.java_runtimes[0].major==8);
     assert(!strcmp(view.java_runtimes[0].version,"1.8.0_504") && view.java_runtimes[1].major==21 && !view.java_runtimes[1].valid);
     assert(!pm_bridge_auto_catalog(root,&view));

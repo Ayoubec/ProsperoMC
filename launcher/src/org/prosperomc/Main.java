@@ -689,12 +689,11 @@ public final class Main {
         v.put("settings.memoryMb", settings.getOrDefault("memoryMb", "2048"));
         v.put("settings.resolution",settings.getOrDefault("resolution","1280x720"));
         v.put("settings.accountMode", settings.getOrDefault("accountMode", "microsoft"));
-        String displayName=settings.getOrDefault("username","Player");
-        if(!settings.getOrDefault("accountMode","microsoft").equals("offline")&&Files.isRegularFile(root.resolve("private/account.json"))) {
+        if(Files.isRegularFile(root.resolve("private/account.json"))) {
             String accountName=Json.text(auth.account(false),"name");
-            if(accountName.matches("[a-zA-Z0-9_]{1,16}"))displayName=accountName;
+            if(accountName.matches("[a-zA-Z0-9_]{1,16}"))v.put("auth.username",accountName);
         }
-        v.put("settings.username",displayName);
+        v.put("settings.username",settings.getOrDefault("username","Player"));
         for(Map.Entry<String, String> e:settings.entrySet())if(e.getKey().matches("java[0-9]+"))v.put("settings."+e.getKey(), e.getValue());
         v.put("auth.signedIn", Boolean.toString(Files.isRegularFile(root.resolve("private/account.json"))));
         v.put("auth.provider",auth.provider());

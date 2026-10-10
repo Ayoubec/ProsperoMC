@@ -90,10 +90,15 @@ if source_ready:
     if not cross.exists():
         cross.write_text((payload / 'toolchain/prospero.ini').read_text().replace('@DIRNAME@',str(payload / 'toolchain')).replace('[target_machine]','[host_machine]'))
 shutil.copy2(out / 'ps5_agc_native_runtime.c',source / 'src/platform/ps5_agc_native_runtime.c')
+run([sys.executable, root / 'scripts/fix-mesa-upload-lifetime.py',
+     mesa / 'src/gallium/auxiliary/util/u_vbuf.c'])
+run([sys.executable, root / 'scripts/check-mesa-upload-lifetime.py'])
 
 targets = subprocess.check_output(['ninja','-C',str(build),'-t','targets','all'],text=True)
 headers = [line.partition(': ')[0] for line in targets.splitlines() if line.partition(': ')[0].endswith('.h')]
 run(['ninja','-C',build,'-j8',*headers])
+vbuf_object = build / 'src/gallium/auxiliary/libgallium.a.p/util_u_vbuf.c.o'
+run(['ninja', '-C', build, str(vbuf_object.relative_to(build))])
 compiler_headers = ['src/amd/common/amdgfxregs.h','src/amd/common/sid_tables.h','src/compiler/nir/nir_builder_opcodes.h',
     'src/compiler/nir/nir_opcodes.h','src/compiler/nir/nir_intrinsics.h',
     'src/compiler/nir/nir_intrinsics_indices.h']
@@ -112,9 +117,8 @@ with (out / 'policy-check.log').open('w') as log:
 # serializing cycle reads, cache atomics or diagnostic I/O. Keep all submission,
 # retirement and rendering features; profiling remains an explicit build option.
 flags = shlex.split('\n'.join(config.splitlines()[1:]))
-# Sodium's chunk arenas exhaust the CI's 256 MiB buffer pool; subsequent
-# per-buffer kernel allocations fail with EAGAIN. Reuse the driver's checked
-# allocator with a 1 GiB pool, rather than adding another allocation backend.
+# Retain the currently tested 1 GiB pool while fixing the measured uploader
+# lifetime leak. Increasing this pool alone did not prevent the modern crash.
 arena_flag = '-DPS5_RENDER_ARENA_BYTES=0x10000000u'
 assert flags.count(arena_flag) == 1
 flags[flags.index(arena_flag)] = '-DPS5_RENDER_ARENA_BYTES=0x40000000u'
@@ -145,6 +149,7 @@ run([payload / 'bin/prospero-clang',*flags,'-I'+str(build / 'src/compiler'),
 modified.mkdir(parents=True, exist_ok=True)
 shutil.copy2(out / 'runtime-config.txt',modified / 'runtime-config.txt')
 shutil.copytree(ci / 'sdk',modified / 'sdk',dirs_exist_ok=True)
+run(['llvm-ar-18', 'r', modified / 'sdk/lib/libgallium.a', vbuf_object])
 runtime = modified / 'sdk/lib/libps5_opengl_core33.a'
 run(['llvm-ar-18','r',runtime,work / 'ps5_screen.o',work / 'ps5_agc_runtime_backend.o'])
 shutil.copy2(work / 'ps5_screen.o',out / 'ps5_screen.o')
@@ -161,7 +166,7 @@ provenance.update(version=provenance['version']+'-prosperomc-quad-batching',
     sdk_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
     runtime_archive_sha256=hashlib.sha256(runtime.read_bytes()).hexdigest(),
     local_patch={'file':'smooth-legacy-batching.patch','sha256':patch_hash,
-                 'description':'Retain legacy batching and owned-buffer fixes; reclaim ready FIFO descriptors only between batches without waiting before empty-cache allocation, recycle retired descriptors, reuse byte-verified shader layouts, ' + ('enable upstream two-worker native command preparation and worker-local byte-verified shader hits, ' if async_prepare else '') + 'log only batch errors, and ' + ('enable diagnostic profiling' if profile else 'disable hot-path profiling') + ' in the draw driver and native backend'},
+                 'description':'Release every retired Mesa vertex upload after driver binding on each draw; retain legacy batching and owned-buffer fixes; reclaim ready FIFO descriptors only between batches without waiting before empty-cache allocation, recycle retired descriptors, reuse byte-verified shader layouts, ' + ('enable upstream two-worker native command preparation and worker-local byte-verified shader hits, ' if async_prepare else '') + 'log only batch errors, and ' + ('enable diagnostic profiling' if profile else 'disable hot-path profiling') + ' in the draw driver and native backend'},
     draw_profile=profile,
     batch_timings=batch_timings,
     async_native_prepare=async_prepare,

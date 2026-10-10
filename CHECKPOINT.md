@@ -944,3 +944,55 @@ phone authorization while launcher stays open; then same Sodium-only 26.2 world.
 Read new resource census directly via FTP after the world test; diagnose the
 actual retaining path or memory budget before more allocator experiments.
 Full-pack TooManyOpenFiles remains unresolved and needs its next file census.
+
+## 2026-10-10: traced modern world crash to Mesa uploader ownership
+
+Microsoft phone sign-in now succeeds on console and verifies Minecraft ownership.
+The initial profile-name fix still showed Player: pm_bridge_view reads the raw
+settings after the backend view, overwriting settings.username with the offline
+name. New fix carries auth.username in a separate PmView.account_username field;
+Accounts uses it for Microsoft mode and preserves the offline username.
+Java and native-overlay regression tests pass. CI failure was test_dns.py using
+Windows Java paths on Linux; 7d7c079 makes paths portable and installs both Java 8
+and 21 in Actions. Run 38052145355 passed. No account tokens were read over FTP.
+
+Latest console retest: Sodium-only 26.2 at 1080p loads slowly, renders about 3 FPS,
+then crashes after 8-10 seconds. artifacts/console-upload-leak-before/session-2
+contains GL_OUT_OF_MEMORY while allocating an 11,738,240-byte terrain arena.
+Allocation origin caller-delta 0x81068d plus ps5_resource_create 0x197bb0 resolves
+inside u_upload_alloc_buffer (0x9a823d). It accounts for 6,776 live temporary
+buffers / 9,509,175,296 bytes; normal _mesa_bufferobj_data accounts for only
+38 large persistent buffers / 105,938,944 bytes. Increasing the pool did NOT fix it.
+Actual Sodium 0.9.1+mc26.2 and Minecraft jars were retrieved scoped for bytecode
+analysis; Sodium's arena reuse cache is bounded to eight buffers, and Minecraft
+GlBuffer.Direct.close unmaps/deletes correctly. Temporary Mesa upload ownership
+is the path being repaired.
+
+Confirmed code defect in platform Mesa 26.2.0 u_vbuf.c: the same releasebuf output
+is overwritten by each translation type and each draw in a multi-draw call;
+u_upload_alloc also writes NULL on reuse. Only the last saved owner is released
+at function exit. The user-buffer upload path resets its release count, which
+would erase translated owners if sharing their queue. Fix collects each retired
+translation owner, appends user-upload owners, preserves error cleanup, and
+releases them after driver binding/drawing on EACH draw. Queue capacity is
+PIPE_MAX_ATTRIBS + VB_NUM; borrowed buffers remain alive until driver references
+are installed. No allocator increase or rendering synchronization change.
+
+scripts/fix-mesa-upload-lifetime.py applies checked edits to the pinned platform
+Mesa source. compile-graphics-batching.py compiles util_u_vbuf.c.o with its exact
+Meson cross flags, replaces that member in libgallium.a, updates SDK manifest,
+and includes the Mesa diff in the existing source patch staged with the module.
+No duplicated archive members. scripts/check-mesa-upload-lifetime.py compiles
+the actual translated-upload loop and draw/error cleanup under ASan/UBSan:
+1,500 repeated draw cycles, multiple attribute classes, no-rollover uploads,
+maximum mixed user/translated uploads, failure cleanup and zero final owners PASS.
+All 41 launcher host tests PASS with loopback HTTP allowed. Sandboxed fixture
+runs failed getsockopt Permission denied; rerunning with network access passed.
+Frontend/native bridge/real-handle/stage checks PASS; native executable rebuilt.
+
+Current final graphics build is in progress. Stage app first, then graphics;
+refresh each signed EBOOT/win32u FTP executable view individually before upload.
+Closed-state confirmation requested again because latest crash returned to the
+launcher; do not replace live app files. Console success/performance remains
+unverified for this ownership fix. Full-pack TooManyOpenFiles remains separate.
+User-deleted sce_sys source PNGs stay excluded from commits.
