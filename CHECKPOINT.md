@@ -1062,3 +1062,46 @@ Vulkan; then explicitly selectOpenGL/restart and sameSodium-only26.2world for
 at least1minute, FPS/flashing/crash, leaveopenforlogs. Do not claim the console
 crash fixed until that test. Keep working Vulkan backend unchanged as reference.
 User artwork deletions still excluded from commits. Push DNS source changes.
+
+## 2026-10-10: correct startup packaging regression and Versions missing ID
+
+User confirms profile name now appears. New startup fails with and without Sodium;
+Versions download reports Missing request property: id. Both apps closed again.
+Read four recent logs into artifacts/console-post-dns-launch. Both game sessions
+fail BEFORE graphics initialization with java.util.ServiceConfigurationError:
+InetAddressResolverProvider: Provider org.prosperomc.Ps5ResolverProvider not found,
+from Log4j NetUtils.getHostname during Fabric startup. This regression was
+introduced by the prior DNS provider packaging, not evidence that graphics fix
+crashes. Provider lookup works in standalone WindowsJava25, and actual Fabric
+0.19.5 host loading also accepts the old MR JAR; exact console classpath/versioned
+lookup discrepancy is not reproduced on host. Avoid asserting a universal Fabric
+MR bug. Fix removes reliance on versioned-JAR lookup: provider and its anonymous
+resolver live at ordinary classpath paths, compiledJava18; Java8-compatible main
+classes remain version52 and Java8 never loads the absent modern SPI. Remove MR
+manifest; build into new plain-classes directory so old versioned classes cannot
+silently be included. Provider activation remains restricted to PS5 root.
+
+Modern DNS regression explicitly disables multi-release lookup, and succeeds
+with actual packagedJava25. Java8 DNS and all42 launcher tests PASS. Added
+FabricDnsSmoke.java: ServiceLoader using the actual installed Fabric0.19.5 Knot
+classloader discovers the provider and resolves localhost without running a game.
+Receipt artifacts/fabric-dns-smoke/fixed.log. No credentials read or logged.
+
+Versions frontend sends create-install with version/loader but no id; backend
+create correctly requires id. pm_bridge_request now uses the existing pack-import
+ID allocator for create-install too: first free instance-0001, instance-0002 etc.
+Explicit IDs unchanged. Native test checks actual queued id/version and skips an
+existing instance directory. Frontend/bridge/file-limit/staging regressions PASS;
+native EBOOT rebuilt. All renderer files/optimizations unchanged.
+
+stage-app-update validated package, refreshed EBOOT signedFTPview, --app-update
+uploaded and read-back verified newJAR/EBOOT/reports. Existing win32u355d06/ntdll,
+art/music/sourcepatches verified unchanged. verify-graphics-upload receipt PASS.
+EBOOT397ebb5a7e42b6b47d35bf5067596fc4b9738c1f941cada70e33e272378cbef0
+JAR2877d70ddcd4a91b0eb9f2d15215f78bd9ba26d9a4ee40778b3d67c04ab09e35
+
+Next console test: reopen and launch using Vulkan first (known working reference)
+to confirm startup restored and skin/profile DNS, then test OpenGL in same world
+for at least a minute. Separately test Versions Download now creates/downloads
+an instance instead of missing-id error. Console verification still pending.
+User artwork deletions remain excluded; push source and checkpoint.

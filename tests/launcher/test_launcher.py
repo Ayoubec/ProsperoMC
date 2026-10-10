@@ -690,7 +690,7 @@ class LauncherTests(unittest.TestCase):
             for n in z.namelist():
                 if n.endswith(".class"):
                     data = z.read(n)
-                    expected=62 if n.startswith("META-INF/versions/18/") else 52
+                    expected=62 if n.startswith("org/prosperomc/Ps5ResolverProvider") else 52
                     self.assertEqual(int.from_bytes(data[6:8], "big"), expected, n)
 
     def test_persistent_worker_handles_failure_then_settings_without_restart(self):

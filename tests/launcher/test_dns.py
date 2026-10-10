@@ -46,7 +46,7 @@ public class ModernDnsCheck {
  }
 }''',encoding='utf-8')
                 subprocess.run([str(JAVAC),'--release','18','-cp',str(JAR),'-d',str(folder),str(source)],check=True,capture_output=True)
-                result=subprocess.run([str(modern),'-Dprosperomc.ps5Dns=true','-Djava.net.preferIPv4Stack=true',
+                result=subprocess.run([str(modern),'-Djdk.util.jar.enableMultiRelease=false','-Dprosperomc.ps5Dns=true','-Djava.net.preferIPv4Stack=true',
                     '-Dprosperomc.dnsEndpoint=http://127.0.0.1:%d/dns-query'%server.server_port,
                     '-cp',str(folder)+os.pathsep+str(JAR),'ModernDnsCheck'],capture_output=True,text=True,timeout=30)
                 self.assertEqual(result.returncode,0,result.stdout+result.stderr)

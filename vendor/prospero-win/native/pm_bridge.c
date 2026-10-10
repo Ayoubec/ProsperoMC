@@ -249,11 +249,11 @@ static int write_property(FILE *file, const char *key, const char *value)
 int pm_bridge_request(const char *root, const PmAction *action)
 {
     PmAction resolved;
-    if(!strcmp(action->command,"import-pack") && !action->id[0]) {
+    if((!strcmp(action->command,"import-pack") || !strcmp(action->command,"create-install")) && !action->id[0]) {
         char candidate[768];struct stat st;unsigned n;
         resolved=*action;
         for(n=1;n<10000;n++) {
-            snprintf(resolved.id,sizeof(resolved.id),"pack-%04u",n);
+            snprintf(resolved.id,sizeof(resolved.id),"%s-%04u",!strcmp(action->command,"import-pack")?"pack":"instance",n);
             snprintf(candidate,sizeof(candidate),"%s/instances/%s",root,resolved.id);
             if(lstat(candidate,&st) && errno==ENOENT)break;
         }

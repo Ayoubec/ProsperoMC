@@ -46,6 +46,8 @@ int main(void)
     action.java_major=-1; assert(pm_bridge_request(root,&action)); action.java_major=0;
     strcpy(action.command,"detect-java"); assert(!pm_bridge_request(root,&action));
     strcpy(action.command,"create-install"); strcpy(action.version,"1.12.2"); assert(!pm_bridge_request(root,&action));
+    request=fopen(name,"rb");assert(request);request_bytes=fread(content,1,sizeof(content)-1,request);fclose(request);content[request_bytes]=0;
+    assert(strstr(content,"command=create-install\n")&&strstr(content,"id=instance-0001\n")&&strstr(content,"version=1.12.2\n"));
     strcpy(action.command,"catalog"); assert(!pm_bridge_request(root,&action));
     strcpy(action.command,"pack-search");strcpy(action.query,"Fabulously Optimized");action.offset=24;
     assert(!pm_bridge_request(root,&action));
@@ -118,6 +120,12 @@ int main(void)
     action.memory_mb=1; assert(pm_bridge_local(root,&action,&view)==-1); action.memory_mb=0;
     strcpy(action.account_mode,"invalid"); assert(pm_bridge_local(root,&action,&view)==-1);
     snprintf(name,sizeof(name),"%s/instances",root); assert(!mkdir(name,0700));
+    snprintf(name,sizeof(name),"%s/instances/instance-0001",root);assert(!mkdir(name,0700));
+    memset(&action,0,sizeof(action));strcpy(action.command,"create-install");strcpy(action.version,"26.2");
+    assert(!pm_bridge_request(root,&action));
+    snprintf(name,sizeof(name),"%s/request.properties",root);request=fopen(name,"rb");assert(request);
+    request_bytes=fread(content,1,sizeof(content)-1,request);fclose(request);content[request_bytes]=0;
+    assert(strstr(content,"id=instance-0002\n")&&strstr(content,"version=26.2\n"));
     snprintf(name,sizeof(name),"%s/instances/owned",root); assert(!mkdir(name,0700));
     snprintf(name,sizeof(name),"%s/instances/owned/.minecraft",root); assert(!mkdir(name,0700));
     snprintf(name,sizeof(name),"%s/instances/owned/.minecraft/mods",root); assert(!mkdir(name,0700));
