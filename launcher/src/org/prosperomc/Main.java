@@ -45,6 +45,7 @@ public final class Main {
             System.setProperty("prosperomc.ps5Dns","true");
             System.setProperty("java.net.preferIPv4Stack","true");
             if(System.getProperty("java.specification.version").equals("1.8"))Ps5Compat.localAddress();
+            else Ps5Dns.initializeModern();
         }
         if(serve) {
             if(plan!=null||requestPath!=null)throw new IllegalArgumentException("--serve cannot be combined with a request or plan");
@@ -210,9 +211,13 @@ public final class Main {
         else if(cmd.equals("mod-download")) {
             downloadMod();
         }
+        else if(cmd.startsWith("content-")) { new Content(this).run(cmd); }
         else if(cmd.equals("pack-search")) { new ModrinthPacks(this).search(); }
         else if(cmd.equals("pack-versions")) { new ModrinthPacks(this).versions(); }
         else if(cmd.equals("pack-download")) { new ModrinthPacks(this).download(); }
+        else if(cmd.equals("curse-search")) { new CurseForgePacks(this).search(); }
+        else if(cmd.equals("curse-versions")) { new CurseForgePacks(this).versions(); }
+        else if(cmd.equals("curse-download")) { new CurseForgePacks(this).download(); }
         else if(cmd.equals("settings")) {
             updateSettings();
         }
@@ -240,10 +245,11 @@ public final class Main {
         else if(cmd.equals("import-pack")) {
             importPack();
         }
-        else if(cmd.equals("delete")) {
+        else if(cmd.equals("delete")||cmd.equals("delete-instance")) {
             deleteInstance();
         }
         else if(cmd.equals("view")) {
+            Icons.refreshInstances(this);
             message="Launcher ready";
         }
         else throw new IOException("Unknown command: "+cmd);
@@ -276,11 +282,19 @@ public final class Main {
         for(Map.Entry<String, String> e:request.entrySet()) {
             String k=e.getKey();
             if(k.equals("command"))continue;
-            if(k.matches("java[0-9]+")||Arrays.asList("resolution", "memoryMb", "microsoftClientId", "manifestUrl", "assetsUrl", "fabricApi", "quiltApi", "graphics", "accountMode", "username", "modrinthApi", "javaApi", "javaGithubApi").contains(k)) {
+            if(k.equals("curseforgeApiKey")) {
+                String key=e.getValue();
+                if(key.length()>512||key.matches("(?s).*[\\x00-\\x1f].*"))throw new IOException("Invalid CurseForge API key configuration");
+                Path privateConfig=root.resolve("private/curseforge.properties");
+                if(key.isEmpty())Files.deleteIfExists(privateConfig);
+                else {FilesUtil.properties(privateConfig,stringMap("apiKey",key));FilesUtil.restrict(privateConfig);}
+            }
+            else if(k.matches("java[0-9]+")||Arrays.asList("resolution", "memoryMb", "microsoftClientId", "manifestUrl", "assetsUrl", "fabricApi", "quiltApi", "graphics", "controllerMode", "accountMode", "username", "modrinthApi", "curseforgeApi", "javaApi", "javaGithubApi").contains(k)) {
                 if(k.equals("resolution")&&!Arrays.asList("1280x720","1920x1080","2560x1440","3840x2160").contains(e.getValue()))throw new IOException("Choose 720p, 1080p, 1440p or 2160p");
                 if(k.equals("memoryMb"))memory(e.getValue());
                 if(k.equals("accountMode")&&!Arrays.asList("microsoft", "offline").contains(e.getValue()))throw new IOException("accountMode must be microsoft or offline");
                 if(k.equals("graphics")&&!Arrays.asList("opengl", "zink").contains(e.getValue()))throw new IOException("graphics must be opengl or zink");
+                if(k.equals("controllerMode")&&!Arrays.asList("emulated","native").contains(e.getValue()))throw new IOException("controllerMode must be emulated or native");
                 settings.put(k, e.getValue());
             }
             else throw new IOException("Unknown setting: "+k);
@@ -440,6 +454,9 @@ public final class Main {
                 importModrinth(stage,dest,i);
                 return;
             }
+            if(Files.isRegularFile(stage.resolve("manifest.json"))) {
+                new CurseForgePacks(this).importManifest(stage,dest,i);return;
+            }
             Path pack=stage;
             if(!Files.isRegularFile(pack.resolve("mmc-pack.json"))) {
                 try(DirectoryStream<Path> ds=Files.newDirectoryStream(stage)) {
@@ -481,6 +498,7 @@ public final class Main {
             if(!Files.isDirectory(game))game=pack.resolve("minecraft");
             if(Files.isDirectory(game))FilesUtil.copyTree(game, dest.resolve(".minecraft"));
             Map<String, String> m=stringMap("id", i, "name", name, "version", v, "loader", loader, "loaderVersion", lv, "installed", "false");
+            Icons.importIcon(pack,dest,cfg,m);
             FilesUtil.properties(dest.resolve("instance.properties"), m);
             writePolyMC(dest, m);
             message="PolyMC pack imported; install to fetch verified game and loader dependencies";
@@ -611,14 +629,26 @@ public final class Main {
         if(file==null)throw new IOException("Mod version has no downloadable files");
         Path dst=modPath(i, Json.text(file, "filename"));
         Map<String, Object> hashes=Json.obj(file.get("hashes"));
-        FilesUtil.download(Json.text(file, "url"), dst, Json.text(hashes, "sha1"), Installer.size(file));
+        String sha1=Json.text(hashes,"sha1");long size=Installer.size(file);
+        if(!sha1.matches("[a-fA-F0-9]{40}")||size<=0||size>2L*1024*1024*1024)throw new IOException("Mod download integrity metadata missing");
         for(Object dep:Json.arr(v.get("dependencies"))) {
             Map<String, Object> d=Json.obj(dep);
             if(!"required".equals(Json.text(d, "dependency_type")))continue;
             String projectId=Json.text(d, "project_id");
-            if(projectId.isEmpty())throw new IOException("Dependency requires an explicit version with no project ID; install it manually");
+            if(projectId.isEmpty()) {
+                String dependencyVersion=id(Json.text(d,"version_id"));
+                Path detail=root.resolve("cache/mod-dependency-"+dependencyVersion+".json");
+                FilesUtil.refresh(base+"/version/"+dependencyVersion,detail);
+                Map<String,Object> dependency=installer.json(detail);
+                if(!dependencyVersion.equals(Json.text(dependency,"id")))throw new IOException("Mod dependency version mismatch");
+                projectId=id(Json.text(dependency,"project_id"));
+            }
             downloadModVersion(projectId, Json.text(d,"version_id"), m, i, base, visited, depth+1);
         }
+        // Keep the requested mod unavailable until its required dependencies
+        // have downloaded successfully.
+        FilesUtil.download(Json.text(file,"url"),dst,sha1,size);
+        Content.validateArchive(dst);
     }
     void installJava()throws IOException {
         int major;
@@ -652,6 +682,7 @@ public final class Main {
                 if(n>=128)break;
                 Map<String, String> m=FilesUtil.properties(p.resolve("instance.properties"));
                 for(String k:Arrays.asList("id", "name", "version", "loader", "installed", "loaderVersion"))v.put("instance."+n+"."+k, m.getOrDefault(k, ""));
+                v.put("instance."+n+".icon",Icons.instance(this,p,m));
                 n++;
             }
         }
@@ -674,23 +705,11 @@ public final class Main {
             }
         }
         v.put("version.count", Integer.toString(n));
-        n=0;
-        if(request.containsKey("id")&&request.get("id").matches("[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,63}")&&Files.isDirectory(dir(request.get("id")).resolve(".minecraft/mods"))) {
-            List<Path> mods=new ArrayList<Path>();
-            try(DirectoryStream<Path> ds=Files.newDirectoryStream(dir(request.get("id")).resolve(".minecraft/mods"))) {
-                for(Path p:ds)if(Files.isRegularFile(p)&&(p.toString().endsWith(".jar")||p.toString().endsWith(".jar.disabled")))mods.add(p);
-            }
-            Collections.sort(mods);
-            for(Path p:mods) {
-                if(n>=256)break;
-                v.put("mod."+n+".name", p.getFileName().toString());
-                v.put("mod."+n+".enabled", Boolean.toString(p.toString().endsWith(".jar")));
-                n++;
-            }
-        }
-        v.put("mod.count", Integer.toString(n));
+        Content.view(this,v);
         v.put("settings.memoryMb", settings.getOrDefault("memoryMb", "2048"));
         v.put("settings.resolution",settings.getOrDefault("resolution","1280x720"));
+        v.put("settings.graphics",settings.getOrDefault("graphics","opengl"));
+        v.put("settings.controllerMode",settings.getOrDefault("controllerMode","emulated"));
         v.put("settings.accountMode", settings.getOrDefault("accountMode", "microsoft"));
         if(Files.isRegularFile(root.resolve("private/account.json"))) {
             String accountName=Json.text(auth.account(false),"name");
@@ -772,6 +791,7 @@ public final class Main {
         String i=required("id");
         Map<String, String> m=instance(i);
         Path d=dir(i);
+        FabricMods.check(this,d,m);
         if(!Boolean.parseBoolean(m.get("installed"))||!Files.isRegularFile(d.resolve("installed.json")))throw new IOException("Instance is not installed; run install first");
         Map<String, Object> meta=installer.json(d.resolve("installed.json"));
         int major=Installer.javaMajor(meta);
@@ -834,6 +854,9 @@ public final class Main {
         placeholders.put("resolution_width", dimensions[0]);
         placeholders.put("resolution_height", dimensions[1]);
         List<String> jvm=new ArrayList<String>();
+        // Fabric reports loader errors to the log; its desktop AWT dialog has
+        // no usable window on a native PS5 launcher.
+        jvm.add("-Dfabric.noGui=true");
         jvm.add("-Xms512M");
         jvm.add("-Xmx"+memory(request.getOrDefault("memoryMb", settings.getOrDefault("memoryMb", "2048")))+"M");
         // PS5 Wine backs the Java heap above the compressed-pointer address range.
@@ -887,7 +910,11 @@ public final class Main {
         }
         if(argline.length()>32768)throw new IOException("Minecraft command line exceeds Windows/runtime 32768-character limit");
         String graphics=settings.getOrDefault("graphics", "opengl");
-        String text="[application]\nid=minecraft\nname=Minecraft Java\nexecutable="+windows(java)+"\nworking_directory="+windows(game)+"\narguments="+argline+"\nprefix=minecraft\nruntime=wine-wow64\narchitecture=pe64\ngraphics="+graphics+"\n[display]\ndesktop="+resolution+"\nview=window\nscaling=fit\nrefresh=120\n[input]\nmode=keyboard\nmouse=right_stick\ncross=space\ncircle=escape\nsquare=e\ntriangle=q\nl1=wheel_up\nr1=wheel_down\nl2=mouse_right\nr2=mouse_left\nup=w\ndown=s\nleft=a\nright=d\noptions=escape\n";
+        String controllerMode=settings.getOrDefault("controllerMode","emulated");
+        if(!Arrays.asList("emulated","native").contains(controllerMode))throw new IOException("Unsupported controller mode");
+        String input=controllerMode.equals("native")?"mode=xinput\nmouse=none\n":
+            "mode=keyboard\nmouse=right_stick\ncross=space\ncircle=escape\nsquare=e\ntriangle=q\nl1=wheel_up\nr1=wheel_down\nl2=mouse_right\nr2=mouse_left\nup=w\ndown=s\nleft=a\nright=d\noptions=escape\n";
+        String text="[application]\nid=minecraft\nname=Minecraft Java\nexecutable="+windows(java)+"\nworking_directory="+windows(game)+"\narguments="+argline+"\nprefix=minecraft\nruntime=wine-wow64\narchitecture=pe64\ngraphics="+graphics+"\n[display]\ndesktop="+resolution+"\nview=window\nscaling=fit\nrefresh=120\n[input]\n"+input;
         FilesUtil.write(root.resolve("profiles/launch.profile"), text);
         FilesUtil.restrict(root.resolve("profiles/launch.profile"));
         writePolyMC(d, m);

@@ -11,6 +11,9 @@ typedef struct PwVideoOutPs5 {
     int unregister_rc,close_rc,munmap_rc,release_rc,agc_close_rc;
 } PwVideoOutPs5;
 int pw_videoout_ps5_open(PwVideoOutPs5 *);
+/* Restore the normal output preset for the launcher after a high-refresh
+ * game. Does not change the game profile or the monitor's FreeSync setting. */
+int pw_videoout_ps5_fixed_output(PwVideoOutPs5 *);
 int pw_videoout_ps5_close(PwVideoOutPs5 *);
 int pw_videoout_ps5_present(PwVideoOutPs5 *,const PwPresentView *);
 /* frame scaled to the whole screen by mode (PW_PRESENT_SCALE_*), the rest

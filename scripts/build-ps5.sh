@@ -38,6 +38,8 @@ for source in "${sources[@]}"; do
 done
 "${cc[@]}" -std=c11 "${common[@]}" -c "$root/app/native/pm_frontend.c" -o "$build/obj/pm_frontend.o"
 objects+=("$build/obj/pm_frontend.o")
+"${cc[@]}" -std=c11 "${common[@]}" -c "$root/app/native/pm_icons.c" -o "$build/obj/pm_icons.o"
+objects+=("$build/obj/pm_icons.o")
 "${cc[@]}" -std=c11 "${common[@]}" -DNDEBUG -c "$root/vendor/qrcodegen/qrcodegen.c" -o "$build/obj/qrcodegen.o"
 objects+=("$build/obj/qrcodegen.o")
 "${cc[@]}" -std=c11 "${common[@]}" -include "$vendor/native/ps5log/ps5log_ps5_net.h" -c "$vendor/native/ps5log/ps5log.c" -o "$build/obj/ps5log.o"

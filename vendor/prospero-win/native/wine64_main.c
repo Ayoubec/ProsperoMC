@@ -30,6 +30,7 @@
 #endif
 #include "../src/pw_wine_start.h"
 #include "pm_frontend.h"
+#include "pm_icons.h"
 #include "pm_bridge.h"
 #include "../src/pw_script_input.h"
 #include "../src/pw_wine_launch.h"
@@ -225,6 +226,7 @@ static PmView pm_view;
 static const char *library_root = PW_WINE64_ROOT_SANDBOX;
 static int pm_backend_running;
 static int pm_worker_active;
+static int pm_quitting;
 static void pm_catalog_reload(void);
 static const PwGameProfile *pm_profile_find(const char *id)
 {
@@ -647,6 +649,10 @@ static void restart_title(const PwWineApp *app, uint32_t cycle, const char *reas
  * the launcher. */
 static void on_exit_report(void)
 {
+    if (__atomic_load_n(&pm_quitting, __ATOMIC_ACQUIRE)) {
+        pw_diagnostics_close("launcher-quit");
+        return;
+    }
     PS5LOG_LOG("PW_WINE64 exit sink_calls=%lu", sink_calls);
     if (pm_backend_running && pm_bridge_consume_launch(library_root)) {
         pm_catalog_reload();
@@ -696,6 +702,8 @@ static int open_library(void)
     }
     pm_catalog_reload();
     pm_frontend_init(&pm_frontend);
+    pm_icons_init(library_root);
+    pm_frontend_set_icon_loader(pm_icon_pixels);
     pm_bridge_frontend_load(library_root,&pm_frontend);
     (void)pm_bridge_view(library_root,&pm_view);
     char settings_path[768];
@@ -715,6 +723,12 @@ static int open_library(void)
 }
 static void pm_invoke(const PmAction *action)
 {
+    if (!strcmp(action->command,"quit")) {
+        __atomic_store_n(&pm_quitting,1,__ATOMIC_RELEASE);
+        (void)pm_bridge_frontend_save(library_root,&pm_frontend);
+        PS5LOG_LOG("PROSPEROMC launcher quit requested");
+        return;
+    }
     if (!strcmp(action->command,"settings"))
         PS5LOG_LOG("PROSPEROMC settings memory=%d resolution_height=%d",action->memory_mb,action->resolution_height);
     int local=pm_bridge_local(library_root,action,&pm_view);
@@ -817,9 +831,14 @@ static void run_launcher(void)
     const size_t frame_bytes=(size_t)1920*1080*4u;
     uint8_t *frame=mmap(NULL,frame_bytes,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
     int video_status=pw_videoout_ps5_open(&video),pad_status=pw_pad_ps5_platform_ops(&pad_ops);
+    if(video_status==PW_OK) {
+        int output_status=pw_videoout_ps5_fixed_output(&video);
+        PS5LOG_LOG("PROSPEROMC launcher fixed output rc=%08x",(unsigned)output_status);
+    }
     uint64_t previous_frame=now_ns();
     uint64_t repeat_at=0;uint32_t held_navigation=0;
     int previous_r2=0;
+    int exit_requested=0;
     if(audio_port<0 && pw_audio_ps5_platform_ops(&audio_ops)==PW_OK)
         (void)pw_audio_ps5_open_port(&audio_ops,&audio_port);
     if (pad_status==PW_OK) pad_status=pw_pad_ps5_open(&pad,&pad_ops,pad_open_map,sizeof(pad_open_map)/sizeof(pad_open_map[0]));
@@ -838,14 +857,7 @@ static void run_launcher(void)
             int completed=pm_bridge_response_ready(library_root);
             (void)pm_bridge_view(library_root,&pm_view);
             pm_view.busy=!completed;
-            if (completed && pm_frontend.screen==PM_MODS && pm_view.instance_count>0) {
-                PmAction mods={0}; snprintf(mods.command,sizeof(mods.command),"mods");
-                int selected=pm_frontend.selected_instance;
-                if (selected>=0 && selected<pm_view.instance_count) {
-                    snprintf(mods.id,sizeof(mods.id),"%s",pm_view.instances[selected].id);
-                    (void)pm_bridge_local(library_root,&mods,&pm_view);
-                }
-            }
+            if(completed)pm_icons_invalidate();
         }
         if (tick==1 && pm_profile_find("launcher") && pm_bridge_auto_catalog(library_root,&pm_view)) {
             snprintf(action.command,sizeof(action.command),"catalog");
@@ -900,6 +912,21 @@ static void run_launcher(void)
         }
         pm_click(key);
         if(invoke)pm_invoke(&action);
+        if(__atomic_load_n(&pm_quitting,__ATOMIC_ACQUIRE) && !exit_requested) {
+            /* Let SystemService end the title normally. Unix _exit bypasses
+             * the console's application lifecycle and reports a crash. Keep
+             * the UI/VideoOut alive if the service refuses the request. */
+            exit_requested=1;
+            int exit_status=sceSystemServiceLoadExec("exit",NULL);
+            PS5LOG_LOG("PROSPEROMC normal title exit returned rc=%08x",(unsigned)exit_status);
+            if(exit_status) {
+                exit_requested=0;
+                __atomic_store_n(&pm_quitting,0,__ATOMIC_RELEASE);
+                snprintf(pm_frontend.notice,sizeof(pm_frontend.notice),
+                         "Unable to close the app (system error %08x)",(unsigned)exit_status);
+            } else snprintf(pm_frontend.notice,sizeof(pm_frontend.notice),"Closing ProsperoMC...");
+        }
+        pm_icons_tick();
         if (video_status==PW_OK && frame!=MAP_FAILED) {
             const PwPresentTarget target={frame,1920,1080,1920*4u,frame_bytes};
             const PwPresentView view={frame,target.width,target.height,target.stride,(uint32_t)frame_bytes};
@@ -1337,9 +1364,26 @@ int main(int argc, char **argv)
     if (script_input.pad_events && !set_pad)
         PS5LOG_LOG("PW_WINE64 script pad events ignored: the profile's [input] mode is not xinput");
 #endif
+    unsigned file_samples=0;
+    const uint64_t file_sample_seconds[]={30,90,180};
     for (uint64_t tick = 1; status == PW_OK; tick++) {
         uint64_t now = now_ns();
         pw_diagnostics_tick(now);
+        /* Java's file logger does not pass chunk errors to the Wine output
+         * sink. Take three bounded snapshots and try one ordinary read-only
+         * open to distinguish kernel open failures from Wine handle errors. */
+        if(!pm_backend_running && file_samples<3 &&
+           now-started>=file_sample_seconds[file_samples]*1000000000ull) {
+            int saved_errno=errno,open_errno=0;
+            char probe_path[512];
+            snprintf(probe_path,sizeof(probe_path),"%s/settings.properties",library_root);
+            FILE *probe=fopen(probe_path,"rb");
+            if(!probe)open_errno=errno;else fclose(probe);
+            PS5LOG_LOG("PROSPEROMC file-probe sample=%u elapsed=%llu open_errno=%d",
+                ++file_samples,(unsigned long long)((now-started)/1000000000ull),open_errno);
+            pm_report_file_inventory();
+            errno=saved_errno;
+        }
         PwPresentView view;
         PwWineInput events[2 * PW_GAME_BUTTON_COUNT + 1];
         int presented = 0;
@@ -1437,7 +1481,7 @@ int main(int argc, char **argv)
                                                       game_input.mouse_speed,
                                                       PW_WINE64_TICK_US, &events[count]);
             }
-            if (!pm_backend_running) {
+            if (!pm_backend_running && game_input.mode == PW_GAME_INPUT_KEYBOARD) {
                 static uint8_t held;
                 uint8_t movement=(pad.left_stick.y < 88 ? 1u : 0u) | (pad.left_stick.y > 168 ? 2u : 0u) |
                                  (pad.left_stick.x < 88 ? 4u : 0u) | (pad.left_stick.x > 168 ? 8u : 0u);

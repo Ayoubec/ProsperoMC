@@ -13,6 +13,12 @@ import java.util.*;
 public final class Ps5Dns implements InvocationHandler {
     final String[] endpoints;
     Ps5Dns(String[] endpoints) { this.endpoints=endpoints.clone(); }
+    /** Initialize the JVM-wide resolver before a game replaces the context loader. */
+    public static void initializeModern()throws Exception {
+        try { Class.forName("java.net.spi.InetAddressResolverProvider"); }
+        catch(ClassNotFoundException olderJava) { return; }
+        InetAddress.getByName("localhost");
+    }
     public static void install(String... endpoints)throws Exception {
         if(endpoints.length==0)endpoints=new String[]{"https://1.1.1.1/dns-query","https://1.0.0.1/dns-query"};
         Class<?> service=Class.forName("sun.net.spi.nameservice.NameService");
@@ -30,7 +36,7 @@ public final class Ps5Dns implements InvocationHandler {
         throw new UnsupportedOperationException(method.getName());
     }
     InetAddress[] lookup(String hostname)throws IOException {
-        if("localhost".equalsIgnoreCase(hostname))return new InetAddress[]{InetAddress.getByAddress(hostname,new byte[]{127,0,0,1})};
+        if(hostname.isEmpty()||"localhost".equalsIgnoreCase(hostname))return new InetAddress[]{InetAddress.getByAddress(hostname,new byte[]{127,0,0,1})};
         String name=IDN.toASCII(hostname,IDN.USE_STD3_ASCII_RULES);
         IOException failure=null;
         for(String endpoint:endpoints) {

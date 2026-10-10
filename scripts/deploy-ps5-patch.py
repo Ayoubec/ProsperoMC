@@ -7,6 +7,9 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+from importlib.machinery import SourceFileLoader
+
+zink = SourceFileLoader('zink_provider',str(Path(__file__).with_name('stage-zink-provider.py'))).load_module()
 
 ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location('deploy', Path(__file__).with_name('deploy-ps5.py'))
@@ -61,6 +64,7 @@ if __name__ == '__main__':
     parser.add_argument('--graphics-only', action='store_true', help='Publish only the verified win32u graphics module and reports')
     parser.add_argument('--native-only', action='store_true', help='Publish only the native launcher executable and reports')
     parser.add_argument('--app-update', action='store_true', help='Update app binaries/reports, preserving console game data and settings')
+    parser.add_argument('--zink-only', action='store_true', help='Publish only the pinned PE64 Mesa WGL/Zink provider and notices')
     args = parser.parse_args()
     title = ROOT / 'dist/PPSA99888'
     data = title / 'prosperomc'
@@ -75,8 +79,18 @@ if __name__ == '__main__':
                      'win/wine/lib/wine/x86_64-unix/win32u.prx','WINE_SOURCES.txt','STAGE-REPORT.json','eboot.bin',
                      'sce_sys/icon0.png','sce_sys/pic0.dds','sce_sys/pic1.dds','sce_sys/param.json','sce_sys/snd0.at9']
             names += [p.relative_to(title).as_posix() for p in sorted((title / 'WINE_PATCHES').glob('*.patch'))]
+            provider_names=zink.provider_names(title)
+            for name in provider_names:
+                deploy.ensure_directory(ftp,deploy.TITLE_ROOT+'/'+str(Path(name).parent).replace('\\','/'))
+            names += provider_names
             deploy.ensure_directory(ftp,deploy.TITLE_ROOT+'/WINE_PATCHES')
             publish(ftp,deploy.DATA_ROOT,data,['launcher/prosperomc-launcher.jar','STAGE-REPORT.json'],True)
+            publish(ftp,deploy.TITLE_ROOT,title,names,True)
+        elif args.zink_only:
+            names=zink.provider_names(title)
+            if not names:raise ValueError('Stage the verified Zink provider first')
+            for name in names:
+                deploy.ensure_directory(ftp,deploy.TITLE_ROOT+'/'+str(Path(name).parent).replace('\\','/'))
             publish(ftp,deploy.TITLE_ROOT,title,names,True)
         elif args.native_only:
             publish(ftp, deploy.TITLE_ROOT, title, ['eboot.bin', 'STAGE-REPORT.json'])

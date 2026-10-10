@@ -27,24 +27,29 @@ when ProsperoMC is highlighted in the PS5 home menu, through `sce_sys/snd0.at9`;
 it does not play inside the launcher. Refresh the loader's cached presentation
 assets after updating if the previous selection music remains.
 
-The main flow is to choose a release or snapshot in Versions and download it.
+The main flow is **Add Instance**: choose Minecraft, Modrinth, CurseForge or
+an imported pack. Home shows your instances with their pack artwork, with
+Minecraft-style loader icons when no artwork is available. Library offers
+Play, Clone and Delete; deleting an instance requires confirmation.
+For Minecraft, choose a release or snapshot and its loader, then download it.
 Installation selects the Java major required by that version, reuses a valid
 installed Windows x64 runtime, or downloads a verified runtime when missing.
 Settings lists detected runtimes and offers Java downloads. Minecraft 1.12.2
 is the initial test case, not the application's fixed or main version.
 Settings selects 1280×720, 1920×1080, 2560×1440 (2K/1440p) or
-3840×2160 (4K). Changing the resolution saves it immediately for the next
-launch; memory changes still use Save Settings. These are game-rendering
+3840×2160 (4K). Select a setting to open its choices, then use Save Settings
+to apply changes to the next launch. Directional controls move between fields.
+These are game-rendering
 resolutions; the HDMI output mode depends on the console/display. Higher
 resolution can reduce performance.
 Game windows have edge resizing disabled on PS5.
 
-To download a Modrinth modpack, open Mods and press Square or select
-**Modrinth Modpacks**. Search with the controller's on-screen keyboard or a
+To download a Modrinth modpack, choose **Add Instance → Modrinth**.
+Search with the controller's on-screen keyboard or a
 USB keyboard, choose a project, then choose its release. The installer downloads
 the pack, Minecraft, its loader and required Java as a separate instance.
-Fabulously Optimized is the initial search. Alpha/beta/release labels are shown;
-the latest pack's PS5 execution still needs its own test.
+There is no preset search. Alpha/beta/release labels are shown; each pack's
+PS5 execution still needs its own test.
 Failed game installation can be resumed by selecting the release again or its
 instance in Library. Downloads show byte progress and verify archive hashes.
 If Adoptium's API is unreachable, Java uses official Temurin GitHub releases
@@ -55,12 +60,40 @@ The bundled Wine title resolver supports only numeric addresses and localhost;
 without this compatibility service, downloads fail with UnknownHostException.
 
 For a local pack, copy a PolyMC/MultiMC ZIP or Modrinth `.mrpack` into
-`/data/ProsperoMC/imports` over FTP. In Library, press Square, choose
-the pack, and press X. Select the new instance to install its game and loader
+`/data/ProsperoMC/imports` over FTP. Choose **Add Instance → Import Pack**,
+choose the pack, and press X. Select the new instance to install its game and loader
 dependencies. Each pack keeps its own mods, configuration and worlds. Fabric,
-Quilt and Forge 1.12.2 manifests are supported; modern Forge/NeoForge and
-CurseForge manifests are still unsupported. Modrinth files are verified against
+Quilt and Forge 1.12.2 manifests are supported. CurseForge manifest ZIPs use
+the official API to resolve their files and need your own API key;
+modern Forge/NeoForge installers are still unsupported. Modrinth files are verified against
 both SHA1 and SHA512, and client overrides take precedence over shared overrides.
+
+**Content** manages mods, resource packs and shader packs for the selected
+instance. Switch instances and content type in that tab, browse compatible
+Modrinth releases, or import a local JAR/ZIP from
+`/data/ProsperoMC/imports/mods`, `imports/resourcepacks` or `imports/shaderpacks`.
+Files can be enabled, disabled or deleted. Resource/shader pack activation is
+chosen in Minecraft settings; shader packs also require a compatible shader mod.
+Missing enabled Fabric dependencies are reported before starting Minecraft.
+
+Settings also selects emulated controller mouse/keyboard input or native
+XInput for controller mods. Native mode disables game key/mouse emulation;
+the launcher's controller navigation remains available. The OpenGL renderer
+selector offers the native PS5 driver and upstream's WGL/Zink provider, which
+translates OpenGL to Vulkan. Stage the pinned provider with
+`python scripts/stage-zink-provider.py`; normal CMD sends include it afterward.
+Console validation of this new provider is pending.
+
+### CurseForge setup
+
+CurseForge's official API requires an API key issued to the application user.
+Obtain API access through [CurseForge for Studios](https://console.curseforge.com/),
+then put a UTF-8 file at `/data/ProsperoMC/private/curseforge.properties` containing
+`apiKey=YOUR_KEY`. The key stays in private app configuration and is excluded
+from public launcher state and instance exports. **Add Instance → CurseForge**
+then browses packs and release files. The installer verifies file sizes and
+SHA1/MD5 hashes and respects publishers who disable third-party downloads.
+See [CurseForge setup and limitations](docs/curseforge.md).
 
 L1/R1 cycle the hotbar, and USB mouse-wheel ticks are forwarded to the game.
 The display profile requests 120 Hz with the upstream SDK's 60 Hz fallback;

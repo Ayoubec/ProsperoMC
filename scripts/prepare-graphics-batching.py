@@ -4,6 +4,7 @@ import difflib
 import hashlib
 import json
 import tarfile
+from graphics_vertex_formats import patch_driver
 
 root = Path(__file__).resolve().parent.parent
 sdk = root / '.deps/graphics-sdk-ci-738f94c/extracted'
@@ -563,6 +564,8 @@ native_after = native_after.replace(anchor, '''        ++runtime_present_count;
         runtime_batch_timing_present(present_ns, os_time_get_nano());
 #endif
 #if defined(PS5_DRAW_PROFILE)''')
+after = patch_driver(after)
+(out / 'ps5_screen.c').write_bytes(after.encode())
 (out / 'ps5_agc_native_runtime.c').write_bytes(native_after.encode())
 patch = ''.join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
     fromfile='a/src/gallium/ps5/ps5_screen.c', tofile='b/src/gallium/ps5/ps5_screen.c'))

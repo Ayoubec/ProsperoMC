@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+from graphics_vertex_formats import patch_compiler
 
 root = Path(__file__).resolve().parent.parent
 work = Path(sys.argv[1]).resolve()
@@ -90,6 +91,36 @@ if source_ready:
     if not cross.exists():
         cross.write_text((payload / 'toolchain/prospero.ini').read_text().replace('@DIRNAME@',str(payload / 'toolchain')).replace('[target_machine]','[host_machine]'))
 shutil.copy2(out / 'ps5_agc_native_runtime.c',source / 'src/platform/ps5_agc_native_runtime.c')
+# The earlier driver-only builds did not need the compiler's external headers.
+# Reuse the exact archives shipped with the verified SDK for the changed unit.
+for dependency, header in (
+    ('opengnm', 'include/gnm_shaderbinary.h'),
+    ('Vulkan-Headers', 'include/vulkan/vulkan.h'),
+    ('SPIRV-Headers', 'include/spirv/spir-v.xml'),
+):
+    destination = source / 'third_party' / dependency
+    if (destination / header).is_file():
+        continue
+    package = next((root / '.deps/graphics-sdk-ci-738f94c').glob('ps5-opengl-sdk-*.tar.gz'))
+    with tarfile.open(package) as archive:
+        member = next(m for m in archive if m.name.endswith('/sources/' + dependency + '.tar'))
+        saved = work / (dependency + '.tar')
+        saved.write_bytes(archive.extractfile(member).read())
+    extracted = work / ('compiler-headers-' + dependency)
+    extract(saved, extracted, provenance['source_archives'][dependency + '.tar'])
+    located = next(extracted.rglob(Path(header).name))
+    dep_root = located
+    for _ in Path(header).parts:
+        dep_root = dep_root.parent
+    shutil.copytree(dep_root, destination, dirs_exist_ok=True)
+compiler_diff = patch_compiler(psbc, out / 'integer-vertex-compiler.patch')
+# Upstream's host bootstrap generates headers omitted from its standalone
+# Makefile. Use that exact verified generation section without rebuilding the
+# host compiler or inventing substitute Vulkan headers.
+host_bootstrap = (source / 'toolchain/build-opengnm-psbc.sh').read_text()
+generated_section = host_bootstrap.split('# These generated files', 1)[1].split('# Upstream enumerates', 1)[0]
+run(['bash'], input='# These generated files' + generated_section,
+    text=True, cwd=psbc)
 run([sys.executable, root / 'scripts/fix-mesa-upload-lifetime.py',
      mesa / 'src/gallium/auxiliary/util/u_vbuf.c'])
 run([sys.executable, root / 'scripts/check-mesa-upload-lifetime.py'])
@@ -104,12 +135,28 @@ compiler_headers = ['src/amd/common/amdgfxregs.h','src/amd/common/sid_tables.h',
     'src/compiler/nir/nir_intrinsics_indices.h']
 run(['make','-C',psbc,'-f',source / 'toolchain/Makefile.opengnm-psbc-ps5','-j8',*compiler_headers],
     env=dict(os.environ,PS5_PAYLOAD_SDK=str(payload)))
+run(['make','-C',psbc,'-f',source / 'toolchain/Makefile.opengnm-psbc-ps5',
+     '-j8', 'generated'], env=dict(os.environ,PS5_PAYLOAD_SDK=str(payload)))
+compiler_env = dict(os.environ, PS5_PAYLOAD_SDK=str(payload))
+compiler_recipe = subprocess.check_output([
+    'make', '--dry-run', '--always-make', '--no-print-directory', '-C', str(psbc),
+    '-f', str(source / 'toolchain/Makefile.opengnm-psbc-ps5'),
+    'GENERATED=', 'libpsbc/psbc_compile.ps5.o'], text=True, env=compiler_env)
+compiler_lines = [line for line in compiler_recipe.splitlines()
+                  if line.startswith(str(payload / 'bin/prospero-clang') + ' ')]
+if len(compiler_lines) != 1:
+    raise ValueError('Compiler recipe must compile exactly one verified source unit')
+compiler_command = shlex.split(compiler_lines[0])
+if compiler_command[-4:] != ['-c', 'libpsbc/psbc_compile.c', '-o', 'libpsbc/psbc_compile.ps5.o']:
+    raise ValueError('Compiler recipe output changed')
+run(compiler_command, cwd=psbc, env=compiler_env)
 run([sys.executable,root / 'scripts/check-shader-layout-cache.py'])
 run([sys.executable,root / 'scripts/check-worker-shader-cache.py'])
 run([sys.executable,root / 'scripts/check-batch-timings.py'])
 run([sys.executable,root / 'scripts/check-descriptor-retirement.py'])
 run([sys.executable,root / 'scripts/check-descriptor-ready-reuse.py'])
 run([sys.executable,root / 'scripts/check-upstream-async.py'])
+run([sys.executable,root / 'scripts/check-integer-vertex-formats.py'])
 run(['gcc','-O2',out / 'check-policy.c','-o',work / 'check-policy'])
 with (out / 'policy-check.log').open('w') as log:
     run([work / 'check-policy'],stdout=log)
@@ -134,7 +181,8 @@ if async_prepare:
 if batch_timings:
     flags += ['-DPROSPEROMC_BATCH_TIMINGS=1']
 (out / 'runtime-config.txt').write_text(shlex.join(flags)+'\n')
-cache_id = hashlib.sha256((out / 'ps5_screen.c').read_bytes()+(ci / 'sdk/lib/libpsbc.ps5.a').read_bytes()).hexdigest()
+cache_id = hashlib.sha256((out / 'ps5_screen.c').read_bytes()+
+    (psbc / 'libpsbc/psbc_compile.ps5.o').read_bytes()).hexdigest()
 (work / 'shader-cache-build-id.h').write_text('#define PS5_SHADER_CACHE_BUILD_ID "'+cache_id+'"\n')
 run([payload / 'bin/prospero-clang',*flags,'-I'+str(build / 'src/compiler'),'-include',work / 'shader-cache-build-id.h',
      '-I'+str(source / 'src/platform'),'-c',source / 'src/gallium/ps5/ps5_screen.c','-o',work / 'ps5_screen.o'])
@@ -150,6 +198,12 @@ modified.mkdir(parents=True, exist_ok=True)
 shutil.copy2(out / 'runtime-config.txt',modified / 'runtime-config.txt')
 shutil.copytree(ci / 'sdk',modified / 'sdk',dirs_exist_ok=True)
 run(['llvm-ar-18', 'r', modified / 'sdk/lib/libgallium.a', vbuf_object])
+compiler_archive = modified / 'sdk/lib/libpsbc.ps5.a'
+compiler_members = subprocess.check_output(['llvm-ar-18', 't', compiler_archive],text=True).splitlines()
+if compiler_members.count('psbc_compile.ps5.o') != 1:
+    raise ValueError('Verified compiler archive has an unexpected compilation member')
+run(['llvm-ar-18', 'r', compiler_archive, psbc / 'libpsbc/psbc_compile.ps5.o'])
+shutil.copy2(psbc / 'libpsbc/psbc_compile.h', modified / 'sdk/include/psbc_compile.h')
 runtime = modified / 'sdk/lib/libps5_opengl_core33.a'
 run(['llvm-ar-18','r',runtime,work / 'ps5_screen.o',work / 'ps5_agc_runtime_backend.o'])
 shutil.copy2(work / 'ps5_screen.o',out / 'ps5_screen.o')
@@ -160,18 +214,27 @@ for path in sorted((modified / 'sdk').rglob('*')):
     if path.is_file() and path != manifest:
         lines.append(hashlib.sha256(path.read_bytes()).hexdigest()+'  '+path.relative_to(modified / 'sdk').as_posix())
 manifest.write_text('\n'.join(lines)+'\n')
-patch_hash = hashlib.sha256((out / 'smooth-legacy-batching.patch').read_bytes()).hexdigest()
+combined_patch = out / 'smooth-legacy-batching.patch'
+patch_data = combined_patch.read_text()
+compiler_marker = '--- a/third_party/opengnm-psbc/libpsbc/'
+patch_data = patch_data.split(compiler_marker,1)[0] + compiler_diff.read_text()
+combined_patch.write_text(patch_data)
+patch_hash = hashlib.sha256(combined_patch.read_bytes()).hexdigest()
 provenance.update(version=provenance['version']+'-prosperomc-quad-batching',
     original_sdk_manifest_sha256=provenance['sdk_manifest_sha256'],
+    original_psbc_archive_sha256=provenance['psbc_archive_sha256'],
+    psbc_archive_sha256=hashlib.sha256(compiler_archive.read_bytes()).hexdigest(),
     sdk_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
     runtime_archive_sha256=hashlib.sha256(runtime.read_bytes()).hexdigest(),
     local_patch={'file':'smooth-legacy-batching.patch','sha256':patch_hash,
-                 'description':'Release every retired Mesa vertex upload after driver binding on each draw; retain legacy batching and owned-buffer fixes; reclaim ready FIFO descriptors only between batches without waiting before empty-cache allocation, recycle retired descriptors, reuse byte-verified shader layouts, ' + ('enable upstream two-worker native command preparation and worker-local byte-verified shader hits, ' if async_prepare else '') + 'log only batch errors, and ' + ('enable diagnostic profiling' if profile else 'disable hot-path profiling') + ' in the draw driver and native backend'},
+                 'description':'Fetch packed signed and unsigned integer vertices directly on GPU through matching driver/compiler formats, avoiding per-draw CPU conversion; release every retired Mesa vertex upload after driver binding on each draw; retain legacy batching and owned-buffer fixes; reclaim ready FIFO descriptors only between batches without waiting before empty-cache allocation, recycle retired descriptors, reuse byte-verified shader layouts, ' + ('enable upstream two-worker native command preparation and worker-local byte-verified shader hits, ' if async_prepare else '') + 'log only batch errors, and ' + ('enable diagnostic profiling' if profile else 'disable hot-path profiling') + ' in the draw driver and native backend'},
     draw_profile=profile,
     batch_timings=batch_timings,
     async_native_prepare=async_prepare,
     native_prepare_workers=2 if async_prepare else 0,
     gpu_buffer_pool_bytes=1073741824,
+    native_integer_vertex_formats=True,
+    compiler_archive_sha256=hashlib.sha256(compiler_archive.read_bytes()).hexdigest(),
     runtime_config_sha256=hashlib.sha256((out / 'runtime-config.txt').read_bytes()).hexdigest(),
     hardware_validation='pending console retest of modified draw driver')
 (modified / 'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')

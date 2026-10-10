@@ -46,6 +46,7 @@ extern void sceVideoOutSetBufferAttribute2(void *,uint64_t,uint32_t,uint32_t,uin
                                             uint64_t,uint32_t,uint64_t);
 extern int sceVideoOutRegisterBuffers2(int32_t,int32_t,int32_t,void *,int32_t,void *,int32_t,void *);
 extern int sceVideoOutWaitVblank(int32_t);
+extern int sceVideoOutConfigureOutput(int32_t,uint32_t,const void *,const void *,const void *);
 extern int sceSystemServiceHideSplashScreen(void);
 
 /* Column and row parts of the tiled index, filled once at open, and the
@@ -83,6 +84,15 @@ vm_failed:
     (void)pw_videoout_ps5_close(video);return PW_ERR_VM;
 state_failed:
     (void)pw_videoout_ps5_close(video);return PW_ERR_STATE;
+}
+int pw_videoout_ps5_fixed_output(PwVideoOutPs5 *video)
+{
+    if(!video || !video->opened || video->handle<0)return PW_ERR_PRECONDITION;
+    /* The same normal-output preset used by ps5-opengl's HFR teardown.
+     * Request it only for the launcher; game VideoOut retains its own mode. */
+    int status=sceVideoOutConfigureOutput(video->handle,1,NULL,NULL,NULL);
+    for(unsigned i=0;!status && i<2;i++)status=sceVideoOutWaitVblank(video->handle);
+    return status;
 }
 int pw_videoout_ps5_close(PwVideoOutPs5 *video)
 {

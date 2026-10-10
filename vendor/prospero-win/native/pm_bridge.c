@@ -78,7 +78,7 @@ static int same_file_contents(const char *source, const char *target)
 }
 int pm_bridge_initialize(const char *root, const char *app0)
 {
-    static const char *const dirs[] = {"profiles", "launcher", "runtimes", "instances", "imports"};
+    static const char *const dirs[] = {"profiles", "launcher", "runtimes", "instances", "imports", "imports/mods", "imports/resourcepacks", "imports/shaderpacks"};
     char name[768], source[768];
     if (make_dir(root)) return -1;
     for (size_t i = 0; i < sizeof(dirs)/sizeof(dirs[0]); i++) {
@@ -148,6 +148,9 @@ static void view_property(void *context, const char *key, const char *value)
     TEXT("account.status", account_status);
     TEXT("auth.provider", auth_provider);
     TEXT("remote.projectId", remote_project);
+    TEXT("graphics", graphics); TEXT("settings.graphics", graphics);
+    TEXT("controllerMode", controller_mode); TEXT("settings.controllerMode", controller_mode);
+    TEXT("content.kind", content_kind); TEXT("content.instance", content_instance);
 #undef TEXT
     if (!strcmp(key,"instance.count")) { int n=integer(value,2147483647); view->instance_count=n>PM_MAX_INSTANCES?PM_MAX_INSTANCES:n; }
     else if (!strcmp(key,"version.count")) { int n=integer(value,2147483647); view->version_count=n>PM_MAX_VERSIONS?PM_MAX_VERSIONS:n; }
@@ -168,6 +171,7 @@ static void view_property(void *context, const char *key, const char *value)
         else if (!strcmp(field,"name")) copy(item->name,sizeof(item->name),value);
         else if (!strcmp(field,"version")) copy(item->version,sizeof(item->version),value);
         else if (!strcmp(field,"loader")) copy(item->loader,sizeof(item->loader),value);
+        else if (!strcmp(field,"icon")) copy(item->icon,sizeof(item->icon),value);
         else if (!strcmp(field,"installed")) item->installed = !strcmp(value,"true") || !strcmp(value,"1");
     } else if (sscanf(key,"version.%u.%n", &i, &chars) == 1 && chars && i < PM_MAX_VERSIONS) {
         PmVersion *item = &view->versions[i]; const char *field = key + chars;
@@ -183,6 +187,7 @@ static void view_property(void *context, const char *key, const char *value)
         if(!strcmp(field,"id"))copy(item->id,sizeof(item->id),value);
         else if(!strcmp(field,"name"))copy(item->name,sizeof(item->name),value);
         else if(!strcmp(field,"description"))copy(item->description,sizeof(item->description),value);
+        else if(!strcmp(field,"icon"))copy(item->icon,sizeof(item->icon),value);
     } else if (sscanf(key,"remote.version.%u.%n", &i, &chars) == 1 && chars && i < 64) {
         PmPackRelease *item=&view->remote_versions[i];const char *field=key+chars;
         if(!strcmp(field,"id"))copy(item->id,sizeof(item->id),value);
@@ -222,10 +227,40 @@ static int scan_packs(const char *root,PmView *view)
     }
     return 1;
 }
+static int content_kind_safe(const char *kind)
+{ return !strcmp(kind,"mods") || !strcmp(kind,"resourcepacks") || !strcmp(kind,"shaderpacks"); }
+static int scan_content_imports(const char *root,PmView *view)
+{
+    char folder[768],full[1024];DIR *dir;struct dirent *entry;
+    view->content_import_count=0;
+    if(!content_kind_safe(view->content_kind) ||
+       snprintf(folder,sizeof(folder),"%s/imports/%s",root,view->content_kind)>=(int)sizeof(folder) ||
+       !(dir=opendir(folder)))return 1;
+    const char *suffix=!strcmp(view->content_kind,"mods")?".jar":".zip";
+    while((entry=readdir(dir))) {
+        size_t n=strlen(entry->d_name);struct stat st;
+        if(n<5 || n>=PM_TEXT || strchr(entry->d_name,'\n') || strchr(entry->d_name,'\r') ||
+           strcmp(entry->d_name+n-4,suffix) || view->content_import_count>=PM_MAX_INSTANCES ||
+           snprintf(full,sizeof(full),"%s/%s",folder,entry->d_name)>=(int)sizeof(full) ||
+           lstat(full,&st) || !S_ISREG(st.st_mode))continue;
+        PmPack *pack=&view->content_imports[view->content_import_count];
+        if(windows(pack->source,sizeof(pack->source),full))continue;
+        copy(pack->name,sizeof(pack->name),entry->d_name);view->content_import_count++;
+    }
+    closedir(dir);
+    for(int i=1;i<view->content_import_count;i++) {
+        PmPack item=view->content_imports[i];int j=i;
+        while(j>0 && strcmp(view->content_imports[j-1].name,item.name)>0){view->content_imports[j]=view->content_imports[j-1];j--;}
+        view->content_imports[j]=item;
+    }
+    return 1;
+}
 int pm_bridge_view(const char *root, PmView *view)
 {
     char name[768]; int status;
     memset(view, 0, sizeof(*view)); view->memory_mb = 2048;
+    copy(view->graphics,sizeof(view->graphics),"opengl");
+    copy(view->controller_mode,sizeof(view->controller_mode),"emulated");
     copy(view->account_mode,sizeof(view->account_mode),"offline");
     copy(view->status,sizeof(view->status),"Ready");
     copy(view->detail,sizeof(view->detail),"Choose a Minecraft version or import your local installation.");
@@ -238,6 +273,7 @@ int pm_bridge_view(const char *root, PmView *view)
     path(name,sizeof(name),root,"settings.properties");
     (void)properties(name,view_property,view);
     (void)scan_packs(root,view);
+    (void)scan_content_imports(root,view);
     return status;
 }
 static int value_safe(const char *value) { return !strchr(value,'\n') && !strchr(value,'\r'); }
@@ -260,7 +296,7 @@ int pm_bridge_request(const char *root, const PmAction *action)
         if(n==10000)return -1;
         action=&resolved;
     }
-    static const char *const commands[] = {"catalog","create","create-install","install","install-java","detect-java","import","prepare-launch","mods","mod-toggle","mod-add","settings","auth-device","auth-poll","clone","export","import-pack","pack-search","pack-versions","pack-download"};
+    static const char *const commands[] = {"catalog","create","create-install","install","install-java","detect-java","import","prepare-launch","mods","mod-toggle","mod-add","settings","auth-device","auth-poll","auth-signout","clone","export","delete-instance","import-pack","pack-search","pack-versions","pack-download","curse-search","curse-versions","curse-download","content-list","content-import","content-toggle","content-delete","content-search","content-versions","content-download"};
     char name[768], temporary[768]; FILE *file; int allowed = 0, failed = 0;
     for (size_t i=0; i<sizeof(commands)/sizeof(commands[0]); i++) allowed |= !strcmp(action->command,commands[i]);
     if (!allowed || action->java_major<0 || action->java_major>99 ||
@@ -278,9 +314,12 @@ int pm_bridge_request(const char *root, const PmAction *action)
     FIELD("username",username); FIELD("mod",mod); FIELD("enabled",enabled); FIELD("java8",java_path);
     FIELD("accountMode",account_mode);
     FIELD("projectId",project_id);FIELD("packVersion",pack_version);FIELD("query",query);
+    FIELD("content_kind",content_kind);
+    FIELD("graphics",graphics);
+    FIELD("controllerMode",controller_mode);
 #undef FIELD
     if (action->memory_mb) failed |= fprintf(file,"memoryMb=%d\n",action->memory_mb) < 0;
-    if (!strcmp(action->command,"pack-search")) failed |= fprintf(file,"offset=%d\n",action->offset)<0;
+    if (!strcmp(action->command,"pack-search") || !strcmp(action->command,"curse-search") || !strcmp(action->command,"content-search")) failed |= fprintf(file,"offset=%d\n",action->offset)<0;
     if(action->resolution_height)failed |= fprintf(file,"resolution=%s\n",resolution_name(action->resolution_height))<0;
     if (action->java_major) failed |= fprintf(file,"major=%d\n",action->java_major) < 0;
     if (!strcmp(action->command,"install-java")) failed |= write_property(file,"repair","true") != 0;
@@ -367,6 +406,7 @@ int pm_bridge_frontend_save(const char *root, const PmFrontend *frontend)
         path(temporary,sizeof(temporary),root,"frontend-state.properties.tmp") || !(file=fopen(temporary,"wb"))) return -1;
     failed=fprintf(file,"screen=%d\ninstance=%d\nversion=%d\nmod=%d\njava=%d\nfilter=%d\nfocus=%d\nloader=%d\n",(int)frontend->screen,
        frontend->selected_instance,frontend->selected_version,frontend->selected_mod,frontend->selected_java,frontend->version_filter,frontend->focus,frontend->loader_index)<0;
+    failed |= fprintf(file,"add_source=%d\ncontent_kind=%d\ngraphics_index=%d\ninput_index=%d\n",frontend->add_source,frontend->content_kind,frontend->graphics_index,frontend->input_index)<0;
     failed |= fclose(file)!=0;
     if (failed || rename(temporary,name)) { unlink(temporary); return -1; }
     return 0;
@@ -380,11 +420,16 @@ static void frontend_property(void *context, const char *key, const char *value)
     else if (!strcmp(key,"mod")) frontend->selected_mod=integer(value,PM_MAX_MODS-1);
     else if (!strcmp(key,"java")) frontend->selected_java=integer(value,PM_MAX_JAVA-1);
     else if (!strcmp(key,"filter")) frontend->version_filter=integer(value,2);
-    else if (!strcmp(key,"focus")) frontend->focus=integer(value,PM_MAX_JAVA+4);
+    else if (!strcmp(key,"focus")) frontend->focus=integer(value,9);
     else if (!strcmp(key,"loader")) frontend->loader_index=integer(value,3);
+    else if (!strcmp(key,"add_source")) frontend->add_source=!strcmp(value,"-1")?-1:integer(value,3);
+    else if (!strcmp(key,"content_kind")) frontend->content_kind=integer(value,2);
+    else if (!strcmp(key,"graphics_index")) frontend->graphics_index=integer(value,1);
+    else if (!strcmp(key,"input_index")) frontend->input_index=integer(value,1);
 }
 void pm_bridge_frontend_load(const char *root, PmFrontend *frontend)
 {
+    frontend->header_focus=-1;frontend->confirmation=0;frontend->confirmation_choice=0;
     char name[768]; if (!path(name,sizeof(name),root,"frontend-state.properties")) (void)properties(name,frontend_property,frontend);
 }
 void pm_bridge_notice(const char *root, const char *message)
@@ -423,6 +468,8 @@ static int local_settings(const char *root, const PmAction *action, PmView *view
     if ((action->memory_mb && (action->memory_mb<512 || action->memory_mb>8192)) ||
         (action->resolution_height && !resolution_name(action->resolution_height)) ||
         (action->account_mode[0] && strcmp(action->account_mode,"offline") && strcmp(action->account_mode,"microsoft")) ||
+        (action->graphics[0] && strcmp(action->graphics,"opengl") && strcmp(action->graphics,"zink")) ||
+        (action->controller_mode[0] && strcmp(action->controller_mode,"emulated") && strcmp(action->controller_mode,"native")) ||
         !value_safe(action->username) || path(name,sizeof(name),root,"settings.properties") ||
         path(temporary,sizeof(temporary),root,"settings.properties.tmp")) { errno=EINVAL; return -1; }
     input=fopen(name,"rb");
@@ -435,6 +482,8 @@ static int local_settings(const char *root, const PmAction *action, PmView *view
             if ((action->memory_mb && !strncmp(line,"memoryMb=",9)) ||
                 (action->resolution_height && !strncmp(line,"resolution=",11)) ||
                 (action->account_mode[0] && !strncmp(line,"accountMode=",12)) ||
+                (action->graphics[0] && !strncmp(line,"graphics=",9)) ||
+                (action->controller_mode[0] && !strncmp(line,"controllerMode=",15)) ||
                 (action->username[0] && !strncmp(line,"username=",9))) continue;
             if (fputs(line,output)<0) { failed=1; break; }
             size_t n=strlen(line);
@@ -445,6 +494,8 @@ static int local_settings(const char *root, const PmAction *action, PmView *view
     if (action->memory_mb) failed |= fprintf(output,"memoryMb=%d\n",action->memory_mb)<0;
     if(action->resolution_height)failed |= fprintf(output,"resolution=%s\n",resolution_name(action->resolution_height))<0;
     failed |= write_property(output,"accountMode",action->account_mode)!=0;
+    failed |= write_property(output,"graphics",action->graphics)!=0;
+    failed |= write_property(output,"controllerMode",action->controller_mode)!=0;
     failed |= write_property(output,"username",action->username)!=0;
     failed |= fclose(output)!=0;
     if (failed || rename(temporary,name)) { int saved=errno; unlink(temporary); errno=saved; return -1; }
@@ -495,10 +546,21 @@ static int local_mods(const char *root, const PmAction *action, PmView *view)
     }
     copy(view->status,sizeof(view->status),"ready");
     copy(view->detail,sizeof(view->detail),"Mods loaded");
+    copy(view->content_kind,sizeof(view->content_kind),"mods");
+    copy(view->content_instance,sizeof(view->content_instance),action->id);
     return 1;
 }
 int pm_bridge_local(const char *root, const PmAction *action, PmView *view)
 {
+    if(!strcmp(action->command,"scan-content-imports")) {
+        if(!component_safe(action->id)||!content_kind_safe(action->content_kind)) {errno=EINVAL;return -1;}
+        copy(view->content_kind,sizeof(view->content_kind),action->content_kind);
+        copy(view->content_instance,sizeof(view->content_instance),action->id);
+        int result=scan_content_imports(root,view);
+        copy(view->status,sizeof(view->status),"ready");
+        snprintf(view->detail,sizeof(view->detail),"Found %d files in imports/%s",view->content_import_count,view->content_kind);
+        return result;
+    }
     if(!strcmp(action->command,"scan-packs")) {
         int result=scan_packs(root,view);
         copy(view->status,sizeof(view->status),"ready");

@@ -1,3 +1,46 @@
+# ProsperoMC current checkpoint — 2026-10-10
+
+Read this section before the historical notes below.
+
+## Latest console update (uploaded and independently verified)
+- PS5 FTP 192.168.1.111:2121; title /data/homebrew/PPSA99888; all data /data/ProsperoMC. User confirmed both apps closed before upload. Preserve worlds, options, mods, runtimes, private sign-in and prefix.
+- Native EBOOT SHA256 01ac97e6aa7d1bda4cbd717558fc57555c3a93afe5244e31444c7d119d1d7e4f.
+- Java launcher SHA256 13ccea2c25162cdebb16c2c82d28d667d91a9807fd5f57496309285b4c4af916.
+- win32u SHA256 719ff8227c21a61d862cad3ccb152ee835c34f78827e7fc1a6f34e40afe8574e; ntdll retained 1c86a5eab801b5a2246f17543b5b7a938d3825b64e618fa9f58cb2f129906bd8.
+- Evidence artifacts/console-ui-gl-update-upload.log and artifacts/console-graphics-repair.json. Signed executable ELF comparison and normal file readback verified. Provider DLLs already matched the staged verified hashes; no other titles/data replaced.
+
+## Current implemented changes
+- Full native UI revamp: 12-card Home grid, pack artwork and loader fallback icons, Library Play/Content/Duplicate/Delete with confirmation, Add Instance Minecraft/Modrinth/CurseForge/local packs, Content selected instance + Mods/Resources/Shaders, toggle/import/search/delete, selectors in Settings, Accounts/Close.
+- Latest requested corrections: persistent empty-query search bars, no automatic Fabulously Optimized search; removed WineMain completion refresh which overwrote Content with mods; controller arrows navigate Settings spatially and X opens dropdown; saved controllerMode emulated/native, native profile XInput with no keyboard/mouse bindings. Hardcoded WASD now gated to keyboard mode. USB Enter submits search.
+- Close now uses sceSystemServiceLoadExec("exit",NULL), keeps quitting guard when accepted, preserves active UI if service rejects. No Unix _exit path. Launcher alone restores VideoOut normal preset1 with two vblanks; this does not change monitor FreeSync. Actual console Close/flicker verification pending.
+- Native OpenGL fix adds missing signed8/integer16 vertex formats with matching PSBC compiler ABI/mapping, preventing Mesa's per-draw CPU vertex conversion for Sodium stride20. Existing uploader ownership, batching and worker fixes retained. Native module finally staged/uploaded; previous user CMD send had kept old355d06be module.
+- Pinned upstream prospero-win v0.2.0 WGL/Zink provider available through Settings → OpenGL renderer → Vulkan accelerated (Zink), Save Settings. Minecraft can keep its own OpenGL API. Only PE64 provider DLLs, licenses/report staged; working Wine/RADV preserved. Actual console compatibility/performance pending; never claim measured gain yet.
+- Generic Java25 DNS SPI initializes before restricted game classloaders; username/skin sign-in and version-download ID repair retained. User had previously confirmed Vulkan modern Minecraft112–120FPS; native OpenGL~0.5FPS.
+- CurseForge official API needs user's own key private/curseforge.properties; no borrowed credentials. Modern Forge/NeoForge processor installers remain unsupported with explicit errors.
+
+## Checks
+- Complete Java suite58 tests PASS with require_escalated for local HTTP fixtures (artifacts/launcher-final-checks.log). Default sandbox blocks Java sockets and gives false Permission denied failures; do not treat those as source failures.
+- Frontend navigation + ASan/UBSan PASS. Native bridge/icons/staging and output-mode error/ownership guard PASS. Real frontend→bridge→Java→view+delete integration passed for all three Content types and native XInput mode.
+- Real PS5 native compile PASS. Native graphics module full build + real driver/compiler ABI gate PASS; no console GPU success yet for newest formats/provider.
+
+## Unresolved chunk-save failure / next test
+- User confirms Fabulously Optimized instance modrinth-1KVo5zza-HiDsl7yh (14.0.0 for26.2 release) reported hundreds of failed-chunk notifications.
+- Actual Minecraft file log artifacts/console-ui-revamp-retest/minecraft_logs_latest.log contains Failed to store/save chunk: WindowsFileStore/FileSystemException Too many open files in saves/New World (1)/dimensions/minecraft/overworld/region. Do not delete worlds or suppress notifications as a fix.
+- RLIMIT_NOFILE already13952; image-view fd release already on. Upstream cwd shim documents a measured~268 independently opened kernel-file object cap on its firmware, but this console's actual limit/cause needs evidence. Blindly closing JAR handles or sharing seekable file opens is unsafe.
+- Deployed native build takes read-only file-probe+fstat inventories at30,90,180seconds for games: logs PROSPEROMC file-probe open_errno and file-inventory. Java Log4j chunk messages go to latest.log, bypassing Wine stdout hook.
+- Agent backend_content is implementing a source-only one-shot CWD EMFILE/ENFILE origin/census reporter + forced-limit fixture; this is NOT in deployed Wine PRXs. Rebuild affected Wine modules separately only after review/provenance.
+- Pending async test: reopen, Settings renderer Zink+Save, same FO instance Minecraft API OpenGL, leave world open3minutes, report FPS/chunk errors. Then save/quit, check search/Content/Settings/Close/flicker with FreeSync. Read new native sessions and selected Minecraft latest.log after reply. No automatic launch tool available.
+
+## Build, send, source ownership
+- ProsperoMC.cmd build/send/build-send. These rebuild Java/native but retain staged engine modules. Engine update requires scripts/stage-wine-graphics.py --build artifacts/wine-graphics-batching --sdk .deps/graphics-sdk-batching; provider scripts/stage-zink-provider.py. Both staged now, so CMD send carries them.
+- Source repository origin https://github.com/Ayoubec/ProsperoMC; user authorized push. Latest large changes pending commit at time of this checkpoint; exclude user's deleted sce_sys/background-source.png, icon0-upstream.png, launch-background-source.png.
+- Bundled Python C:/Users/Admin/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe; JDK21 .deps/host-jdk/jdk-21.0.8+9. WSL Ubuntu/native/network/Git writes need require_escalated.
+- WSL /tmp disappears after sessions complete. Only Mesa cached state exists artifacts/graphics-batching/build-state.tar.gz; no reusable configured Wine tree located. Do not restart expensive full Wine builds merely for diagnostics without need.
+
+---
+
+# Historical checkpoints (superseded where the current section differs)
+
 # ProsperoMC checkpoint — 2026-10-08
 
 ## User requirements

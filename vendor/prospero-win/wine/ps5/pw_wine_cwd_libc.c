@@ -21,6 +21,7 @@
  * kernel call returns, and pw_cwd_scan_directory() lists directories for
  * Wine's lookups of names that are not found; see pw_wine_cwd.h. */
 #include "pw_wine_cwd.h"
+#include "pw_wine_fd_report.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -99,7 +100,11 @@ static int load_table(const char *directory)
 
     if (!pw_cwd_probe_directory(directory)) return 0;
     table_of(directory, table, sizeof(table));
-    if ((fd = __real_open(table, O_RDONLY)) < 0) return 0;
+    if ((fd = __real_open(table, O_RDONLY)) < 0) {
+        pw_wine_report_fd_failure("link-table-read", table, O_RDONLY, __builtin_return_address(0),
+                                  pw_cwd_fd_path, __real_stat);
+        return 0;
+    }
     got = read(fd, text, sizeof(text));
     __real_close(fd);
     return got > 0 ? pw_cwd_links_parse(directory, text, (size_t)got) : 0;
@@ -175,7 +180,11 @@ static int save_table(const char *link)
     snprintf(next, sizeof(next), "%s.new", table);
     fd = __real_open(next, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     pw_cwd_changed();
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        pw_wine_report_fd_failure("link-table-write", next, O_WRONLY | O_CREAT | O_TRUNC,
+                                  __builtin_return_address(0), pw_cwd_fd_path, __real_stat);
+        return -1;
+    }
     status = write(fd, text, (size_t)size) == size ? 0 : -1;
     if (__real_close(fd)) status = -1;
     if (!status) status = __real_rename(next, table);
@@ -323,7 +332,8 @@ static int open_counting(const char *full, int flags, mode_t mode)
     return fd;
 }
 
-static int open_resolved(struct resolved *r, int flags, mode_t mode)
+static int open_resolved(struct resolved *r, int flags, mode_t mode,
+                         const char *operation, const void *caller)
 {
     int fd;
 
@@ -334,6 +344,7 @@ static int open_resolved(struct resolved *r, int flags, mode_t mode)
     if ((flags & O_CREAT) && load_parent_table(r)) return -1;
     while ((fd = open_counting(r->full, flags, mode)) < 0 && reload(r)) {}
     if (fd >= 0) pw_cwd_track(fd, r->full);
+    else pw_wine_report_fd_failure(operation, r->full, flags, caller, pw_cwd_fd_path, __real_stat);
     return fd;
 }
 
@@ -348,7 +359,7 @@ int __wrap_open(const char *path, int flags, ...)
         mode = (mode_t)va_arg(args, int);
         va_end(args);
     }
-    return resolve(&r, path, 1) ? -1 : open_resolved(&r, flags, mode);
+    return resolve(&r, path, 1) ? -1 : open_resolved(&r, flags, mode, "open", __builtin_return_address(0));
 }
 
 int __wrap_openat(int dirfd, const char *path, int flags, ...)
@@ -362,7 +373,7 @@ int __wrap_openat(int dirfd, const char *path, int flags, ...)
         mode = (mode_t)va_arg(args, int);
         va_end(args);
     }
-    return resolve_at(&r, dirfd, path, 1) ? -1 : open_resolved(&r, flags, mode);
+    return resolve_at(&r, dirfd, path, 1) ? -1 : open_resolved(&r, flags, mode, "openat", __builtin_return_address(0));
 }
 
 /* The C library opens by itself: wineserver loads the registry with
@@ -375,6 +386,8 @@ FILE *__wrap_fopen(const char *path, const char *mode)
     if (resolve(&r, path, 1)) return NULL;
     if (mode && strpbrk(mode, "wa") && load_parent_table(&r)) return NULL;
     while (!(file = __real_fopen(r.full, mode)) && reload(&r)) {}
+    if (!file) pw_wine_report_fd_failure("fopen", r.full, -1, __builtin_return_address(0),
+                                        pw_cwd_fd_path, __real_stat);
     if (mode && strpbrk(mode, "wa")) pw_cwd_changed();
     return file;
 }
@@ -628,6 +641,8 @@ DIR *__wrap_opendir(const char *path)
 
     if (resolve(&r, path, 1)) return NULL;
     while (!(result = __real_opendir(r.full)) && reload(&r)) {}
+    if (!result) pw_wine_report_fd_failure("opendir", r.full, O_RDONLY, __builtin_return_address(0),
+                                          pw_cwd_fd_path, __real_stat);
     return result;
 }
 
@@ -641,11 +656,17 @@ static int read_names(const struct resolved *r, char **names, size_t *bytes, siz
     int fd, saved;
 
     *bytes = *count = 0;
-    if ((fd = __real_open(r->full, O_RDONLY)) < 0) return -1;
+    if ((fd = __real_open(r->full, O_RDONLY)) < 0) {
+        pw_wine_report_fd_failure("directory-scan", r->full, O_RDONLY, __builtin_return_address(0),
+                                  pw_cwd_fd_path, __real_stat);
+        return -1;
+    }
     if (!(dir = fdopendir(fd))) {
         saved = errno;
         __real_close(fd);
         errno = saved;
+        pw_wine_report_fd_failure("fdopendir", r->full, O_RDONLY, __builtin_return_address(0),
+                                  pw_cwd_fd_path, __real_stat);
         return -1;
     }
     if (!(*names = malloc(size))) {

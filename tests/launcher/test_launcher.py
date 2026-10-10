@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import struct
 import tempfile
@@ -65,13 +66,16 @@ class LauncherTests(unittest.TestCase):
         self.blobs = {}
         self.hits = []
         self.codes = {}
+        self.http_headers = []
         blobs = self.blobs
         hits = self.hits
         codes = self.codes
+        http_headers = self.http_headers
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(handler):
                 hits.append(handler.path)
+                http_headers.append(dict(handler.headers))
                 if handler.path in blobs:
                     handler.send_response(codes.get(handler.path,200))
                     handler.end_headers()
@@ -684,6 +688,306 @@ class LauncherTests(unittest.TestCase):
         result = self.request(ok=False, command="install-java", major="16")
         self.assertIn("No Windows x64 Java 16 JRE or JDK", result["message"])
         self.assertFalse((self.root / "runtimes/java16").exists())
+
+    def test_content_import_toggle_delete_stays_in_selected_instance(self):
+        self.request(command="create", id="one", version="1.12.2", loader="fabric")
+        self.request(command="create", id="two", version="1.12.2", loader="fabric")
+        for kind, filename in (("mods", "example.jar"), ("resourcepacks", "Nice Pack.zip"), ("shaderpacks", "shader.zip")):
+            source=self.root / "imports" / kind / filename
+            source.parent.mkdir(parents=True)
+            source.write_bytes(zipped({"pack.mcmeta": b"{}"}))
+            self.request(command="content-import", id="one", content_kind=kind, source=str(source))
+            selected=self.root / "instances/one/.minecraft" / kind / filename
+            self.assertTrue(selected.is_file())
+            self.assertFalse((self.root / "instances/two/.minecraft" / kind / filename).exists())
+            self.request(command="content-toggle", id="one", content_kind=kind, mod=filename, enabled="false")
+            self.assertFalse(selected.exists())
+            self.request(command="view")
+            view=props(self.root / "launcher-view.properties")
+            self.assertEqual(view["content.kind"],kind)
+            self.assertEqual(view["content.instance"],"one")
+            self.assertEqual(view["mod.0.enabled"],"false")
+            self.request(command="content-toggle", id="one", content_kind=kind, mod=filename+".disabled", enabled="true")
+            self.request(command="content-delete", id="one", content_kind=kind, mod=filename)
+            self.assertFalse(selected.exists())
+            self.assertTrue(source.exists())
+
+    def test_content_rejects_paths_bad_archive_and_vanilla_mods(self):
+        self.request(command="create", id="one", version="1.12.2")
+        source=self.root / "imports/mods/bad.jar"
+        source.parent.mkdir(parents=True);source.write_bytes(b"not a jar")
+        error=self.request(ok=False,command="content-import",id="one",content_kind="mods",source=str(source))
+        self.assertIn("Fabric",error["message"])
+        outside=self.base / "outside.zip";outside.write_bytes(zipped({"pack.mcmeta":b"{}"}))
+        self.request(ok=False,command="content-import",id="one",content_kind="resourcepacks",source=str(outside))
+        self.request(ok=False,command="content-delete",id="one",content_kind="resourcepacks",mod="../outside.zip")
+        self.assertTrue(outside.exists())
+        source=self.root / "imports/resourcepacks/bad.zip"
+        source.parent.mkdir(parents=True);source.write_bytes(b"not a zip")
+        self.request(ok=False,command="content-import",id="one",content_kind="resourcepacks",source=str(source))
+        self.request(ok=False,command="content-list",id="one",content_kind="../saves")
+
+    def test_disabled_resource_and_shader_pack_is_removed_from_selection(self):
+        self.request(command="create",id="one",version="1.12.2")
+        game=self.root / "instances/one/.minecraft"
+        resources=game / "resourcepacks";resources.mkdir()
+        (resources / "pretty.zip").write_bytes(zipped({"pack.mcmeta":b"{}"}))
+        options=game / "options.txt"
+        options.write_text('renderDistance:16\nresourcePacks:["vanilla","file/pretty.zip","file/other.zip"]\nincompatibleResourcePacks:["file/pretty.zip"]\n')
+        self.request(command="content-toggle",id="one",content_kind="resourcepacks",mod="pretty.zip",enabled="false")
+        self.assertIn('resourcePacks:["vanilla","file/other.zip"]',options.read_text())
+        self.assertIn("renderDistance:16",options.read_text())
+        shaders=game / "shaderpacks";shaders.mkdir()
+        (shaders / "pretty.zip").write_bytes(zipped({"shaders/shaders.properties":b""}))
+        (game / "iris.properties").write_text("shaderPack=pretty.zip\nenableShaders=true\n")
+        (game / "config").mkdir()
+        (game / "config/iris.properties").write_text("shaderPack=pretty.zip\nenableShaders=true\n")
+        self.request(command="content-delete",id="one",content_kind="shaderpacks",mod="pretty.zip")
+        self.assertIn("shaderPack=\n",(game / "iris.properties").read_text())
+        self.assertIn("shaderPack=\n",(game / "config/iris.properties").read_text())
+
+    def test_content_modrinth_resource_search_and_compatible_release(self):
+        self.request(command="create",id="one",version="1.12.2")
+        self.request(command="settings",modrinthApi=self.url+"/modrinth")
+        facets='[["project_type:resourcepack"],["versions:1.12.2"]]'
+        search="/modrinth/search?limit=24&offset=0&index=downloads&facets="+urllib.parse.quote(facets,safe="")+"&query="
+        self.blobs[search]=json.dumps({"total_hits":1,"hits":[{"project_type":"resourcepack","project_id":"pack","title":"Pretty","description":"Pretty blocks"}]}).encode()
+        body=zipped({"pack.mcmeta":b"{}"})
+        blob=self.blob("/pretty.zip",body)
+        compatible={"id":"good","name":"1.0","version_type":"release","game_versions":["1.12.2"],"loaders":["minecraft"],
+                    "files":[{"filename":"pretty.zip","url":blob["url"],"size":len(body),"hashes":{"sha1":blob["sha1"]}}]}
+        query="?game_versions="+urllib.parse.quote('["1.12.2"]',safe="")
+        self.blobs["/modrinth/project/pack/version"+query]=json.dumps([dict(compatible,id="wrong",game_versions=["26.2"]),compatible]).encode()
+        self.request(command="content-search",id="one",content_kind="resourcepacks")
+        self.assertEqual(props(self.root / "launcher-view.properties")["remote.pack.0.name"],"Pretty")
+        self.request(command="content-versions",id="one",content_kind="resourcepacks",projectId="pack")
+        view=props(self.root / "launcher-view.properties")
+        self.assertEqual(view["remote.version.count"],"1")
+        self.assertEqual(view["remote.version.0.id"],"good")
+        self.request(ok=False,command="content-download",id="one",content_kind="resourcepacks",projectId="pack",packVersion="wrong")
+        self.request(command="content-download",id="one",content_kind="resourcepacks",projectId="pack",packVersion="good")
+        self.assertEqual((self.root / "instances/one/.minecraft/resourcepacks/pretty.zip").read_bytes(),body)
+
+    def test_modrinth_version_only_dependency_installs_before_parent(self):
+        self.request(command="create",id="one",version="1.12.2",loader="fabric")
+        self.request(command="settings",modrinthApi=self.url+"/modrinth")
+        query="?loaders="+urllib.parse.quote('["fabric"]',safe="")+"&game_versions="+urllib.parse.quote('["1.12.2"]',safe="")
+        def release(project,version,name,dependencies):
+            body=zipped({"fabric.mod.json":json.dumps({"id":project}).encode()});blob=self.blob("/"+name,body)
+            return {"id":version,"project_id":project,"files":[{"filename":name,"url":blob["url"],"size":len(body),"hashes":{"sha1":blob["sha1"]}}],"dependencies":dependencies}
+        parent=release("parent","parent-v1","parent.jar",[{"dependency_type":"required","project_id":None,"version_id":"dep-v1"}])
+        dep=release("dep","dep-v1","dep.jar",[])
+        self.blobs["/modrinth/project/parent/version"+query]=json.dumps([parent]).encode()
+        self.blobs["/modrinth/version/dep-v1"]=json.dumps(dep).encode()
+        self.blobs["/modrinth/project/dep/version"+query]=json.dumps([dep]).encode()
+        self.request(command="content-download",id="one",content_kind="mods",projectId="parent",packVersion="parent-v1")
+        self.assertLess(self.hits.index("/dep.jar"),self.hits.index("/parent.jar"))
+
+    def test_fabric_preflight_missing_disabled_and_nested_dependencies(self):
+        self.blobs["/fabric/versions/loader/1.12.2"]=json.dumps([{"loader":{"version":"0.16.0"}}]).encode()
+        self.blobs["/fabric/versions/loader/1.12.2/0.16.0/profile/json"]=json.dumps({"mainClass":"fixture.Main","libraries":[]}).encode()
+        self.request(command="settings",fabricApi=self.url+"/fabric")
+        self.install("fabric")
+        mods=self.root / "instances/fixture/.minecraft/mods"
+        (mods / "control.jar").write_bytes(zipped({"fabric.mod.json":json.dumps({"id":"control","name":"Control","depends":{"yacl":"*","fabricloader":">=0.16"}}).encode()}))
+        (mods / "yacl.jar.disabled").write_bytes(zipped({"fabric.mod.json":b'{"id":"yacl"}'}))
+        error=self.request(ok=False,command="prepare-launch",id="fixture")
+        self.assertIn("Control needs yacl",error["message"])
+        child=zipped({"fabric.mod.json":b'{"id":"bundled","provides":["yacl"]}'})
+        (mods / "parent.jar").write_bytes(zipped({"fabric.mod.json":b'{"id":"parent","jars":[{"file":"META-INF/jars/nested.jar"}]}',"META-INF/jars/nested.jar":child}))
+        self.request(command="prepare-launch",id="fixture")
+        self.assertIn("-Dfabric.noGui=true",(self.root / "profiles/launch.profile").read_text())
+
+    def test_polymc_instance_icon_is_preserved_and_cannot_escape(self):
+        import zlib
+        def chunk(name,data):
+            return struct.pack("!I",len(data))+name+data+struct.pack("!I",zlib.crc32(name+data)&0xffffffff)
+        icon=b"\x89PNG\r\n\x1a\n"+chunk(b"IHDR",struct.pack("!IIBBBBB",1,1,8,6,0,0,0))+chunk(b"IDAT",zlib.compress(b"\0\x20\x80\x20\xff"))+chunk(b"IEND",b"")
+        source=self.base / "pack.zip"
+        source.write_bytes(zipped({"mmc-pack.json":json.dumps({"components":[{"uid":"net.minecraft","version":"1.12.2"}]}).encode(),"instance.cfg":b"name=Icon pack\niconKey=custom\n","custom.png":icon}))
+        self.request(command="import-pack",id="icon",source=str(source))
+        self.assertEqual((self.root / "instances/icon/icon.png").read_bytes(),icon)
+        self.assertEqual(props(self.root / "launcher-view.properties")["instance.0.icon"],str(self.root / "instances/icon/icon.png").replace("\\","/"))
+        self.request(command="clone",id="icon")
+        cloned=props(self.root / "launcher-view.properties")
+        self.assertTrue(cloned["instance.1.icon"].endswith("/icon-copy/icon.png"))
+
+    def test_existing_modrinth_instance_artwork_backfills_once(self):
+        import zlib
+        def chunk(name,data):
+            return struct.pack("!I",len(data))+name+data+struct.pack("!I",zlib.crc32(name+data)&0xffffffff)
+        icon=b"\x89PNG\r\n\x1a\n"+chunk(b"IHDR",struct.pack("!IIBBBBB",1,1,8,6,0,0,0))+chunk(b"IDAT",zlib.compress(b"\0\x20\x80\x20\xff"))+chunk(b"IEND",b"")
+        self.request(command="create",id="old-pack",version="1.12.2",loader="fabric")
+        properties=self.root / "instances/old-pack/instance.properties"
+        with properties.open("a") as file:file.write("modrinthProject=project\n")
+        self.request(command="settings",modrinthApi=self.url+"/modrinth")
+        self.blobs["/modrinth/project/project"]=json.dumps({"icon_url":self.url+"/icon.png"}).encode()
+        self.blobs["/icon.png"]=icon
+        self.request(command="view")
+        self.assertEqual((self.root / "instances/old-pack/icon.png").read_bytes(),icon)
+        self.assertTrue(props(self.root / "launcher-view.properties")["instance.0.icon"].endswith("/old-pack/icon.png"))
+        self.request(command="view")
+        self.assertEqual(self.hits.count("/icon.png"),1)
+        self.assertEqual(self.hits.count("/modrinth/project/project"),1)
+
+    def test_curseforge_api_key_is_private_and_required(self):
+        self.request(command="settings",curseforgeApi=self.url+"/curse")
+        error=self.request(ok=False,command="curse-search")
+        self.assertIn("API key",error["message"])
+        key="fixture-private-api-key"
+        self.request(command="settings",curseforgeApiKey=key)
+        self.assertEqual(props(self.root / "private/curseforge.properties")["apiKey"],key)
+        self.assertNotIn(key,(self.root / "launcher-view.properties").read_text())
+        self.assertNotIn(key,(self.root / "settings.properties").read_text())
+        self.blobs["/curse/mods/search?gameId=432&classId=4471&pageSize=24&index=0&sortField=2&sortOrder=desc&searchFilter="]=b'{"data":[],"pagination":{"totalCount":0}}'
+        self.request(command="curse-search")
+        self.assertEqual(self.http_headers[-1].get("x-api-key"),key)
+        self.request(command="settings",curseforgeApiKey="")
+        self.assertFalse((self.root / "private/curseforge.properties").exists())
+
+    def test_failed_provider_search_clears_previous_provider_results(self):
+        self.request(command="settings",modrinthApi=self.url+"/modrinth",curseforgeApi=self.url+"/curse")
+        old={"remote.pack.count":"1","remote.pack.0.id":"old-modrinth-project","remote.version.count":"1","remote.version.0.id":"old-release","remote.projectId":"old-modrinth-project"}
+        state=self.root / "cache/modrinth-view.properties";state.parent.mkdir(exist_ok=True)
+        state.write_text("".join(k+"="+v+"\n" for k,v in old.items()))
+        self.request(ok=False,command="curse-search")
+        view=props(self.root / "launcher-view.properties")
+        self.assertEqual(view["remote.pack.count"],"0")
+        self.assertEqual(view["remote.version.count"],"0")
+        self.assertNotIn("remote.projectId",view)
+        self.assertNotIn("old-modrinth-project",(self.root / "launcher-view.properties").read_text())
+        state.write_text("".join(k+"="+v+"\n" for k,v in old.items()))
+        self.request(ok=False,command="pack-search",query="missing-fixture")
+        self.assertEqual(props(state)["remote.pack.count"],"0")
+        self.request(command="create",id="one",version="1.12.2")
+        state.write_text("".join(k+"="+v+"\n" for k,v in old.items()))
+        self.request(ok=False,command="content-search",id="one",content_kind="resourcepacks")
+        self.assertEqual(props(state)["remote.pack.count"],"0")
+
+    def test_curseforge_search_releases_import_install_and_resume(self):
+        self.request(command="settings",curseforgeApi=self.url+"/curse",curseforgeApiKey="fixture-key",fabricApi=self.url+"/fabric")
+        self.blobs["/fabric/versions/loader/1.12.2"]=json.dumps([{"loader":{"version":"0.16.0"}}]).encode()
+        self.blobs["/fabric/versions/loader/1.12.2/0.16.0/profile/json"]=json.dumps({"mainClass":"fixture.Main","libraries":[]}).encode()
+        project={"id":123,"classId":4471,"name":"CF Pack","summary":"A pack","allowModDistribution":True}
+        manifest={"manifestType":"minecraftModpack","manifestVersion":1,"name":"CF Pack","minecraft":{"version":"1.12.2","modLoaders":[{"id":"fabric-0.16.0","primary":True}]},
+                  "files":[{"projectID":321,"fileID":654,"required":True}],"overrides":"overrides"}
+        archive=zipped({"manifest.json":json.dumps(manifest).encode(),"overrides/options.txt":b"renderDistance:8\n"})
+        pack_blob=self.blob("/cf-pack.zip",archive)
+        file={"id":456,"modId":123,"fileName":"cf-pack.zip","displayName":"CF Pack release","releaseType":1,"gameVersions":["1.12.2","Fabric"],
+              "downloadUrl":pack_blob["url"],"fileLength":len(archive),"hashes":[{"algo":1,"value":pack_blob["sha1"]}],"isAvailable":True}
+        mod=zipped({"fabric.mod.json":b'{"id":"cfexample"}'})
+        mod_blob=self.blob("/cf-mod.jar",mod)
+        mod_file={"id":654,"modId":321,"fileName":"cf-mod.jar","downloadUrl":mod_blob["url"],"fileLength":len(mod),"hashes":[{"algo":2,"value":hashlib.md5(mod).hexdigest()}]}
+        self.blobs["/curse/mods/search?gameId=432&classId=4471&pageSize=24&index=0&sortField=2&sortOrder=desc&searchFilter="]=json.dumps({"data":[project],"pagination":{"totalCount":1}}).encode()
+        self.blobs["/curse/mods/123/files?pageSize=64&index=0"]=json.dumps({"data":[file]}).encode()
+        self.blobs["/curse/mods/123"]=json.dumps({"data":project}).encode()
+        self.blobs["/curse/mods/123/files/456"]=json.dumps({"data":file}).encode()
+        self.blobs["/curse/mods/321"]=json.dumps({"data":{"id":321,"classId":6,"name":"CF Mod","allowModDistribution":True}}).encode()
+        self.blobs["/curse/mods/321/files/654"]=json.dumps({"data":mod_file}).encode()
+        self.request(command="curse-search")
+        self.assertEqual(props(self.root / "launcher-view.properties")["remote.pack.0.id"],"123")
+        self.request(command="curse-versions",projectId="123")
+        self.assertEqual(props(self.root / "launcher-view.properties")["remote.version.0.loader"],"fabric")
+        self.request(command="curse-download",projectId="123",packVersion="456")
+        instance=self.root / "instances/curseforge-123-456"
+        self.assertEqual((instance / ".minecraft/mods/cf-mod.jar").read_bytes(),mod)
+        self.assertEqual((instance / ".minecraft/options.txt").read_text(),"renderDistance:8\n")
+        self.assertEqual(props(instance / "instance.properties")["installed"],"true")
+        self.request(command="curse-download",projectId="123",packVersion="456")
+        self.assertEqual(self.hits.count("/cf-mod.jar"),1)
+
+    def test_curseforge_blocks_publisher_restriction_external_url_and_bad_hash(self):
+        self.request(command="settings",curseforgeApi=self.url+"/curse",curseforgeApiKey="fixture-key")
+        project={"id":123,"classId":4471,"name":"Blocked pack","allowModDistribution":False}
+        body=zipped({"manifest.json":b"{}"});blob=self.blob("/blocked.zip",body)
+        file={"id":456,"modId":123,"fileName":"pack.zip","downloadUrl":blob["url"],"fileLength":len(body),"hashes":[{"algo":1,"value":blob["sha1"]}]}
+        self.blobs["/curse/mods/123"]=json.dumps({"data":project}).encode()
+        self.blobs["/curse/mods/123/files/456"]=json.dumps({"data":file}).encode()
+        error=self.request(ok=False,command="curse-download",projectId="123",packVersion="456")
+        self.assertIn("third-party",error["message"]);self.assertNotIn("/blocked.zip",self.hits)
+        project["allowModDistribution"]=True
+        self.blobs["/curse/mods/123"]=json.dumps({"data":project}).encode()
+        file["downloadUrl"]="https://example.com/pack.zip"
+        self.blobs["/curse/mods/123/files/456"]=json.dumps({"data":file}).encode()
+        error=self.request(ok=False,command="curse-download",projectId="123",packVersion="456")
+        self.assertIn("HTTPS CDN",error["message"])
+        file["downloadUrl"]=blob["url"];file["hashes"][0]["value"]="0"*40
+        self.blobs["/curse/mods/123/files/456"]=json.dumps({"data":file}).encode()
+        self.request(ok=False,command="curse-download",projectId="123",packVersion="456")
+        self.assertFalse((self.root / "instances/curseforge-123-456").exists())
+
+    def test_curseforge_manifest_rejects_unknown_loader_and_override_traversal(self):
+        manifest={"manifestType":"minecraftModpack","manifestVersion":1,"name":"CF Pack","minecraft":{"version":"26.2","modLoaders":[{"id":"neoforge-26.2.1","primary":True}]},"files":[],"overrides":"overrides"}
+        source=self.base / "cf.zip";source.write_bytes(zipped({"manifest.json":json.dumps(manifest).encode()}))
+        error=self.request(ok=False,command="import-pack",id="cf",source=str(source))
+        self.assertIn("NeoForge",error["message"])
+        self.assertFalse((self.root / "instances/cf").exists())
+        manifest["minecraft"]["modLoaders"]=[];manifest["overrides"]="../outside"
+        source.write_bytes(zipped({"manifest.json":json.dumps(manifest).encode()}))
+        self.request(ok=False,command="import-pack",id="cf",source=str(source))
+        self.assertFalse((self.root / "instances/cf").exists())
+
+    def test_graphics_provider_setting_roundtrip_and_invalid_rejected(self):
+        self.install()
+        self.request(command="view")
+        self.assertEqual(props(self.root / "launcher-view.properties")["settings.graphics"],"opengl")
+        for graphics in ("zink","opengl"):
+            self.request(command="settings",graphics=graphics)
+            self.assertEqual(props(self.root / "launcher-view.properties")["settings.graphics"],graphics)
+            self.request(command="prepare-launch",id="fixture")
+            self.assertIn("graphics="+graphics+"\n",(self.root / "profiles/launch.profile").read_text())
+        self.request(ok=False,command="settings",graphics="other")
+        self.assertEqual(props(self.root / "settings.properties")["graphics"],"opengl")
+
+    def test_native_controller_profile_has_no_emulated_keyboard_bindings(self):
+        self.install()
+        self.request(command="settings",controllerMode="native")
+        self.assertEqual(props(self.root / "launcher-view.properties")["settings.controllerMode"],"native")
+        self.request(command="prepare-launch",id="fixture")
+        profile=(self.root / "profiles/launch.profile").read_text()
+        self.assertIn("[input]\nmode=xinput\nmouse=none\n",profile)
+        self.assertNotIn("cross=",profile);self.assertNotIn("up=w",profile)
+        self.request(command="settings",controllerMode="emulated")
+        self.request(command="prepare-launch",id="fixture")
+        self.assertIn("[input]\nmode=keyboard\nmouse=right_stick\n",(self.root / "profiles/launch.profile").read_text())
+        self.request(ok=False,command="settings",controllerMode="invalid")
+        self.assertEqual(props(self.root / "settings.properties")["controllerMode"],"emulated")
+
+    def test_real_frontend_bridge_backend_content_categories_and_delete(self):
+        sources=["tests/runtime/test_content_wire.c","app/native/pm_frontend.c","vendor/qrcodegen/qrcodegen.c",
+                 "vendor/prospero-win/native/pm_bridge.c","vendor/prospero-win/src/pw_wine_launch.c",
+                 "vendor/prospero-win/src/pw_app_profile.c","vendor/prospero-win/src/pw_game_profile.c"]
+        output=REPO / "build/tests/content-wire"
+        output.parent.mkdir(parents=True,exist_ok=True)
+        def linux(path):
+            value=str(path.resolve()).replace("\\","/")
+            return "/mnt/"+value[0].lower()+value[2:] if len(value)>1 and value[1]==":" else value
+        if os.name=="nt":
+            command="cd "+shlex.quote(linux(REPO))+" && cc -std=c99 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror -Iapp/native -Ivendor/prospero-win/src -Ivendor/prospero-win/native -Ivendor/prospero-win/include "+" ".join(map(shlex.quote,sources))+" -o build/tests/content-wire"
+            subprocess.run(["wsl","-d","Ubuntu","--","bash","-lc",command],check=True,capture_output=True,timeout=60)
+        else:
+            subprocess.run([shutil.which("cc") or "cc","-std=c99","-D_POSIX_C_SOURCE=200809L","-O2","-Wall","-Wextra","-Werror",
+                            "-Iapp/native","-Ivendor/prospero-win/src","-Ivendor/prospero-win/native","-Ivendor/prospero-win/include",*sources,"-o",str(output)],cwd=REPO,check=True,capture_output=True,timeout=60)
+        def wire(kind,stage,name=""):
+            args=[linux(self.root),str(kind),stage]+([name] if name else [])
+            invocation=["wsl","-d","Ubuntu","--",linux(output),*args] if os.name=="nt" else [str(output),*args]
+            run=subprocess.run(invocation,capture_output=True,text=True,timeout=20)
+            self.assertEqual(run.returncode,0,run.stdout+run.stderr)
+        def run_queued():
+            request=props(self.root / "request.properties")
+            self.request(**request)
+        self.request(command="create",id="wire-instance",version="1.12.2",loader="fabric")
+        game=self.root / "instances/wire-instance/.minecraft"
+        kinds=("mods","resourcepacks","shaderpacks")
+        for kind in kinds:
+            folder=game / kind;folder.mkdir(exist_ok=True)
+            (folder / (kind+".jar" if kind=="mods" else kind+".zip")).write_bytes(zipped({"fixture":b"content"}))
+        for index,kind in enumerate(kinds):
+            name=kind+".jar" if kind=="mods" else kind+".zip"
+            wire(index,"select");run_queued();wire(index,"verify",name)
+            wire(index,"delete",name);run_queued()
+            self.assertFalse((game / kind / name).exists())
+            for other in kinds[index+1:]:self.assertTrue((game / other / (other+".zip")).exists())
 
     def test_class_files_target_java8(self):
         with zipfile.ZipFile(JAR) as z:

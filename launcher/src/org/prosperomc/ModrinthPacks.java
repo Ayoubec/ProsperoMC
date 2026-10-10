@@ -12,6 +12,10 @@ final class ModrinthPacks {
     ModrinthPacks(Main app) { this.app=app; }
     String api() { return app.settings.getOrDefault("modrinthApi","https://api.modrinth.com/v2").replaceAll("/+$",""); }
     Path state() { return app.root.resolve("cache/modrinth-view.properties"); }
+    void resetSearch(String query,int offset)throws IOException {
+        FilesUtil.properties(state(),Main.stringMap("remote.pack.count","0","remote.version.count","0","remote.total","0",
+            "remote.query",text(query),"remote.offset",Integer.toString(offset)));
+    }
     static String text(String value) {
         String clean=value.replace('\r',' ').replace('\n',' ');
         return clean.length()>512?clean.substring(0,512):clean;
@@ -28,6 +32,7 @@ final class ModrinthPacks {
         try { offset=Integer.parseInt(app.request.getOrDefault("offset","0")); }
         catch(NumberFormatException e) { throw new IOException("Invalid search page"); }
         if(offset<0||offset>100000)throw new IOException("Invalid search page");
+        resetSearch(query,offset);
         app.progress("searching","Searching Modrinth modpacks",0,1);
         String facets=URLEncoder.encode("[[\"project_type:modpack\"]]","UTF-8");
         Map<String,Object> result=fetch(api()+"/search?limit=24&offset="+offset+
@@ -43,6 +48,7 @@ final class ModrinthPacks {
             view.put("remote.pack."+n+".id",Main.id(Json.text(hit,"project_id")));
             view.put("remote.pack."+n+".name",text(Json.text(hit,"title")));
             view.put("remote.pack."+n+".description",text(Json.text(hit,"description")));
+            view.put("remote.pack."+n+".icon",Icons.cache(app,Json.text(hit,"icon_url")));
             ++n;
         }
         view.put("remote.pack.count",Integer.toString(n));
@@ -118,6 +124,20 @@ final class ModrinthPacks {
         imported.importPack();
         Map<String,String> created=app.instance(instance);
         created.put("modrinthProject",project);created.put("modrinthVersion",version);
+        String icon="";
+        Map<String,String> currentView=FilesUtil.properties(state());
+        for(int n=0;n<24;n++)if(project.equals(currentView.get("remote.pack."+n+".id"))) {
+            icon=currentView.getOrDefault("remote.pack."+n+".icon","");break;
+        }
+        if(icon.isEmpty())try {icon=Icons.cache(app,Json.text(fetch(api()+"/project/"+project,"modrinth-project.json"),"icon_url"));}
+            catch(IOException ignored) { /* Optional artwork must not fail the pack. */ }
+        if(!icon.isEmpty()) {
+            Path cached=Paths.get(icon.startsWith("/data/ProsperoMC/")?"Z:"+icon:icon);
+            if(Icons.valid(cached)) {
+                Files.copy(cached,app.dir(instance).resolve("icon.png"),StandardCopyOption.REPLACE_EXISTING);
+                created.put("icon","icon.png");
+            }
+        }
         FilesUtil.properties(app.dir(instance).resolve("instance.properties"),created);
         app.progress("installing","Installing modpack Minecraft and Java",0,1);
         app.installer.install(created,app.dir(instance));
