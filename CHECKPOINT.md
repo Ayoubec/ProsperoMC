@@ -834,3 +834,61 @@ JAR `2b67f63851f434960412be2cd524d67de5ccaa0fa518021acd9d83a4be3a71c2`.
 All graphics/ntdll/worlds/mod choices/options preserved. Await user Sodium-only
 26.2 world test (one minute and FPS), then retrieve fresh logs to compare runs,
 allocator errors and collector. No build/upload/test sessions running.
+
+## 2026-10-10 — modern buffer pool and phone sign-in update
+
+ParallelGC retest failed: user reports4-7FPS then crash after5seconds, app closed.
+Fresh `artifacts/console-fo262-parallelgc-crash/logs_session-0.log` confirms actual
+UseParallelGC selection, dmem~3GB/~5881runs, same native allocation EAGAIN and
+Sodium GpuOutOfMemoryException (3870720byte buffer). Collector did NOT fix it.
+
+Concrete new evidence: that log repeatedly reports `shared-resource exhausted`
+for~1-1.5MB buffers before failing direct allocations. CI runtime's existing
+buffer pool is256MiB (`PS5_RENDER_ARENA_BYTES=0x10000000u`). Changed only that
+compile flag to1GiB (`0x40000000u`) in compile-graphics-batching.py, reusing the
+existing checked bitmap allocator, release rules, alignment and fallback. All
+legacy batching, shader caches, two preparation workers, boundary retirement,
+profiling selections and graphics settings preserved. This capacity change is
+built/uploaded; do not claim stability or FPS improvement until console retest.
+The build recreated SDK/Wine inputs after WSL shutdown; native build and all
+existing renderer compilation gates passed. No build/upload remains running.
+
+User explicitly asked to use PolyMC's public Microsoft ID and a phone QR/link.
+Auth now defaults to published PolyMC GUID6b329578-bfec-42a3-b503-303ab3f2ac96 when
+no custom microsoftClientId is configured. Custom application override retained.
+UI explicitly displays sign-in provider PolyMC/Custom; Microsoft consent will
+identify PolyMC. Previous requirement for own registration is superseded by this
+requested compatibility option. Do NOT claim endorsement: upstream CMake asks
+rebranded projects to change IDs; docs record that and independent distribution
+guidance. Ownership verification and normal TLS remain enabled; no password
+entry/storage or client secret. User performs authorization on Microsoft website.
+
+Native account screen renders a cached QR for the actual verification HTTPS URI,
+plus short code and website address text. PS5 browser is
+not opened; user scans on phone or uses PC. MIT Nayuki encoder is pinned at
+3c6d0b3cefb4e049dc337e82237c9644399716a8 with hashes/fulllicense under vendor/qrcodegen.
+PS5 release build compiles this library with NDEBUG because SDK lacks __assert;
+host navigation/render tests keep assertions. Buttons/mouse hit areas moved to794.
+Actual rendered QR decoded by zxing-cpp2.3.0 at1920x1080 and1280x720; receipt in
+artifacts/frontend/auth-qr-receipt.json; preview auth-qr.png uses FAKE ABCD-EFGH.
+Actual packaged Java8 requested a real Microsoft device code with exit0; private
+device code stays in ignored artifacts/auth-public-client-smoke/data/private.
+No actual account authorized yet. Provider override/launch privacy tests PASS,
+frontend checks PASS, native bridge and four staging checks PASS.
+
+Deployment --app-update completed: signed EBOOT/win32u ELF views and JAR/report
+bytes verified, ntdll/art/music/unchanged patches checked and skipped. Worlds,
+mod enable/disable choices, Java and user settings preserved. Staging graphics
+first reported stale EBOOT hash after native rebuild; stage-app-update then
+updated both reports and validated complete package before sending.
+EBOOT1327c0f050f84275e09c996dc09daa0abb39b02026fe4d22467a7e7741f8b98b
+JAR19f107fb15af89479e4fb38b4175b48a621837fb808b74f92134ffbee931bc2c
+win32u1cefb5da88e8c0e319ce40436204fa05611c78ee56f996e17764c6fb497f9ca9
+SDK archive1cbe4c59222a74fa048938b7be262b1ef456b96f99960ecf421be86a9c41e967
+Runtimeconfig744cbb4f48ccd21abdc1e46bdfadaba5ea53bbacf70139e0f6825f5f99062a32
+
+Await two user tests: AccountsMicrosoftStartsign-in→phoneauthorize→Checksign-in;
+same26.2worldSodium-only one minute/FPS. Full pack/26.3 mod-loading failure remains
+unresolved; retrieve file-inventory from next full-mod run to guide that fix.
+Three USER deleted sce_sys source PNGs remain excluded. Push requested project
+source changes/checkpoint to Ayoubec/ProsperoMC; no other title/system changes.

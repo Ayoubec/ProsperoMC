@@ -389,6 +389,14 @@ class LauncherTests(unittest.TestCase):
         self.request(ok=False, command="import", id="corrupt", version="1.12.2", source=source)
         self.assertFalse((self.root / "instances/corrupt").exists())
 
+    def test_microsoft_provider_default_and_custom_id(self):
+        self.request(command="settings", microsoftClientId="")
+        self.assertEqual(props(self.root / "launcher-view.properties")["auth.provider"], "PolyMC")
+        custom="12345678-1234-1234-1234-123456789abc"
+        self.request(command="settings", microsoftClientId=custom)
+        self.assertEqual(props(self.root / "settings.properties")["microsoftClientId"],custom)
+        self.assertEqual(props(self.root / "launcher-view.properties")["auth.provider"], "Custom application")
+
     def test_prepare_jvm_exact_logging_dynamic_java_and_no_secrets(self):
         self.version["javaVersion"]["majorVersion"] = 25
         self.version["arguments"] = {"jvm": ["-Djava.library.path=${natives_directory}", "-cp", "${classpath}", {"rules": [{"action": "allow", "os": {"name": "windows"}}], "value": "-Dos.name=Windows 10"}], "game": ["--accessToken", "${auth_access_token}", "--username", "${auth_player_name}"]}

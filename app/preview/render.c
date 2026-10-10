@@ -38,6 +38,9 @@ static void load(const char *path) {
         else if(!strcmp(line,"auth.username")) snprintf(view.username,sizeof(view.username),"%s",value);
         else if(!strcmp(line,"username")||!strcmp(line,"settings.username")) snprintf(view.username,sizeof(view.username),"%s",value);
         else if(!strcmp(line,"settings.accountMode")) snprintf(view.account_mode,sizeof(view.account_mode),"%s",value);
+        else if(!strcmp(line,"auth.userCode")) snprintf(view.auth_code,sizeof(view.auth_code),"%s",value);
+        else if(!strcmp(line,"auth.verificationUri")) snprintf(view.auth_url,sizeof(view.auth_url),"%s",value);
+        else if(!strcmp(line,"auth.provider")) snprintf(view.auth_provider,sizeof(view.auth_provider),"%s",value);
         else if(!strcmp(line,"remote.pack.count"))view.remote_count=atoi(value);
         else if(!strcmp(line,"remote.version.count"))view.remote_version_count=atoi(value);
         else if(!strcmp(line,"remote.offset"))view.remote_offset=atoi(value);

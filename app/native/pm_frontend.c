@@ -7,6 +7,7 @@
 #include <string.h>
 #include "pm_font.h"
 #include "pm_art.h"
+#include "../../vendor/qrcodegen/qrcodegen.h"
 
 #define BASE 0x06090a
 #define PANEL 0x101c17
@@ -422,7 +423,7 @@ int pm_frontend_pointer(PmFrontend *f,const PmView *v,int x,int y,int button,int
         break;
     case PM_ACCOUNTS:
         if(inside(x,y,151,463,1490,64)){f->focus=0;hit=1;}
-        for(int j=0;j<2;j++)if(inside(x,y,151+j*559,749,530,64)){f->focus=j+1;hit=1;}
+        for(int j=0;j<2;j++)if(inside(x,y,151+j*559,794,530,64)){f->focus=j+1;hit=1;}
         break;
     default:break;
     }
@@ -756,6 +757,23 @@ static void settings(Canvas *c,const PmFrontend *f,const PmView *v) {
     button(c,"REFRESH RUNTIMES",137,804,790,f->focus==5,0);
     button(c,"SAVE SETTINGS",959,804,824,f->focus==6,1);
 }
+static void auth_qr(Canvas *c,const char *url) {
+    static char previous[256];
+    static uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(10)];
+    static int valid;
+    if(strncmp(url,"https://",8))return;
+    if(strcmp(previous,url)) {
+        uint8_t scratch[qrcodegen_BUFFER_LEN_FOR_VERSION(10)];
+        copy(previous,sizeof(previous),url);
+        valid=qrcodegen_encodeText(url,scratch,qr,qrcodegen_Ecc_MEDIUM,1,10,qrcodegen_Mask_AUTO,1);
+    }
+    if(!valid)return;
+    int size=qrcodegen_getSize(qr),scale=208/(size+8),extent=(size+8)*scale;
+    int left=700+(208-extent)/2,top=546+(208-extent)/2;
+    box(c,left,top,extent,extent,0xffffff);
+    for(int y=0;y<size;y++)for(int x=0;x<size;x++)
+        if(qrcodegen_getModule(qr,x,y))box(c,left+(x+4)*scale,top+(y+4)*scale,scale,scale,0x000000);
+}
 static void accounts(Canvas *c,const PmFrontend *f,const PmView *v) {
     int offline=!strcmp(v->account_mode,"offline");
     screen_title(c,"Your Minecraft account","Choose local offline play or sign in using Microsoft's device flow.");
@@ -764,16 +782,22 @@ static void accounts(Canvas *c,const PmFrontend *f,const PmView *v) {
     small(c,offline?"Local offline play / username shown above":v->account_status[0]?v->account_status:"A Minecraft Java license is required for online authentication.",153,399,MUTED,1580);
     button(c,offline?"MODE: OFFLINE  /  SWITCH TO MICROSOFT":"MODE: MICROSOFT  /  SWITCH TO OFFLINE",151,463,1490,f->focus==0,0);
     if(v->auth_code[0]&&!offline) {
-        text(c,v->auth_code,150,558,58,LIME,700);
-        small(c,"Open this address and enter the code:",968,549,TEXT,792);
+        text(c,v->auth_code,150,580,58,LIME,520);
+        small(c,"Enter this code on Microsoft's website.",150,666,MUTED,530);
+        auth_qr(c,v->auth_url[0]?v->auth_url:"https://microsoft.com/link");
+        small(c,"Scan the QR or open this address:",968,549,TEXT,792);
         text(c,v->auth_url[0]?v->auth_url:"https://microsoft.com/link",968,592,29,LIME,792);
         small(c,"Return here, then choose Check sign-in.",968,650,MUTED,792);
     } else {
         small(c,offline?"Offline mode opens local worlds using the configured username.":"Start sign-in to receive a short code and a verification address.",153,575,TEXT,1520);
         small(c,offline?"Online servers may require a licensed Microsoft account.":"Sign in on your phone or PC using the address and code shown here.",153,629,FAINT,1520);
     }
-    button(c,"START SIGN-IN",151,749,530,f->focus==1,1);
-    button(c,"CHECK SIGN-IN",710,749,530,f->focus==2,0);
+    if(!offline) {
+        char provider[128];snprintf(provider,sizeof(provider),"Sign-in application: %s",v->auth_provider[0]?v->auth_provider:"PolyMC");
+        small(c,provider,968,709,FAINT,792);
+    }
+    button(c,"START SIGN-IN",151,794,530,f->focus==1,1);
+    button(c,"CHECK SIGN-IN",710,794,530,f->focus==2,0);
 }
 
 static void packs(Canvas *c,const PmFrontend *f,const PmView *v) {

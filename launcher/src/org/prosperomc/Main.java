@@ -678,6 +678,7 @@ public final class Main {
         v.put("settings.username",settings.getOrDefault("username","Player"));
         for(Map.Entry<String, String> e:settings.entrySet())if(e.getKey().matches("java[0-9]+"))v.put("settings."+e.getKey(), e.getValue());
         v.put("auth.signedIn", Boolean.toString(Files.isRegularFile(root.resolve("private/account.json"))));
+        v.put("auth.provider",auth.provider());
         n=0;
         for(JavaRuntime.Info info:runtimes.inventory()) {
             if(n>=16)break;

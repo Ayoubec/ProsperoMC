@@ -1,17 +1,23 @@
-# Microsoft sign-in setup
+# Microsoft sign-in
 
-ProsperoMC uses Microsoft's device authorization flow. After setup, select
-Accounts → Microsoft → Start sign-in. The launcher shows a verification address
-and short code. Open the address on your phone or PC, enter the code, and sign in
+ProsperoMC uses Microsoft's device authorization flow. Select
+Accounts → Microsoft → Start sign-in. The launcher shows a QR code, verification
+address and short code. Scan the QR or open the address on your phone or PC, enter the code, and sign in
 on Microsoft's site. Return to ProsperoMC and select Check sign-in. Your Microsoft
 password is never entered into or stored by ProsperoMC.
 
-The current build has no Microsoft application ID configured. This prevents the
-device-code request from starting; changing account mode alone cannot log in.
-ProsperoMC needs its own registered public-client application. PolyMC asks
-rebranded projects to change its API keys, so we do not borrow PolyMC's client ID.
+At the project owner's request, this build defaults to PolyMC's published public
+client ID `6b329578-bfec-42a3-b503-303ab3f2ac96`. The launcher displays that provider,
+and Microsoft's consent identifies PolyMC. This is public application configuration,
+not an account password or secret. An absent or empty `microsoftClientId` selects
+this option; a configured value selects the custom application.
 
-## Register the application
+[PolyMC's CMake configuration](https://github.com/PolyMC/PolyMC/blob/master/CMakeLists.txt)
+asks rebranded projects to change its API IDs. This compatibility option does not
+imply PolyMC endorses ProsperoMC or guarantees availability of its ID. For an
+independent distribution, register ProsperoMC's own public application as below.
+
+## Optional custom application
 
 Use Microsoft's [application registration guide](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app).
 Register ProsperoMC with personal Microsoft accounts enabled, and enable public
@@ -30,7 +36,9 @@ Reopen the launcher and start sign-in. The Xbox and Minecraft Services requests
 still need to succeed, and Minecraft Java ownership is checked. Receiving a
 Microsoft login code alone does not prove the application has Minecraft API
 access. If those services reject the registered application, resolve that
-application's access with Microsoft; do not disable ownership checks or substitute
-another launcher's ID.
+application's access with Microsoft; ownership verification remains enabled.
 
-This setup has not been verified with a registered ProsperoMC application yet.
+The packaged Java 8 backend successfully requested a real Microsoft device code
+with the PolyMC ID. Complete console sign-in and Minecraft account verification
+still need a user authorization test. A separate PS5 browser is not needed for
+this phone/PC flow.

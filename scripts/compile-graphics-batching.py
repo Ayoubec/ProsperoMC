@@ -112,6 +112,12 @@ with (out / 'policy-check.log').open('w') as log:
 # serializing cycle reads, cache atomics or diagnostic I/O. Keep all submission,
 # retirement and rendering features; profiling remains an explicit build option.
 flags = shlex.split('\n'.join(config.splitlines()[1:]))
+# Sodium's chunk arenas exhaust the CI's 256 MiB buffer pool; subsequent
+# per-buffer kernel allocations fail with EAGAIN. Reuse the driver's checked
+# allocator with a 1 GiB pool, rather than adding another allocation backend.
+arena_flag = '-DPS5_RENDER_ARENA_BYTES=0x10000000u'
+assert flags.count(arena_flag) == 1
+flags[flags.index(arena_flag)] = '-DPS5_RENDER_ARENA_BYTES=0x40000000u'
 prefix = '/home/runner/work/ps5-opengl/ps5-opengl'
 flags = [f.replace(prefix+'/build/mesa-ps5-probe',str(build)).replace(prefix,str(source)) for f in flags]
 profile = os.environ.get('PROSPEROMC_DRAW_PROFILE', '0') == '1'
@@ -160,6 +166,7 @@ provenance.update(version=provenance['version']+'-prosperomc-quad-batching',
     batch_timings=batch_timings,
     async_native_prepare=async_prepare,
     native_prepare_workers=2 if async_prepare else 0,
+    gpu_buffer_pool_bytes=1073741824,
     runtime_config_sha256=hashlib.sha256((out / 'runtime-config.txt').read_bytes()).hexdigest(),
     hardware_validation='pending console retest of modified draw driver')
 (modified / 'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')

@@ -4,8 +4,9 @@ import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
-/** Microsoft device authorization. Requires the developer's own registered public client ID. */
+/** Microsoft device authorization with a configurable public client ID. */
 final class Auth {
+    static final String POLYMC_CLIENT_ID="6b329578-bfec-42a3-b503-303ab3f2ac96";
     final Main app;
     final Path privateDir;
     Auth(Main a) {
@@ -18,10 +19,10 @@ final class Auth {
         return m;
     }
     String client()throws IOException {
-        String s=app.settings.getOrDefault("microsoftClientId", "");
-        if(s.isEmpty())throw new IOException("Microsoft sign-in setup is incomplete: ProsperoMC needs its own registered public client ID (microsoftClientId in settings.properties). No login code can be issued yet.");
-        return s;
+        String s=app.settings.getOrDefault("microsoftClientId", "").trim();
+        return s.isEmpty()?POLYMC_CLIENT_ID:s;
     }
+    String provider() {return app.settings.getOrDefault("microsoftClientId", "").trim().isEmpty()?"PolyMC":"Custom application";}
     static String form(Map<String, Object> m)throws IOException {
         StringBuilder b=new StringBuilder();
         for(Map.Entry<String, Object> e:m.entrySet()) {

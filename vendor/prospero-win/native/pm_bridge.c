@@ -146,6 +146,7 @@ static void view_property(void *context, const char *key, const char *value)
     TEXT("username", username); TEXT("auth.username", username); TEXT("auth.url", auth_url); TEXT("auth.code", auth_code);
     TEXT("auth.verificationUri", auth_url); TEXT("auth.userCode", auth_code);
     TEXT("account.status", account_status);
+    TEXT("auth.provider", auth_provider);
     TEXT("remote.projectId", remote_project);
 #undef TEXT
     if (!strcmp(key,"instance.count")) { int n=integer(value,2147483647); view->instance_count=n>PM_MAX_INSTANCES?PM_MAX_INSTANCES:n; }

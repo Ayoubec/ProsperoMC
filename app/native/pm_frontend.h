@@ -39,6 +39,7 @@ typedef struct PmView {
     int memory_mb, busy, progress_done, progress_total, resolution_height;
     char java_path[512], username[PM_TEXT];
     char auth_url[256], auth_code[64], account_status[PM_TEXT];
+    char auth_provider[64];
     char account_mode[16];
 } PmView;
 
