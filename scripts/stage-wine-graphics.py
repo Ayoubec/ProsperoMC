@@ -25,7 +25,14 @@ for key in ('unresolved', 'errors', 'title_unbound', 'webkit_unbound', 'raw_sysc
     assert not entry.get(key), (key, entry.get(key))
 assert set(entry.get('data_imports', [])) <= {'__isthreaded', '__stderrp', '__stdinp', '__stdoutp', 'environ'}
 assert digest(build / 'win32u.prx') == entry['sha256']
-assert digest(title / 'win/wine/lib/wine/x86_64-unix/ntdll.prx') == '1c86a5eab801b5a2246f17543b5b7a938d3825b64e618fa9f58cb2f129906bd8'
+current_stage=json.loads((title / 'STAGE-REPORT.json').read_text())
+assert digest(title / 'win/wine/lib/wine/x86_64-unix/ntdll.prx') == current_stage['wine']['ntdllSha256']
+if current_stage['wine'].get('runtimeCore'):
+    from importlib.machinery import SourceFileLoader
+    core=SourceFileLoader('graphics_preserved_core',str(root/'scripts/stage-runtime-v020-core.py')).load_module()
+    core.core_names(title)
+else:
+    assert current_stage['wine']['ntdllSha256'] == '1c86a5eab801b5a2246f17543b5b7a938d3825b64e618fa9f58cb2f129906bd8'
 provenance = json.loads((sdk / 'provenance.json').read_text())
 assert digest(sdk / 'sdk/manifest.sha256') == provenance['sdk_manifest_sha256']
 assert report['sources']['ps5_opengl_sdk'] == provenance['sdk_manifest_sha256']
@@ -53,7 +60,8 @@ wheel_built = wheel.name in report['patches']
 if wheel_built:
     shutil.copy2(wheel,title / 'WINE_PATCHES' / wheel.name)
 additional_patches = {}
-for name in ('0672-win32u-ps5-fixed-game-window.patch', '0910-win32u-ps5-worker-desktop-cache.patch'):
+for name in ('0672-win32u-ps5-fixed-game-window.patch', '0910-win32u-ps5-worker-desktop-cache.patch',
+             '0911-win32u-display-provider-name.patch'):
     assert name in report['patches'], name
     source = root / 'vendor/prospero-win/wine/patches' / name
     shutil.copy2(source, title / 'WINE_PATCHES' / name)

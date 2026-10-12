@@ -38,10 +38,14 @@ static const int java_majors[] = {8, 17, 21, 25};
 static const int resolution_heights[] = {720, 1080, 1440, 2160};
 static const char *resolution_labels[] = {"1280 x 720", "1920 x 1080", "2560 x 1440",
                                           "3840 x 2160"};
-static const char *graphics_values[] = {"opengl", "zink"};
-static const char *graphics_labels[] = {"Native PS5", "Vulkan accelerated (Zink)"};
+static const char *graphics_values[] = {"zink", "vulkan"};
+static const char *graphics_labels[] = {"OpenGL (Zink)", "Vulkan (native PS5)"};
 static const char *input_values[] = {"emulated", "native"};
 static const char *input_labels[] = {"Emulated mouse / keyboard", "Native gamepad (Controllify)"};
+static const char *theme_values[] = {"grass", "ocean", "diamond", "amethyst", "redstone", "gold"};
+static const char *theme_labels[] = {"Grass", "Ocean", "Diamond", "Amethyst", "Redstone", "Gold"};
+static const uint32_t theme_colors[] = {0xb4e777, 0x7dbaff, 0x70e6dc, 0xc6a1ff, 0xff9696, 0xf5d379};
+static const uint32_t theme_backgrounds[] = {0x090e0c,0x090f1c,0x071512,0x140e21,0x1b0b10,0x1b1609};
 static PmIconLoader icon_loader;
 void pm_frontend_set_icon_loader(PmIconLoader loader)
 {
@@ -92,10 +96,14 @@ void pm_frontend_tick(PmFrontend *f, unsigned ms)
     ms = ms > 100 ? 100 : ms;
     f->animation_ms += ms;
     f->focus_ms = bound((int)f->focus_ms + (int)ms, 0, 180);
+    f->transition_ms = f->transition_ms > ms ? f->transition_ms - ms : 0;
     int x = 470;
     for (int j = 0; j < (int)f->screen; j++)
         x += text_width(tabs[j], 24) + 43;
-    f->underline_x += bound(x - f->underline_x, -(int)ms * 3, (int)ms * 3);
+    int distance = x - f->underline_x;
+    int step = distance * (int)ms / 80;
+    if (!step && distance && ms) step = distance > 0 ? 1 : -1;
+    f->underline_x += distance > 0 ? bound(step, 0, distance) : bound(step, distance, 0);
 }
 static void normalize(PmFrontend *f, const PmView *v)
 {
@@ -119,9 +127,9 @@ static void normalize(PmFrontend *f, const PmView *v)
     f->content_kind = bound(f->content_kind, 0, 2);
     f->header_focus = bound(f->header_focus, -1, PM_SCREEN_COUNT);
     f->focus = bound(f->focus, 0,
-                     f->screen == PM_SETTINGS   ? 9
-                     : f->screen == PM_MODS     ? 5
-                     : f->screen == PM_LIBRARY  ? 4
+                     f->screen == PM_SETTINGS   ? 11
+                     : f->screen == PM_MODS     ? 6
+                     : f->screen == PM_LIBRARY  ? 5
                      : f->screen == PM_VERSIONS ? 3
                      : f->screen == PM_ACCOUNTS ? 2
                                                 : 1);
@@ -129,12 +137,21 @@ static void normalize(PmFrontend *f, const PmView *v)
     f->resolution_index = bound(f->resolution_index, 0, 3);
     f->graphics_index = bound(f->graphics_index, 0, 1);
     f->input_index = bound(f->input_index, 0, 1);
+    f->theme_index = bound(f->theme_index, 0, 5);
+    f->vrr_index = bound(f->vrr_index, 0, 1);
     f->remote_focus = bound(f->remote_focus, 0, 1);
+    /* Provider pages are real Add Instance pages, not transient overlays.
+     * Restoring the saved source must restore its search/catalogue too. */
+    if (f->screen == PM_VERSIONS && (f->add_source == 1 || f->add_source == 2))
+        f->remote_browser = 1;
     if (!f->initialized_settings)
     {
         f->memory_mb = v->memory_mb ? bound(v->memory_mb, 512, 8192) : 2048;
-        f->graphics_index = !strcmp(v->graphics, "zink");
+        f->graphics_index = !strcmp(v->graphics, "vulkan");
         f->input_index = !strcmp(v->controller_mode, "native");
+        f->vrr_index = !strcmp(v->vrr_mode, "stable");
+        for (int j = 0; j < 6; j++)
+            if (!strcmp(v->theme_color, theme_values[j])) f->theme_index = j;
         for (int j = 0; j < 4; j++)
             if (v->resolution_height == resolution_heights[j])
                 f->resolution_index = j;
@@ -167,6 +184,8 @@ static int content_action(PmFrontend *f, PmAction *a, const char *command, const
 }
 static int switch_screen(PmFrontend *f, const PmView *v, PmScreen screen, PmAction *a)
 {
+    f->transition_direction = screen < f->screen ? -1 : 1;
+    f->transition_ms = 220;
     f->screen = screen;
     f->focus = 0;
     f->header_focus = -1;
@@ -176,25 +195,35 @@ static int switch_screen(PmFrontend *f, const PmView *v, PmScreen screen, PmActi
     f->notice[0] = 0;
     if (screen == PM_VERSIONS)
         f->add_source = -1;
+    if (screen == PM_MODS)
+        f->query[0] = 0;
     if (screen == PM_MODS && selected_instance(f, v) && !v->busy)
         return content_action(f, a, "content-list", selected_instance(f, v));
     return 0;
 }
 static const char search_keys[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -";
+static const char rename_keys[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -._";
 void pm_frontend_text(PmFrontend *f, unsigned key)
 {
-    if (!f || !f->search_editor)
+    if (!f || (!f->search_editor && !f->rename_editor))
         return;
-    size_t n = strlen(f->query);
+    char *buffer = f->rename_editor ? f->rename_text : f->query;
+    size_t capacity = f->rename_editor ? sizeof(f->rename_text) : sizeof(f->query);
+    if (f->rename_editor && f->rename_replace && (key == 8 || (key >= 32 && key <= 126)))
+    {
+        buffer[0] = 0;
+        f->rename_replace = 0;
+    }
+    size_t n = strlen(buffer);
     if (key == 8)
     {
         if (n)
-            f->query[n - 1] = 0;
+            buffer[n - 1] = 0;
     }
-    else if (key >= 32 && key <= 126 && n < sizeof(f->query) - 1)
+    else if (key >= 32 && key <= 126 && n < capacity - 1)
     {
-        f->query[n] = (char)key;
-        f->query[n + 1] = 0;
+        buffer[n] = (char)key;
+        buffer[n + 1] = 0;
     }
 }
 static int remote_search(PmFrontend *f, const PmView *v, PmAction *a, int offset)
@@ -220,6 +249,11 @@ static int remote_update(PmFrontend *f, const PmView *v, PmKey key, PmAction *a)
         if (key == PM_KEY_BACK)
         {
             f->search_editor = 0;
+            if (f->screen == PM_MODS)
+            {
+                f->remote_browser = 0;
+                f->remote_stage = 0;
+            }
             return 0;
         }
         if (key == PM_KEY_LEFT)
@@ -305,7 +339,6 @@ static int remote_update(PmFrontend *f, const PmView *v, PmKey key, PmAction *a)
             return unavailable(f, "Choose a project first.");
         copy(a->project_id, sizeof(a->project_id), v->remote_project);
         copy(a->pack_version, sizeof(a->pack_version), v->remote_versions[*sel].id);
-        copy(a->name, sizeof(a->name), v->remote_versions[*sel].name);
         return f->screen == PM_MODS
                    ? content_action(f, a, "content-download", selected_instance(f, v))
                    : action(a, f->add_source == 2 ? "curse-download" : "pack-download", NULL);
@@ -351,6 +384,38 @@ int pm_frontend_update(PmFrontend *f, const PmView *v, PmKey key, PmAction *a)
     if (key == PM_KEY_NONE)
         return 0;
     f->focus_ms = 0;
+    if (f->rename_editor)
+    {
+        if (key == PM_KEY_BACK) { f->rename_editor = 0; return 0; }
+        if (key == PM_KEY_LEFT || key == PM_KEY_RIGHT)
+            f->rename_key = bound(f->rename_key + delta, 0, 44);
+        if (key == PM_KEY_UP || key == PM_KEY_DOWN)
+            f->rename_key = bound(f->rename_key + delta * 9, 0, 44);
+        if (key == PM_KEY_SECONDARY) pm_frontend_text(f, 8);
+        if (key == PM_KEY_REFRESH || (key == PM_KEY_CONFIRM && f->rename_key == 43))
+        {
+            if (v->busy || !i || strcmp(i->id, f->rename_id))
+                return unavailable(f, "Wait for the current operation before renaming.");
+            if (!f->rename_text[0]) return unavailable(f, "Enter an instance name.");
+            copy(a->name, sizeof(a->name), f->rename_text);
+            f->rename_editor = 0;
+            return action(a, "rename-instance", i);
+        }
+        if (key == PM_KEY_CONFIRM)
+        {
+            if (f->rename_key < 40)
+            {
+                unsigned letter = (unsigned char)rename_keys[f->rename_key];
+                if (f->rename_lower && letter >= 'A' && letter <= 'Z') letter += 'a' - 'A';
+                pm_frontend_text(f, letter);
+            }
+            else if (f->rename_key == 40) pm_frontend_text(f, 8);
+            else if (f->rename_key == 41) { f->rename_text[0] = 0; f->rename_replace = 0; }
+            else if (f->rename_key == 42) f->rename_lower = !f->rename_lower;
+            else if (f->rename_key == 44) f->rename_editor = 0;
+        }
+        return 0;
+    }
     if (f->confirmation)
     {
         if (key == PM_KEY_BACK)
@@ -387,7 +452,7 @@ int pm_frontend_update(PmFrontend *f, const PmView *v, PmKey key, PmAction *a)
     }
     if (f->selector_popup)
     {
-        int cap = f->selector_popup == 1 ? 30 : f->selector_popup == 2 ? 3 : 1;
+        int cap = f->selector_popup == 1 ? 30 : f->selector_popup == 2 ? 3 : f->selector_popup == 5 ? 5 : 1;
         if (key == PM_KEY_BACK)
         {
             f->selector_popup = 0;
@@ -403,6 +468,13 @@ int pm_frontend_update(PmFrontend *f, const PmView *v, PmKey key, PmAction *a)
                 f->resolution_index = f->selector_choice;
             else if (f->selector_popup == 3)
                 f->graphics_index = f->selector_choice;
+            else if (f->selector_popup == 5)
+            {
+                f->theme_index = f->selector_choice;
+                copy(a->theme_color,sizeof(a->theme_color),theme_values[f->theme_index]);
+                f->selector_popup=0;
+                return action(a,"settings",NULL);
+            }
             else
                 f->input_index = f->selector_choice;
             f->selector_popup = 0;
@@ -525,7 +597,7 @@ int pm_frontend_update(PmFrontend *f, const PmView *v, PmKey key, PmAction *a)
                 f->selected_instance = bound(f->selected_instance + delta, 0, n ? n - 1 : 0);
             }
             else
-                f->focus = bound(f->focus + delta, 1, 4);
+                f->focus = bound(f->focus + delta, 1, 5);
         }
         if (key == PM_KEY_SECONDARY)
             return switch_screen(f, v, PM_VERSIONS, a);
@@ -540,6 +612,15 @@ int pm_frontend_update(PmFrontend *f, const PmView *v, PmKey key, PmAction *a)
             if (f->focus == 2)
                 return switch_screen(f, v, PM_MODS, a);
             if (f->focus == 3)
+            {
+                f->rename_editor = 1;
+                f->rename_key = f->rename_lower = 0;
+                f->rename_replace = 1;
+                copy(f->rename_id, sizeof(f->rename_id), i->id);
+                copy(f->rename_text, sizeof(f->rename_text), i->name[0] ? i->name : i->id);
+                break;
+            }
+            if (f->focus == 4)
                 return action(a, "clone", i);
             confirm(f, v, 1);
         }
@@ -622,7 +703,11 @@ int pm_frontend_update(PmFrontend *f, const PmView *v, PmKey key, PmAction *a)
             else if (f->focus == 2 && f->selected_mod > 0)
                 f->selected_mod--;
             else
-                f->focus = f->focus > 3 ? f->focus - 1 : f->focus == 3 ? 1 : f->focus - 1;
+                f->focus = f->focus == 6   ? 1
+                           : f->focus == 1 ? 0
+                           : f->focus > 3  ? f->focus - 1
+                           : f->focus == 3 ? 6
+                                           : 6;
         }
         if (key == PM_KEY_DOWN)
         {
@@ -631,7 +716,10 @@ int pm_frontend_update(PmFrontend *f, const PmView *v, PmKey key, PmAction *a)
                     f->selected_mod + 1, 0,
                     count(v->mod_count, PM_MAX_MODS) ? count(v->mod_count, PM_MAX_MODS) - 1 : 0);
             else
-                f->focus = f->focus < 2 ? f->focus + 1 : bound(f->focus + 1, 3, 5);
+                f->focus = f->focus == 0   ? 1
+                           : f->focus == 6 || f->focus == 3 ? 2
+                           : f->focus == 1 ? 6
+                                           : bound(f->focus + 1, 3, 5);
         }
         if (key == PM_KEY_LEFT || key == PM_KEY_RIGHT)
         {
@@ -647,7 +735,8 @@ int pm_frontend_update(PmFrontend *f, const PmView *v, PmKey key, PmAction *a)
                 f->selected_mod = 0;
                 return v->busy ? 0 : content_action(f, a, "content-list", i);
             }
-            f->focus = key == PM_KEY_RIGHT ? 3 : 2;
+            f->focus = key == PM_KEY_RIGHT ? (f->focus == 6 ? 3 : 4)
+                       : f->focus == 3 ? 6 : 2;
         }
         if (key == PM_KEY_SECONDARY)
         {
@@ -655,8 +744,9 @@ int pm_frontend_update(PmFrontend *f, const PmView *v, PmKey key, PmAction *a)
                 return 0;
             f->focus = 3;
             f->remote_browser = 1;
-            f->query[0] = 0;
-            return remote_search(f, v, a, 0);
+            f->search_editor = 1;
+            f->remote_focus = 0;
+            return 0;
         }
         if (key == PM_KEY_CONFIRM && !v->busy)
         {
@@ -672,10 +762,15 @@ int pm_frontend_update(PmFrontend *f, const PmView *v, PmKey key, PmAction *a)
                 f->selected_mod = 0;
                 return content_action(f, a, "content-list", i);
             }
-            if (f->focus == 3)
+            if (f->focus == 3 || f->focus == 6)
             {
                 f->remote_browser = 1;
-                f->query[0] = 0;
+                if (f->focus == 6)
+                {
+                    f->search_editor = 1;
+                    f->remote_focus = 0;
+                    return 0;
+                }
                 return remote_search(f, v, a, 0);
             }
             if (f->focus == 4)
@@ -709,23 +804,29 @@ int pm_frontend_update(PmFrontend *f, const PmView *v, PmKey key, PmAction *a)
         }
         if (key == PM_KEY_UP)
         {
-            if (f->focus == 0 || f->focus >= 7)
+            if (f->focus == 0 || (f->focus >= 7 && f->focus <= 9))
                 f->header_focus = PM_SETTINGS;
+            else if (f->focus == 10 || f->focus == 11)
+                f->focus = f->focus == 10 ? 0 : 8;
             else if (f->focus >= 1 && f->focus <= 4)
-                f->focus = f->focus == 1 ? 0 : f->focus + 5;
+                f->focus = f->focus <= 2 ? 10 : 11;
             else
                 f->focus = f->focus == 5 ? 1 : 3;
         }
         if (key == PM_KEY_DOWN)
         {
-            if (f->focus == 0 || f->focus >= 7)
-                f->focus = f->focus == 0 ? 1 : f->focus - 5;
+            if (f->focus == 10 || f->focus == 11)
+                f->focus = f->focus == 10 ? 1 : 3;
+            else if (f->focus == 0 || f->focus >= 7)
+                f->focus = f->focus == 0 || f->focus == 7 ? 10 : 11;
             else if (f->focus >= 1 && f->focus <= 4)
                 f->focus = f->focus <= 2 ? 5 : 6;
         }
         if (key == PM_KEY_LEFT || key == PM_KEY_RIGHT)
         {
-            if (f->focus == 0 || f->focus >= 7)
+            if (f->focus == 10 || f->focus == 11)
+                f->focus = bound(f->focus + delta, 10, 11);
+            else if (f->focus == 0 || f->focus >= 7)
             {
                 int column = f->focus == 0 ? 0 : f->focus - 6;
                 column = bound(column + delta, 0, 3);
@@ -738,13 +839,19 @@ int pm_frontend_update(PmFrontend *f, const PmView *v, PmKey key, PmAction *a)
         }
         if (key == PM_KEY_CONFIRM && !v->busy)
         {
+            if (f->focus == 11)
+            {
+                f->vrr_index = !f->vrr_index;
+                copy(a->vrr_mode,sizeof(a->vrr_mode),f->vrr_index?"stable":"auto");
+                return action(a,"settings",NULL);
+            }
             if (f->focus == 0 || f->focus >= 7)
             {
-                f->selector_popup = f->focus == 0 ? 1 : f->focus == 7 ? 2 : f->focus == 8 ? 3 : 4;
+                f->selector_popup = f->focus == 10 ? 5 : f->focus == 0 ? 1 : f->focus == 7 ? 2 : f->focus == 8 ? 3 : 4;
                 f->selector_choice = f->focus == 0   ? (f->memory_mb - 512) / 256
                                      : f->focus == 7 ? f->resolution_index
                                      : f->focus == 8 ? f->graphics_index
-                                                     : f->input_index;
+                                     : f->focus == 10 ? f->theme_index : f->input_index;
                 break;
             }
             if (f->focus <= 4)
@@ -758,6 +865,8 @@ int pm_frontend_update(PmFrontend *f, const PmView *v, PmKey key, PmAction *a)
             a->resolution_height = resolution_heights[f->resolution_index];
             copy(a->graphics, sizeof(a->graphics), graphics_values[f->graphics_index]);
             copy(a->controller_mode, sizeof(a->controller_mode), input_values[f->input_index]);
+            copy(a->theme_color, sizeof(a->theme_color), theme_values[f->theme_index]);
+            copy(a->vrr_mode, sizeof(a->vrr_mode), f->vrr_index ? "stable" : "auto");
             return action(a, "settings", NULL);
         }
         break;
@@ -808,6 +917,17 @@ int pm_frontend_pointer(PmFrontend *f, const PmView *v, int x, int y, int button
     y = f->pointer_y;
     if (button == 2)
         return pm_frontend_update(f, v, PM_KEY_BACK, a);
+    if (f->rename_editor)
+    {
+        if (button == 1 && inside(x, y, 140, 295, 1640, 64)) f->rename_replace = 1;
+        for (int j = 0; j < 45; j++)
+            if (inside(x, y, 140 + (j % 9) * 184, 380 + (j / 9) * 82, 170, 66))
+            {
+                f->rename_key = j;
+                if (button == 1) return pm_frontend_update(f, v, PM_KEY_CONFIRM, a);
+            }
+        return 0;
+    }
     if (f->confirmation)
     {
         if (button == 1 && inside(x, y, 630, 625, 310, 66))
@@ -824,8 +944,10 @@ int pm_frontend_pointer(PmFrontend *f, const PmView *v, int x, int y, int button
     }
     if (f->selector_popup)
     {
-        int rows = f->selector_popup == 1   ? 7
+        int rows = f->selector_popup == 5   ? 6
+                   : f->selector_popup == 1 ? 7
                    : f->selector_popup == 2 ? 4
+                   : f->selector_popup == 3 ? 2
                                             : 2,
             start = f->selector_popup == 1 ? list_start(f->selector_choice, 7) : 0;
         if (f->selector_popup == 1)
@@ -855,19 +977,36 @@ int pm_frontend_pointer(PmFrontend *f, const PmView *v, int x, int y, int button
     }
     if (f->remote_browser)
     {
-        if (button == 1 && inside(x, y, 110, 283, 1410, 64))
+        int content = f->screen == PM_MODS;
+        int search_y = content ? 355 : 283, list_y = content ? 445 : 363, rows = content ? 4 : 5;
+        if (content)
+        {
+            for (int j = 0; j < 3; j++)
+                if (button == 1 && inside(x, y, 110 + j * 290, 292, 274, 50))
+                {
+                    f->content_kind = j;
+                    f->selected_mod = 0;
+                    f->remote_browser = 0;
+                    f->search_editor = 0;
+                    f->focus = 2;
+                    return v->busy ? 0
+                                   : content_action(f, a, "content-list", selected_instance(f, v));
+                }
+        }
+        if (button == 1 && inside(x, y, 110, search_y, content ? 1120 : 1410, 64))
         {
             f->remote_focus = 0;
             if (f->search_editor)
                 return 0;
             return pm_frontend_update(f, v, PM_KEY_CONFIRM, a);
         }
-        if (button == 1 && inside(x, y, 1545, 283, 265, 64))
+        if (button == 1 && inside(x, y, content ? 1290 : 1545, search_y, content ? 490 : 265, 64))
             return v->busy ? 0 : remote_search(f, v, a, 0);
         if (f->search_editor)
         {
             for (int j = 0; j < 40; j++)
-                if (button == 1 && inside(x, y, 140 + (j % 10) * 164, 385 + (j / 10) * 92, 150, 76))
+                if (button == 1 && inside(x, y, 140 + (j % 10) * 164,
+                                          (content ? 445 : 385) + (j / 10) * 92, 150, 76))
                 {
                     f->search_key = j;
                     return pm_frontend_update(f, v, PM_KEY_CONFIRM, a);
@@ -878,9 +1017,9 @@ int pm_frontend_pointer(PmFrontend *f, const PmView *v, int x, int y, int button
             return pm_frontend_update(f, v, wheel > 0 ? PM_KEY_UP : PM_KEY_DOWN, a);
         int rel = f->remote_stage,
             n = count(rel ? v->remote_version_count : v->remote_count, rel ? 64 : 24),
-            start = list_start(rel ? f->selected_release : f->selected_remote, 5);
-        for (int j = start; j < n && j < start + 5; j++)
-            if (button == 1 && inside(x, y, 110, 363 + (j - start) * 86, 1700, 76))
+            start = list_start(rel ? f->selected_release : f->selected_remote, rows);
+        for (int j = start; j < n && j < start + rows; j++)
+            if (button == 1 && inside(x, y, 110, list_y + (j - start) * 86, 1700, 76))
             {
                 if (rel)
                     f->selected_release = j;
@@ -966,8 +1105,8 @@ int pm_frontend_pointer(PmFrontend *f, const PmView *v, int x, int y, int button
                 f->focus = 0;
                 return 0;
             }
-        for (int j = 0; j < 4; j++)
-            if (inside(x, y, 1050, 520 + j * 83, 730, 66))
+        for (int j = 0; j < 5; j++)
+            if (inside(x, y, 1050, 520 + j * 70, 730, 66))
                 hit = j + 1;
         break;
     case PM_VERSIONS:
@@ -1006,6 +1145,10 @@ int pm_frontend_pointer(PmFrontend *f, const PmView *v, int x, int y, int button
             hit = 3;
         break;
     case PM_MODS:
+        if (inside(x, y, 110, 355, 1120, 64))
+            hit = 6;
+        if (inside(x, y, 1290, 355, 490, 64))
+            hit = 3;
         if (inside(x, y, 110, 190, 1050, 68))
             hit = 0;
         for (int j = 0; j < 3; j++)
@@ -1016,19 +1159,23 @@ int pm_frontend_pointer(PmFrontend *f, const PmView *v, int x, int y, int button
                 f->focus = 2;
                 return v->busy ? 0 : content_action(f, a, "content-list", selected_instance(f, v));
             }
-        start = list_start(f->selected_mod, 6);
-        for (int j = start; j < count(v->mod_count, PM_MAX_MODS) && j < start + 6; j++)
-            if (button == 1 && inside(x, y, 110, 365 + (j - start) * 81, 1120, 72))
+        start = list_start(f->selected_mod, 5);
+        for (int j = start; j < count(v->mod_count, PM_MAX_MODS) && j < start + 5; j++)
+            if (button == 1 && inside(x, y, 110, 445 + (j - start) * 81, 1120, 72))
             {
                 f->selected_mod = j;
                 f->focus = 2;
                 return pm_frontend_update(f, v, PM_KEY_CONFIRM, a);
             }
-        for (int j = 0; j < 3; j++)
-            if (inside(x, y, 1290, 365 + j * 94, 490, 66))
-                hit = j + 3;
+        for (int j = 0; j < 2; j++)
+            if (inside(x, y, 1290, 459 + j * 94, 490, 66))
+                hit = j + 4;
         break;
     case PM_SETTINGS:
+        if (inside(x, y, 110, 430, 840, 110))
+            hit = 10;
+        if (inside(x, y, 974, 430, 840, 110))
+            hit = 11;
         if (inside(x, y, 110, 280, 408, 134))
             hit = 0;
         if (inside(x, y, 542, 280, 408, 134))
@@ -1038,11 +1185,11 @@ int pm_frontend_pointer(PmFrontend *f, const PmView *v, int x, int y, int button
         if (inside(x, y, 1406, 280, 408, 134))
             hit = 9;
         for (int j = 0; j < 4; j++)
-            if (inside(x, y, 110 + j * 432, 490, 408, 230))
+            if (inside(x, y, 110 + j * 432, 600, 408, 185))
                 hit = j + 1;
-        if (inside(x, y, 110, 812, 815, 66))
+        if (inside(x, y, 110, 861, 840, 66))
             hit = 5;
-        if (inside(x, y, 970, 812, 818, 66))
+        if (inside(x, y, 974, 861, 840, 66))
             hit = 6;
         break;
     case PM_ACCOUNTS:
@@ -1069,6 +1216,9 @@ typedef struct Canvas
 {
     const PwPresentTarget *t;
     unsigned focus_alpha;
+    unsigned opacity;
+    int offset_x;
+    uint32_t accent, focus_rgb, base, panel, row, edge, muted, faint;
 } Canvas;
 static uint32_t mix(uint32_t a, uint32_t b, unsigned alpha)
 {
@@ -1080,6 +1230,8 @@ static uint32_t mix(uint32_t a, uint32_t b, unsigned alpha)
 static void px(Canvas *c, int x, int y, uint32_t rgb, unsigned alpha)
 {
     uint8_t *p;
+    x += c->offset_x;
+    alpha = alpha * c->opacity / 255;
     if (x < 0 || y < 0 || x >= (int)c->t->width || y >= (int)c->t->height)
         return;
     p = c->t->pixels + (size_t)y * c->t->stride + (size_t)x * 4;
@@ -1100,9 +1252,10 @@ static int sy(Canvas *c, int y)
 }
 static void box(Canvas *c, int x, int y, int w, int h, uint32_t rgb)
 {
-    int left = bound(sx(c, x), 0, c->t->width), top = bound(sy(c, y), 0, c->t->height);
-    int right = bound(sx(c, x + w), 0, c->t->width), bottom = bound(sy(c, y + h), 0, c->t->height),
+    int left = bound(sx(c, x) + c->offset_x, 0, c->t->width), top = bound(sy(c, y), 0, c->t->height);
+    int right = bound(sx(c, x + w) + c->offset_x, 0, c->t->width), bottom = bound(sy(c, y + h), 0, c->t->height),
         xx, yy;
+    if (c->opacity < 255) rgb = mix(c->base, rgb, c->opacity);
     uint32_t pixel = rgb | 0xff000000u;
     for (yy = top; yy < bottom; yy++)
     {
@@ -1113,7 +1266,7 @@ static void box(Canvas *c, int x, int y, int w, int h, uint32_t rgb)
 }
 static void roundbox(Canvas *c, int x, int y, int w, int h, int rad, uint32_t rgb)
 {
-    int xx, yy, dx, dy, left = sx(c, x), top = sy(c, y), right = sx(c, x + w),
+    int xx, yy, left = sx(c, x) + c->offset_x, top = sy(c, y), right = sx(c, x + w) + c->offset_x,
                         bottom = sy(c, y + h);
     int rx = sx(c, rad), ry = sy(c, rad);
     if (rx < 1 || ry < 1)
@@ -1121,23 +1274,28 @@ static void roundbox(Canvas *c, int x, int y, int w, int h, int rad, uint32_t rg
         box(c, x, y, w, h, rgb);
         return;
     }
+    if (c->opacity < 255) rgb = mix(c->base, rgb, c->opacity);
+    uint32_t pixel = rgb | 0xff000000u;
     for (yy = bound(top, 0, c->t->height); yy < bound(bottom, 0, c->t->height); yy++)
     {
-        for (xx = bound(left, 0, c->t->width); xx < bound(right, 0, c->t->width); xx++)
-        {
-            dx = xx < left + rx ? left + rx - xx : xx >= right - rx ? xx - (right - rx - 1) : 0;
-            dy = yy < top + ry ? top + ry - yy : yy >= bottom - ry ? yy - (bottom - ry - 1) : 0;
-            if (!dx || !dy ||
-                (int64_t)dx * dx * ry * ry + (int64_t)dy * dy * rx * rx <=
-                    (int64_t)rx * rx * ry * ry)
-                px(c, xx, yy, rgb, 255);
-        }
+        int dy = yy < top + ry ? top + ry - yy : yy >= bottom - ry ? yy - (bottom - ry - 1) : 0;
+        int inset = 0;
+        while (dy && inset < rx &&
+               (int64_t)(rx-inset)*(rx-inset)*ry*ry + (int64_t)dy*dy*rx*rx > (int64_t)rx*rx*ry*ry) inset++;
+        int begin = bound(left + inset, 0, c->t->width), end = bound(right - inset, 0, c->t->width);
+        uint8_t *p = c->t->pixels + (size_t)yy*c->t->stride + (size_t)begin*4;
+        for (xx=begin;xx<end;xx++,p+=4) memcpy(p,&pixel,4);
     }
 }
 static void panel(Canvas *c, int x, int y, int w, int h, int focused)
 {
-    roundbox(c, x, y, w, h, 20, focused ? mix(EDGE, LIME, c->focus_alpha) : EDGE);
-    roundbox(c, x + 2, y + 2, w - 4, h - 4, 18, focused ? FOCUS : PANEL);
+    roundbox(c, x, y + 5, w, h, 4, c->base);
+    roundbox(c, x, y, w, h, 4, focused ? mix(c->edge, c->accent, c->focus_alpha) : c->edge);
+    roundbox(c, x + 2, y + 2, w - 4, h - 4, 2, focused ? c->focus_rgb : c->panel);
+    /* A recessed inventory edge, with a clear controller focus outline. */
+    box(c, x + 7, y + 2, w - 14, 1, focused ? c->accent : mix(c->edge,c->accent,35));
+    if (focused)
+        box(c, x + 2, y + 9, 4, h - 18, c->accent);
 }
 static int text_width(const char *s, int size)
 {
@@ -1280,12 +1438,15 @@ static void controller_symbol(Canvas *c, char shape, int x, int y)
 }
 static void button(Canvas *c, const char *s, int x, int y, int w, int focused, int primary)
 {
-    roundbox(c, x, y, w, 66, 12,
-             focused   ? mix(EDGE, LIME, c->focus_alpha)
-             : primary ? 0x527444
-                       : EDGE);
+    roundbox(c, x, y + 4, w, 66, 4, c->base);
+    roundbox(c, x, y, w, 66, 4,
+             focused   ? mix(c->edge, c->accent, c->focus_alpha)
+             : primary ? c->accent
+                       : c->edge);
     if (!primary)
-        roundbox(c, x + 2, y + 2, w - 4, 62, 10, focused ? FOCUS : ROW);
+        roundbox(c, x + 2, y + 2, w - 4, 62, 2, focused ? c->focus_rgb : c->row);
+    else
+        box(c, x + 5, y + 3, w - 10, 2, mix(c->accent, TITLE, 55));
     text(c, s, x + (w - text_width(s, 24)) / 2, y + 17, 24,
          primary   ? 0x111b14
          : focused ? TITLE
@@ -1295,8 +1456,8 @@ static void button(Canvas *c, const char *s, int x, int y, int w, int focused, i
 static void chip(Canvas *c, const char *s, int x, int y, int accent)
 {
     int w = text_width(s, 20) + 30;
-    roundbox(c, x, y, w, 38, 10, accent ? 0x294433 : ROW);
-    text(c, s, x + 15, y + 9, 20, accent ? LIME : MUTED, w - 22);
+    roundbox(c, x, y, w, 38, 10, accent ? c->focus_rgb : c->row);
+    text(c, s, x + 15, y + 9, 20, accent ? c->accent : c->muted, w - 22);
 }
 
 static void logo(Canvas *c, int x, int y, int size)
@@ -1415,40 +1576,43 @@ static void icon(Canvas *c, const char *path, const char *loader, int x, int y, 
 static void heading(Canvas *c, const char *title, const char *subtitle)
 {
     text(c, title, 110, 181, 39, TITLE, 1400);
-    small(c, subtitle, 112, 237, FAINT, 1630);
+    small(c, subtitle, 112, 237, c->faint, 1630);
 }
 static void empty(Canvas *c, const char *title, const char *body)
 {
     text(c, title, 152, 405, 34, TITLE, 1520);
-    small(c, body, 154, 465, MUTED, 1500);
+    small(c, body, 154, 465, c->muted, 1500);
 }
 static void header(Canvas *c, const PmFrontend *f, const PmView *v)
 {
     logo(c, 64, 43, 61);
     text(c, "PROSPERO MC", 141, 45, 29, TITLE, 315);
-    small(c, "MINECRAFT JAVA / PS5", 142, 86, FAINT, 315);
+    small(c, "MINECRAFT JAVA / PS5", 142, 86, c->faint, 315);
     int x = 470;
     for (int j = 0; j < PM_SCREEN_COUNT; j++)
     {
         int w = text_width(tabs[j], 24) + 30;
         if (f->screen == (PmScreen)j)
-            roundbox(c, x - 12, 52, w, 50, 11, ROW);
+            roundbox(c, x - 12, 52, w, 50, 4, c->row);
         if (f->header_focus == j)
             panel(c, x - 12, 52, w, 50, 1);
-        text(c, tabs[j], x + 3, 66, 24, f->screen == (PmScreen)j ? TITLE : MUTED, w - 8);
+        text(c, tabs[j], x + 3, 66, 24, f->screen == (PmScreen)j ? TITLE : c->muted, w - 8);
         if (f->screen == (PmScreen)j)
-            box(c, f->underline_x, 110, w - 26, 3, LIME);
+        {
+            box(c, f->underline_x, 110, w - 26, 3, c->accent);
+            box(c, f->underline_x, 113, 12, 3, 0x527444);
+        }
         x += w + 13;
     }
-    roundbox(c, 1702, 52, 150, 54, 12, f->header_focus == PM_SCREEN_COUNT ? FOCUS : ROW);
+    roundbox(c, 1702, 52, 150, 54, 12, f->header_focus == PM_SCREEN_COUNT ? c->focus_rgb : c->row);
     small(c, "Close  X", 1730, 66, TEXT, 116);
-    box(c, 65, 137, 1790, 1, EDGE);
-    roundbox(c, 1813, 166, 10, 10, 5, v->busy ? WARN : strstr(v->status, "error") ? WARN : LIME);
+    box(c, 65, 137, 1790, 1, c->edge);
+    roundbox(c, 1813, 166, 10, 10, 5, v->busy ? WARN : strstr(v->status, "error") ? WARN : c->accent);
 }
 static void footer(Canvas *c, const PmFrontend *f, const PmView *v)
 {
-    box(c, 65, 967, 1790, 1, EDGE);
-    small(c, "L1 / R1  Navigate", 80, 993, MUTED, 300);
+    box(c, 65, 967, 1790, 1, c->edge);
+    small(c, "L1 / R1  Navigate", 80, 993, c->muted, 300);
     controller_symbol(c, 'X', 438, 992);
     small(c,
           f->confirmation        ? "Choose"
@@ -1474,20 +1638,20 @@ static void footer(Canvas *c, const PmFrontend *f, const PmView *v)
               1520, 992, TEXT, 300);
     }
     else
-        small(c, "D-PAD / ARROWS", 1480, 992, FAINT, 330);
+        small(c, "D-PAD / ARROWS", 1480, 992, c->faint, 330);
     const char *detail = f->notice[0] ? f->notice : v->detail;
     if (detail[0])
-        text(c, detail, 110, 919, 21, f->notice[0] ? WARN : v->busy ? LIME : MUTED, 1700);
+        text(c, detail, 110, 919, 21, f->notice[0] ? WARN : v->busy ? c->accent : c->muted, 1700);
     if (v->busy)
     {
-        box(c, 110, 955, 1700, 3, EDGE);
+        box(c, 110, 955, 1700, 3, c->edge);
         if (v->progress_total > 0)
             box(c, 110, 955,
                 (int)((int64_t)1700 * bound(v->progress_done, 0, v->progress_total) /
                       v->progress_total),
-                3, LIME);
+                3, c->accent);
         else
-            box(c, 110 + (int)(f->animation_ms % 1600) * 1400 / 1600, 955, 300, 3, LIME);
+            box(c, 110 + (int)(f->animation_ms % 1600) * 1400 / 1600, 955, 300, 3, c->accent);
     }
 }
 static void home(Canvas *c, const PmFrontend *f, const PmView *v)
@@ -1495,8 +1659,8 @@ static void home(Canvas *c, const PmFrontend *f, const PmView *v)
     char b[256];
     int n = count(v->instance_count, PM_MAX_INSTANCES),
         start = list_start(f->selected_instance, 12);
-    heading(c, "Your instances",
-            "Choose an instance. Select again to play; Square adds a new one.");
+    heading(c, "Your worlds, your way",
+            "Minecraft and modpacks. Choose an instance to continue your adventure.");
     button(c, "+ ADD INSTANCE", 1530, 185, 280, 0, 1);
     if (!n)
     {
@@ -1513,12 +1677,12 @@ static void home(Canvas *c, const PmFrontend *f, const PmView *v)
         icon(c, i->icon, i->loader, x + 23, y + 26, 80);
         int two_lines = instance_name(c, i->name[0] ? i->name : i->id, x + 118, y + 24, 265);
         snprintf(b, sizeof(b), "%s / %s", i->version, i->loader);
-        text(c, b, x + 119, y + (two_lines ? 86 : 67), 19, MUTED, 265);
+        text(c, b, x + 119, y + (two_lines ? 86 : 67), 19, c->muted, 265);
         chip(c, i->installed ? "READY TO PLAY" : "DOWNLOAD", x + 119, y + (two_lines ? 118 : 105),
              i->installed);
     }
     snprintf(b, sizeof(b), "%d instances  /  page %d of %d", n, start / 12 + 1, (n + 11) / 12);
-    small(c, b, 110, 860, FAINT, 900);
+    small(c, b, 110, 860, c->faint, 900);
     if (start)
         button(c, "< PREVIOUS", 1200, 847, 290, 0, 0);
     if (start + 12 < n)
@@ -1538,7 +1702,7 @@ static void library(Canvas *c, const PmFrontend *f, const PmView *v)
         icon(c, item->icon, item->loader, 126, y + 8, 56);
         text(c, item->name[0] ? item->name : item->id, 204, y + 7, 25, TITLE, 720);
         snprintf(b, sizeof(b), "%s  /  %s", item->version, item->loader);
-        text(c, b, 205, y + 43, 18, FAINT, 710);
+        text(c, b, 205, y + 43, 18, c->faint, 710);
     }
     panel(c, 1018, 282, 790, 586, 0);
     if (!i)
@@ -1549,14 +1713,15 @@ static void library(Canvas *c, const PmFrontend *f, const PmView *v)
     icon(c, i->icon, i->loader, 1050, 314, 100);
     text(c, i->name[0] ? i->name : i->id, 1178, 320, 31, TITLE, 580);
     snprintf(b, sizeof(b), "Minecraft %s", i->version);
-    small(c, b, 1180, 367, MUTED, 570);
+    small(c, b, 1180, 367, c->muted, 570);
     chip(c, i->loader, 1050, 446, 1);
     chip(c, i->installed ? "Installed" : "Not installed", 1230, 446, 0);
     button(c, i->installed ? "PLAY INSTANCE" : "DOWNLOAD MINECRAFT", 1050, 520, 730, f->focus == 1,
            1);
-    button(c, "MANAGE CONTENT", 1050, 603, 730, f->focus == 2, 0);
-    button(c, "DUPLICATE INSTANCE", 1050, 686, 730, f->focus == 3, 0);
-    button(c, "DELETE INSTANCE", 1050, 769, 730, f->focus == 4, 0);
+    button(c, "MANAGE CONTENT", 1050, 590, 730, f->focus == 2, 0);
+    button(c, "RENAME INSTANCE", 1050, 660, 730, f->focus == 3, 0);
+    button(c, "DUPLICATE INSTANCE", 1050, 730, 730, f->focus == 4, 0);
+    button(c, "DELETE INSTANCE", 1050, 800, 730, f->focus == 5, 0);
 }
 static void versions(Canvas *c, const PmFrontend *f, const PmView *v)
 {
@@ -1576,9 +1741,9 @@ static void versions(Canvas *c, const PmFrontend *f, const PmView *v)
             panel(c, x, 320, 408, 385, f->focus == j);
             icon(c, NULL, types[j], x + 143, 354, 112);
             text(c, names[j], x + 28, 511, 31, TITLE, 350);
-            small(c, line1[j], x + 29, 572, MUTED, 350);
-            text(c, line2[j], x + 29, 615, 20, FAINT, 350);
-            text(c, "SELECT >", x + 29, 666, 20, LIME, 350);
+            small(c, line1[j], x + 29, 572, c->muted, 350);
+            text(c, line2[j], x + 29, 615, 20, c->faint, 350);
+            text(c, "SELECT >", x + 29, 666, 20, c->accent, 350);
         }
         return;
     }
@@ -1600,7 +1765,7 @@ static void versions(Canvas *c, const PmFrontend *f, const PmView *v)
         panel(c, 110, y, 870, 70, j == f->selected_version && !f->focus);
         icon(c, NULL, loaders[f->loader_index], 127, y + 7, 54);
         text(c, v->versions[j].id, 207, y + 14, 29, TITLE, 525);
-        text(c, v->versions[j].type, 748, y + 23, 20, FAINT, 180);
+        text(c, v->versions[j].type, 748, y + 23, 20, c->faint, 180);
         row++;
     }
     panel(c, 1018, 285, 790, 584, 0);
@@ -1613,15 +1778,15 @@ static void versions(Canvas *c, const PmFrontend *f, const PmView *v)
         text(c, v->versions[f->selected_version].id, 1050, 328, 45, TITLE, 710);
         snprintf(b, sizeof(b), "%s  /  %s", v->versions[f->selected_version].type,
                  filters[f->version_filter]);
-        small(c, b, 1052, 397, MUTED, 710);
+        small(c, b, 1052, 397, c->muted, 710);
     }
-    small(c, "MOD LOADER", 1050, 442, FAINT, 710);
+    small(c, "MOD LOADER", 1050, 442, c->faint, 710);
     snprintf(b, sizeof(b), "<  %s  >", loaders[f->loader_index]);
     button(c, b, 1050, 478, 730, f->focus == 1, 0);
     small(c,
           f->loader_index == 3 ? "Legacy Forge is available for Minecraft 1.12.2."
                                : "Java and loader files are downloaded automatically.",
-          1050, 585, MUTED, 710);
+          1050, 585, c->muted, 710);
     button(c, "DOWNLOAD INSTANCE", 1050, 683, 730, f->focus == 2, 1);
     button(c, "REFRESH CATALOG", 1050, 768, 730, f->focus == 3, 0);
 }
@@ -1630,6 +1795,21 @@ static int content_matches(const PmFrontend *f, const PmView *v)
     const PmInstance *i = selected_instance(f, v);
     return i && !strcmp(i->id, v->content_instance) &&
            !strcmp(kinds[f->content_kind], v->content_kind);
+}
+static void search_bar(Canvas *c, const PmFrontend *f, const char *provider, const char *category,
+                       int y, int content)
+{
+    char label[256];
+    int editing = f->search_editor || (f->remote_browser ? f->remote_focus == 0 : f->focus == 6);
+    panel(c, 110, y, content ? 1120 : 1410, 64, editing);
+    if (f->query[0] || f->search_editor)
+        snprintf(label, sizeof(label), "%s%s", f->query, f->search_editor ? "_" : "");
+    else
+        snprintf(label, sizeof(label), "Search %s %s...", provider, category);
+    text(c, label, 139, y + 16, 25, f->query[0] || f->search_editor ? TITLE : c->faint,
+         content ? 1060 : 1350);
+    button(c, "SEARCH", content ? 1290 : 1545, y, content ? 490 : 265,
+           !f->remote_browser && f->focus == 3, 1);
 }
 static void content(Canvas *c, const PmFrontend *f, const PmView *v)
 {
@@ -1644,44 +1824,43 @@ static void content(Canvas *c, const PmFrontend *f, const PmView *v)
     snprintf(b, sizeof(b), "<  %s  >", i->name[0] ? i->name : i->id);
     button(c, b, 110, 187, 1050, f->focus == 0, 0);
     snprintf(b, sizeof(b), "Minecraft %s / %s", i->version, i->loader);
-    small(c, b, 1190, 203, FAINT, 600);
+    small(c, b, 1190, 203, c->faint, 600);
     for (int j = 0; j < 3; j++)
     {
         int x = 110 + j * 290;
-        roundbox(c, x, 292, 274, 50, 10, f->content_kind == j ? FOCUS : ROW);
-        text(c, kind_labels[j], x + 20, 307, 22, f->content_kind == j ? LIME : MUTED, 235);
+        roundbox(c, x, 292, 274, 50, 10, f->content_kind == j ? c->focus_rgb : c->row);
+        text(c, kind_labels[j], x + 20, 307, 22, f->content_kind == j ? c->accent : c->muted, 235);
         if (f->focus == 1 && f->content_kind == j)
-            box(c, x + 18, 338, 235, 2, LIME);
+            box(c, x + 18, 338, 235, 2, c->accent);
     }
+    search_bar(c, f, "Modrinth", kind_labels[f->content_kind], 355, 1);
     int n = content_matches(f, v) ? count(v->mod_count, PM_MAX_MODS) : 0,
-        start = list_start(f->selected_mod, 6);
+        start = list_start(f->selected_mod, 5);
     if (!n)
     {
-        panel(c, 110, 365, 1120, 477, 0);
-        text(c, content_matches(f, v) ? "Nothing added yet" : "Loading this instance...", 150, 420,
+        panel(c, 110, 445, 1120, 397, 0);
+        text(c, content_matches(f, v) ? "Nothing added yet" : "Loading this instance...", 150, 480,
              31, TITLE, 1000);
-        small(c, "Find compatible content on Modrinth or import local files.", 150, 485, MUTED,
-              1000);
+        small(c, "Search above or import local files for this instance.", 150, 535, c->muted, 1000);
     }
-    for (int j = start; j < n && j < start + 6; j++)
+    for (int j = start; j < n && j < start + 5; j++)
     {
-        int y = 365 + (j - start) * 81;
-        panel(c, 110, y, 1120, 72, j == f->selected_mod);
-        roundbox(c, 132, y + 24, 14, 14, 7, v->mods[j].enabled ? LIME : FAINT);
+        int y = 445 + (j - start) * 81;
+        panel(c, 110, y, 1120, 72, j == f->selected_mod && f->focus == 2);
+        roundbox(c, 132, y + 24, 14, 14, 7, v->mods[j].enabled ? c->accent : c->faint);
         text(c, v->mods[j].name, 174, y + 22, 24, TITLE, 825);
         text(c, v->mods[j].enabled ? "Enabled" : "Disabled", 1070, y + 24, 19,
-             v->mods[j].enabled ? LIME : FAINT, 135);
+             v->mods[j].enabled ? c->accent : c->faint, 135);
     }
-    button(c, "+ FIND ON MODRINTH", 1290, 365, 490, f->focus == 3, 1);
     button(c, "IMPORT LOCAL FILE", 1290, 459, 490, f->focus == 4, 0);
     button(c, "DELETE SELECTED", 1290, 553, 490, f->focus == 5, 0);
     if (n)
     {
-        small(c, "SELECTED FILE", 1290, 650, FAINT, 490);
+        small(c, "SELECTED FILE", 1290, 650, c->faint, 490);
         text(c, v->mods[f->selected_mod].name, 1290, 689, 21, TITLE, 490);
     }
-    text(c, "Select an item to enable or disable it.", 1290, 748, 20, MUTED, 490);
-    text(c, "Activate resource/shader packs in Minecraft.", 1290, 785, 19, FAINT, 490);
+    text(c, "Select an item to enable or disable it.", 1290, 748, 20, c->muted, 490);
+    text(c, "Activate resource/shader packs in Minecraft.", 1290, 785, 19, c->faint, 490);
 }
 static const PmJavaRuntime *runtime_for_major(const PmView *v, int major)
 {
@@ -1696,32 +1875,42 @@ static void settings(Canvas *c, const PmFrontend *f, const PmView *v)
     heading(c, "Make it yours",
             "Choose display and memory settings, then save. Java is selected for each game.");
     panel(c, 110, 280, 408, 134, !f->focus);
-    text(c, "MINECRAFT MEMORY", 140, 302, 21, FAINT, 348);
+    text(c, "MINECRAFT MEMORY", 140, 302, 21, c->faint, 348);
     snprintf(b, sizeof(b), "%d MB   v", f->memory_mb);
     text(c, b, 140, 350, 29, TITLE, 348);
     panel(c, 542, 280, 408, 134, f->focus == 7);
-    text(c, "GAME RESOLUTION", 572, 302, 21, FAINT, 348);
+    text(c, "GAME RESOLUTION", 572, 302, 21, c->faint, 348);
     snprintf(b, sizeof(b), "%s   v", resolution_labels[f->resolution_index]);
     text(c, b, 572, 350, 28, TITLE, 348);
     panel(c, 974, 280, 408, 134, f->focus == 8);
-    text(c, "OPENGL RENDERER", 1004, 302, 21, FAINT, 348);
+    text(c, "GRAPHICS API", 1004, 302, 21, c->faint, 348);
     snprintf(b, sizeof(b), "%s  v", graphics_labels[f->graphics_index]);
     text(c, b, 1004, 352, 21, TITLE, 348);
     panel(c, 1406, 280, 408, 134, f->focus == 9);
-    text(c, "CONTROLLER INPUT", 1436, 302, 21, FAINT, 348);
+    text(c, "CONTROLLER INPUT", 1436, 302, 21, c->faint, 348);
     snprintf(b, sizeof(b), "%s  v", f->input_index ? "Native gamepad" : "Mouse / keyboard");
     text(c, b, 1436, 352, 23, TITLE, 348);
-    small(c, "JAVA RUNTIMES", 110, 450, FAINT, 1200);
+    panel(c, 110, 430, 840, 110, f->focus == 10);
+    small(c, "APPEARANCE", 140, 449, c->faint, 380);
+    snprintf(b, sizeof(b), "%s  v", theme_labels[f->theme_index]);
+    text(c, b, 140, 486, 29, TITLE, 380);
+    roundbox(c, 850, 482, 42, 30, 6, c->accent);
+    text(c, "Theme saves immediately", 535, 492, 20, c->muted, 310);
+    panel(c, 974, 430, 840, 110, f->focus == 11);
+    small(c, "DISPLAY PACING / VRR", 1004, 449, c->faint, 650);
+    text(c, f->vrr_index ? "Stable refresh" : "Auto", 1004, 486, 29, TITLE, 330);
+    text(c, "Stable refresh if VRR flickers", 1374, 492, 20, c->muted, 390);
+    small(c, "JAVA RUNTIMES", 110, 565, c->faint, 1200);
     for (int j = 0; j < 4; j++)
     {
         int x = 110 + j * 432;
         const PmJavaRuntime *rt = runtime_for_major(v, java_majors[j]);
-        panel(c, x, 490, 408, 230, f->focus == j + 1);
+        panel(c, x, 600, 408, 185, f->focus == j + 1);
         snprintf(b, sizeof(b), "Java %d", java_majors[j]);
-        text(c, b, x + 28, 520, 34, TITLE, 350);
-        chip(c, rt ? "INSTALLED" : "NOT INSTALLED", x + 28, 580, rt != NULL);
-        text(c, rt ? rt->version : "Download when needed", x + 29, 634, 20, MUTED, 350);
-        text(c, rt ? "VERIFY >" : "DOWNLOAD >", x + 29, 679, 20, LIME, 350);
+        text(c, b, x + 28, 615, 34, TITLE, 350);
+        chip(c, rt ? "INSTALLED" : "NOT INSTALLED", x + 28, 660, rt != NULL);
+        text(c, rt ? rt->version : "Download when needed", x + 29, 709, 20, c->muted, 350);
+        text(c, rt ? "VERIFY >" : "DOWNLOAD >", x + 29, 750, 20, c->accent, 350);
     }
     if (v->java_count)
     {
@@ -1729,10 +1918,10 @@ static void settings(Canvas *c, const PmFrontend *f, const PmView *v)
             &v->java_runtimes[bound(f->selected_java, 0, count(v->java_count, PM_MAX_JAVA) - 1)];
         snprintf(b, sizeof(b), "Detected runtime: Java %d / %s / %s", rt->major, rt->version,
                  rt->valid ? "Ready" : "Needs attention");
-        text(c, b, 110, 758, 21, FAINT, 1700);
+        text(c, b, 110, 817, 21, c->faint, 1700);
     }
-    button(c, "REFRESH JAVA RUNTIMES", 110, 812, 815, f->focus == 5, 0);
-    button(c, "SAVE SETTINGS", 970, 812, 818, f->focus == 6, 1);
+    button(c, "REFRESH JAVA RUNTIMES", 110, 861, 840, f->focus == 5, 0);
+    button(c, "SAVE SETTINGS", 974, 861, 840, f->focus == 6, 1);
 }
 static void auth_qr(Canvas *c, const char *url)
 {
@@ -1773,22 +1962,22 @@ static void accounts(Canvas *c, const PmFrontend *f, const PmView *v)
          offline                ? "Local offline profile"
          : v->account_status[0] ? v->account_status
                                 : "Not signed in",
-         250, 481, 23, MUTED, 520);
+         250, 481, 23, c->muted, 520);
     small(c,
           offline ? "Local worlds are available offline." : "Your licensed Minecraft Java account.",
-          141, 577, FAINT, 620);
+          141, 577, c->faint, 620);
     button(c, "START SIGN-IN", 110, 726, 700, f->focus == 1, 1);
     button(c, "CHECK SIGN-IN", 110, 815, 700, f->focus == 2, 0);
     panel(c, 864, 286, 946, 595, 0);
     if (v->auth_code[0] && !offline)
     {
-        small(c, "SIGN IN ON YOUR PHONE", 910, 333, FAINT, 800);
-        text(c, v->auth_code, 910, 405, 53, LIME, 790);
+        small(c, "SIGN IN ON YOUR PHONE", 910, 333, c->faint, 800);
+        text(c, v->auth_code, 910, 405, 53, c->accent, 790);
         auth_qr(c, v->auth_url[0] ? v->auth_url : "https://microsoft.com/link");
         text(c, "Scan the QR code, or visit:", 910, 702, 24, TEXT, 800);
-        text(c, v->auth_url[0] ? v->auth_url : "https://microsoft.com/link", 910, 746, 26, LIME,
+        text(c, v->auth_url[0] ? v->auth_url : "https://microsoft.com/link", 910, 746, 26, c->accent,
              800);
-        text(c, "Enter the code. Sign-in completes automatically.", 910, 809, 21, MUTED, 800);
+        text(c, "Enter the code. Sign-in completes automatically.", 910, 809, 21, c->muted, 800);
     }
     else
     {
@@ -1797,8 +1986,8 @@ static void accounts(Canvas *c, const PmFrontend *f, const PmView *v)
         text(c,
              offline ? "Switch to Microsoft for your licensed profile."
                      : "Start sign-in, then scan the code using your phone.",
-             910, 625, 23, MUTED, 800);
-        text(c, "Your password is entered only on Microsoft's website.", 910, 688, 21, FAINT, 800);
+             910, 625, 23, c->muted, 800);
+        text(c, "Your password is entered only on Microsoft's website.", 910, 688, 21, c->faint, 800);
     }
 }
 static void packs(Canvas *c, const PmFrontend *f, const PmView *v)
@@ -1841,18 +2030,25 @@ static void remote_packs(Canvas *c, const PmFrontend *f, const PmView *v)
     else
         copy(subtitle, sizeof(subtitle),
              "Browse packs or search by name. Choose a project, then its release.");
-    heading(c, releases ? "Choose a release" : b, subtitle);
-    panel(c, 110, 283, 1410, 64, f->remote_focus == 0 || f->search_editor);
-    if (f->query[0] || f->search_editor)
-        snprintf(b, sizeof(b), "%s%s", f->query, f->search_editor ? "_" : "");
+    if (content && i)
+    {
+        snprintf(b, sizeof(b), "%s / Minecraft %s", i->name[0] ? i->name : i->id, i->version);
+        heading(c, releases ? "Choose a release" : "Find content", b);
+        for (int j = 0; j < 3; j++)
+        {
+            int x = 110 + j * 290;
+            roundbox(c, x, 292, 274, 50, 10, f->content_kind == j ? c->focus_rgb : c->row);
+            text(c, kind_labels[j], x + 20, 307, 22, f->content_kind == j ? c->accent : c->muted, 235);
+        }
+    }
     else
-        snprintf(b, sizeof(b), "Search %s %s...", provider,
-                 content ? kind_labels[f->content_kind] : "modpacks");
-    text(c, b, 139, 299, 25, f->query[0] || f->search_editor ? TITLE : FAINT, 1350);
-    button(c, "SEARCH", 1545, 283, 265, 0, 1);
+        heading(c, releases ? "Choose a release" : b, subtitle);
+    int search_y = content ? 355 : 283, list_y = content ? 445 : 363, rows = content ? 4 : 5;
+    search_bar(c, f, provider, content ? kind_labels[f->content_kind] : "modpacks", search_y,
+               content);
     if (f->search_editor)
     {
-        panel(c, 110, 365, 1700, 517, 0);
+        panel(c, 110, content ? 427 : 365, 1700, content ? 455 : 517, 0);
         for (int j = 0; j < 40; j++)
         {
             char label[16];
@@ -1867,26 +2063,27 @@ static void remote_packs(Canvas *c, const PmFrontend *f, const PmView *v)
                 label[0] = search_keys[j];
                 label[1] = 0;
             }
-            button(c, label, 140 + (j % 10) * 164, 385 + (j / 10) * 92, 150, f->search_key == j,
-                   j == 39);
+            button(c, label, 140 + (j % 10) * 164, (content ? 445 : 385) + (j / 10) * 92, 150,
+                   f->search_key == j, j == 39);
         }
-        small(c, "USB keyboard works here too. Triangle searches; Square erases.", 140, 803, FAINT,
+        small(c, "USB keyboard works here too. Triangle searches; Square erases.", 140, 803, c->faint,
               1630);
         return;
     }
     int n = count(releases ? v->remote_version_count : v->remote_count, releases ? 64 : 24);
     int sel = bound(releases ? f->selected_release : f->selected_remote, 0, n ? n - 1 : 0);
-    int start = list_start(sel, 5);
+    int start = list_start(sel, rows);
     if (!n)
     {
-        panel(c, 110, 363, 1700, 420, 0);
+        panel(c, 110, list_y, 1700, content ? 338 : 420, 0);
         snprintf(b, sizeof(b), "Searching %s...", provider);
-        empty(c, v->busy ? b : "No matching results",
-              "Use the search bar above, or refresh to try again.");
+        text(c, v->busy ? b : "No matching results", 150, list_y + 50, 34, TITLE, 1520);
+        small(c, "Use the search bar above, or refresh to try again.", 152, list_y + 110, c->muted,
+              1500);
     }
-    for (int j = start; j < n && j < start + 5; j++)
+    for (int j = start; j < n && j < start + rows; j++)
     {
-        int y = 363 + (j - start) * 86;
+        int y = list_y + (j - start) * 86;
         panel(c, 110, y, 1700, 76, j == sel && f->remote_focus == 1);
         icon(c, releases ? NULL : v->remote_packs[j].icon, content ? "forge" : "fabric", 130, y + 8,
              60);
@@ -1897,7 +2094,7 @@ static void remote_packs(Canvas *c, const PmFrontend *f, const PmView *v)
                      v->remote_versions[j].loader);
         else
             copy(b, sizeof(b), v->remote_packs[j].description);
-        text(c, b, 216, y + 47, 18, MUTED, 1530);
+        text(c, b, 216, y + 47, 18, c->muted, 1530);
     }
     button(c, "< BACK", 110, 824, 480, 0, 0);
     if (!releases)
@@ -1910,22 +2107,52 @@ static void remote_packs(Canvas *c, const PmFrontend *f, const PmView *v)
 }
 static void overlay(Canvas *c, const PmFrontend *f, const PmView *v)
 {
-    if (!f->confirmation && !f->selector_popup)
+    if (!f->confirmation && !f->selector_popup && !f->rename_editor)
         return;
     for (int y = 0; y < (int)c->t->height; y++)
         for (int x = 0; x < (int)c->t->width; x++)
-            px(c, x, y, BASE, 190);
+            px(c, x, y, c->base, 190);
+    if (f->rename_editor)
+    {
+        panel(c, 110, 210, 1700, 690, 0);
+        text(c, "Rename instance", 140, 238, 31, TITLE, 1300);
+        roundbox(c, 140, 295, 1640, 64, 10, f->rename_replace ? c->focus_rgb : c->row);
+        text(c, f->rename_text[0] ? f->rename_text : "Enter a name...", 161, 310, 27,
+             f->rename_replace ? c->accent : TITLE, 1590);
+        for (int j = 0; j < 45; j++)
+        {
+            char label[32];
+            if (j < 40)
+            {
+                char letter = rename_keys[j];
+                if (f->rename_lower && letter >= 'A' && letter <= 'Z') letter += 'a' - 'A';
+                if (letter == ' ') copy(label, sizeof(label), "SPACE");
+                else { label[0] = letter; label[1] = 0; }
+            }
+            else copy(label, sizeof(label), j == 40 ? "ERASE" : j == 41 ? "CLEAR" :
+                      j == 42 ? (f->rename_lower ? "a > A" : "A > a") : j == 43 ? "SAVE" : "CANCEL");
+            button(c, label, 140 + (j % 9) * 184, 380 + (j / 9) * 82, 170,
+                   f->rename_key == j, j == 43);
+        }
+        small(c, "Square: erase  /  Triangle or Enter: save  /  Circle: cancel", 140, 821, c->muted, 1620);
+        text(c, f->notice[0] ? f->notice : "Typing replaces the selected name. Worlds and content stay in this instance.",
+             140, 858, 20, f->notice[0] ? WARN : c->faint, 1620);
+        return;
+    }
     if (f->selector_popup)
     {
         panel(c, 630, 233, 660, 626, 0);
         text(c,
-             f->selector_popup == 1   ? "Minecraft memory"
+             f->selector_popup == 5   ? "Theme color"
+             : f->selector_popup == 1 ? "Minecraft memory"
              : f->selector_popup == 2 ? "Game resolution"
-             : f->selector_popup == 3 ? "OpenGL renderer"
+             : f->selector_popup == 3 ? "Graphics API"
                                       : "Controller input",
              666, 264, 31, TITLE, 580);
-        int rows = f->selector_popup == 1   ? 7
+        int rows = f->selector_popup == 5   ? 6
+                   : f->selector_popup == 1 ? 7
                    : f->selector_popup == 2 ? 4
+                   : f->selector_popup == 3 ? 2
                                             : 2,
             start = f->selector_popup == 1 ? list_start(f->selector_choice, 7) : 0;
         if (f->selector_popup == 1)
@@ -1933,7 +2160,9 @@ static void overlay(Canvas *c, const PmFrontend *f, const PmView *v)
         for (int j = 0; j < rows; j++)
         {
             char b[64];
-            if (f->selector_popup == 1)
+            if (f->selector_popup == 5)
+                copy(b, sizeof(b), theme_labels[j]);
+            else if (f->selector_popup == 1)
                 snprintf(b, sizeof(b), "%d MB", 512 + (start + j) * 256);
             else if (f->selector_popup == 2)
                 copy(b, sizeof(b), resolution_labels[j]);
@@ -1942,8 +2171,10 @@ static void overlay(Canvas *c, const PmFrontend *f, const PmView *v)
             else
                 copy(b, sizeof(b), input_labels[j]);
             if (start + j == f->selector_choice)
-                roundbox(c, 665, 320 + j * 70, 590, 60, 10, FOCUS);
-            text(c, b, 694, 336 + j * 70, 26, start + j == f->selector_choice ? LIME : TEXT, 535);
+                roundbox(c, 665, 320 + j * 70, 590, 60, 10, c->focus_rgb);
+            if (f->selector_popup == 5)
+                roundbox(c, 1200, 338 + j * 70, 25, 25, 4, theme_colors[j]);
+            text(c, b, 694, 336 + j * 70, 26, start + j == f->selector_choice ? c->accent : TEXT, 535);
         }
         return;
     }
@@ -1959,7 +2190,7 @@ static void overlay(Canvas *c, const PmFrontend *f, const PmView *v)
          : f->confirmation == 3 ? f->confirmation_file
          : i                    ? (i->name[0] ? i->name : i->id)
                                 : "",
-         630, 444, 25, MUTED, 650);
+         630, 444, 25, c->muted, 650);
     text(c,
          f->confirmation == 1   ? "This deletes its worlds and installed content."
          : f->confirmation == 3 ? "The selected file will be removed."
@@ -1981,10 +2212,32 @@ void pm_frontend_render(const PmFrontend *frontend, const PmView *v, const PwPre
     normalize(&f, v);
     Canvas c;
     c.t = target;
+    c.accent = theme_colors[f.theme_index];
+    c.base = theme_backgrounds[f.theme_index];
+    c.muted = mix(0xb8bec6, c.accent, 32);
+    c.faint = mix(0x89909c, c.accent, 24);
+    c.panel = mix(c.base,c.accent,14);
+    c.row = mix(c.base,c.accent,22);
+    c.edge = mix(c.base,c.accent,45);
+    c.focus_rgb = mix(c.panel, c.accent, 26);
+    c.opacity = 255;
+    c.offset_x = 0;
     c.focus_alpha = 140 + bound((int)f.focus_ms, 0, 180) * 115 / 180;
     for (int y = 0; y < 1080; y++)
-        box(&c, 0, y, 1920, 1, mix(BASE, 0x18271d, (unsigned)(y * 30 / 1080)));
+        box(&c, 0, y, 1920, 1, mix(c.base,c.accent,(unsigned)(y*9/1080)));
+    /* Quiet block terrain behind the catalog; no textures or extra assets. */
+    static const unsigned char skyline[] = {4,5,5,6,4,3,4,6,7,7,5,4,5,3,2,4,5,6,6,4,3,4,6,5,4,3,5,6,5,4};
+    for (unsigned j = 0; j < sizeof(skyline); j++)
+    {
+        int top = 1010 - skyline[j] * 32;
+        box(&c, (int)j * 64, top, 64, 1080 - top, mix(c.base,c.accent,5));
+        box(&c, (int)j * 64, top, 64, 4, mix(c.base,c.accent,10));
+    }
     header(&c, &f, v);
+    unsigned remaining = bound((int)f.transition_ms, 0, 220);
+    unsigned eased = remaining*remaining*remaining/(220u*220u);
+    c.offset_x = f.transition_direction*sx(&c, (int)(18u*eased/220u));
+    c.opacity = 255u-55u*eased/220u;
     if (f.remote_browser)
         remote_packs(&c, &f, v);
     else if (f.pack_picker)
@@ -2013,12 +2266,14 @@ void pm_frontend_render(const PmFrontend *frontend, const PmView *v, const PwPre
         default:
             break;
         }
+    c.opacity = 255;
+    c.offset_x = 0;
     footer(&c, &f, v);
     overlay(&c, &f, v);
     if (f.pointer_visible)
     {
         for (int j = 0; j < 20; j++)
-            box(&c, f.pointer_x, f.pointer_y + j, j / 2 + 2, 1, BASE);
+            box(&c, f.pointer_x, f.pointer_y + j, j / 2 + 2, 1, c.base);
         for (int j = 1; j < 17; j++)
             box(&c, f.pointer_x + 1, f.pointer_y + j, j / 2, 1, TITLE);
     }

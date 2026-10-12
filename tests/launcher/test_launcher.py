@@ -138,7 +138,9 @@ class LauncherTests(unittest.TestCase):
     def request(self, ok=True, **values):
         request = self.base / "request.properties"
         request.write_text("".join("%s=%s\n" % pair for pair in values.items()), encoding="utf-8")
-        p = subprocess.run([str(JAVA), "-jar", str(JAR), "--root", str(self.root), "--request", str(request)], capture_output=True, text=True, timeout=40)
+        p = subprocess.run([str(JAVA), "-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8",
+                            "-jar", str(JAR), "--root", str(self.root), "--request", str(request)],
+                           capture_output=True, text=True, encoding="utf-8", timeout=40)
         response = props(self.root / "response.properties")
         self.assertEqual(response["ok"], "true" if ok else "false", p.stdout + p.stderr)
         self.assertEqual(p.returncode, 0 if ok else 1, p.stdout + p.stderr)
@@ -156,6 +158,7 @@ class LauncherTests(unittest.TestCase):
         (runtime / "release").write_text('JAVA_VERSION="%s.0.1"\nOS_NAME="Windows"\nOS_ARCH="amd64"\n' % ("1.8" if major == 8 else major))
         (self.root / "launcher").mkdir(exist_ok=True)
         shutil.copyfile(JAR, self.root / "launcher/prosperomc-launcher.jar")
+        shutil.copyfile(JAR.with_name("prosperomc-zipfs.jar"), self.root / "launcher/prosperomc-zipfs.jar")
 
     def publish_java(self, major, checksum=None, architecture="x64", release_arch="amd64", pe_machine=0x8664, include_jvm=True, kind="jre"):
         release = 'JAVA_VERSION="%s.0.1"\nOS_NAME="Windows"\nOS_ARCH="%s"\n' % ("1.8" if major == 8 else major, release_arch)
@@ -294,6 +297,67 @@ class LauncherTests(unittest.TestCase):
         self.assertFalse((game / "mods/server-only.jar").exists())
         self.assertFalse((game / "launcher_accounts.json").exists())
         self.assertEqual(props(game.parent / "instance.properties")["loader"], "forge")
+        self.assertEqual(props(game.parent / "instance.properties")["name"], "Client Pack 1.12.2")
+
+    def test_rename_preserves_worlds_mods_identity_and_polymc_settings(self):
+        self.install()
+        directory = self.root / "instances/fixture"
+        world = directory / ".minecraft/saves/Keep/level.dat"
+        world.parent.mkdir(parents=True); world.write_bytes(b"world-save")
+        mod = directory / ".minecraft/mods/keep.jar"
+        mod.parent.mkdir(parents=True, exist_ok=True); mod.write_bytes(self.library)
+        cfg = directory / "instance.cfg"
+        cfg.write_text(cfg.read_text() + "OverrideMemory=true\nMaxMemAlloc=4096\n")
+        original = props(directory / "instance.properties")
+        self.request(command="rename-instance", id="fixture", name="My PS5 World")
+        renamed = props(directory / "instance.properties")
+        self.assertEqual(renamed["name"], "My PS5 World")
+        self.assertEqual(renamed["nameSource"], "custom")
+        for key, value in original.items():
+            if key != "name": self.assertEqual(renamed[key], value)
+        self.assertEqual(world.read_bytes(), b"world-save")
+        self.assertEqual(mod.read_bytes(), self.library)
+        self.assertEqual(props(cfg)["MaxMemAlloc"], "4096")
+        self.assertEqual(props(cfg)["name"], "My PS5 World")
+        self.request(ok=False, command="rename-instance", id="../fixture", name="No")
+        self.request(ok=False, command="rename-instance", id="fixture", name="x" * 97)
+        saved_metadata=(directory / "instance.properties").read_bytes()
+        saved_cfg=cfg.read_bytes();cfg.write_text("malformed-settings-line\n")
+        self.request(ok=False, command="rename-instance", id="fixture", name="Rejected rename")
+        self.assertEqual((directory / "instance.properties").read_bytes(),saved_metadata)
+        cfg.write_bytes(saved_cfg)
+        self.request(command="view")
+        self.assertEqual(props(directory / "instance.properties")["name"], "My PS5 World")
+
+    def test_delayed_runtime_registration_preserves_native_preferences(self):
+        classes=self.base / "merge-classes"
+        subprocess.run([str(JAVAC), "--release", "8", "-cp", str(JAR), "-d", str(classes),
+                        str(REPO / "tests/launcher/SettingsMergeFixture.java")], check=True, capture_output=True)
+        result=subprocess.run([str(JAVA), "-cp", os.pathsep.join(map(str,[classes,JAR])),
+                               "org.prosperomc.SettingsMergeFixture", str(self.root)],
+                              capture_output=True, text=True, check=True)
+        self.assertIn("PASS delayed runtime/settings work", result.stdout)
+
+    def test_generated_release_name_migrates_once_preserving_custom_names(self):
+        self.request(command="settings", modrinthApi=self.url + "/modrinth")
+        self.blobs["/modrinth/version/release"] = json.dumps({"id":"release", "project_id":"project",
+            "name":"14.0.0 for 1.12.2", "version_type":"release"}).encode()
+        self.blobs["/modrinth/project/project"] = json.dumps({"id":"project", "title":"Fabulously Optimized"}).encode()
+        for id, name in (("generated", "14.0.0 for 1.12.2 [release]"), ("custom", "My custom [release]")):
+            self.request(command="create", id=id, name=name, version="1.12.2")
+            path=self.root / ("instances/" + id + "/instance.properties")
+            path.write_text(path.read_text()+"modrinthProject=project\nmodrinthVersion=release\n")
+        self.request(command="view")
+        path=self.root / "instances/generated/instance.properties"
+        self.assertEqual(props(path)["name"], "Fabulously Optimized 1.12.2")
+        self.assertEqual(props(self.root / "instances/custom/instance.properties")["name"], "My custom [release]")
+        before=list(self.hits); data=path.read_bytes()
+        self.request(command="view")
+        self.assertEqual(path.read_bytes(), data)
+        self.assertEqual(self.hits, before)
+        self.request(command="rename-instance", id="generated", name="My own release")
+        self.request(command="view")
+        self.assertEqual(props(path)["name"], "My own release")
 
     def test_modrinth_pack_rejects_bad_paths_hashes_and_unknown_loaders(self):
         pack = self.base / "invalid.mrpack"
@@ -325,6 +389,7 @@ class LauncherTests(unittest.TestCase):
                   "game_versions":["1.12.2"],"loaders":["minecraft"],"files":[file]}
         self.blobs["/modrinth/version/release"]=json.dumps(metadata).encode()
         self.blobs["/modrinth/project/project/version"]=json.dumps([metadata]).encode()
+        self.blobs["/modrinth/project/project"]=json.dumps({"id":"project","title":"Remote Pack"}).encode()
         return metadata
 
     def test_remote_modpack_search_pagination_and_release_selection(self):
@@ -354,6 +419,7 @@ class LauncherTests(unittest.TestCase):
         self.blobs["/client.jar"]=client
         self.request(command="pack-download",projectId="project",packVersion="release")
         self.assertEqual(props(folder / "instance.properties")["installed"],"true")
+        self.assertEqual(props(folder / "instance.properties")["name"],"Remote Pack 1.12.2")
         self.assertTrue((self.root / "runtimes/java8/bin/server/jvm.dll").exists())
         self.assertTrue((folder / "natives/lwjgl64.dll").exists())
         self.assertTrue((self.root / "assets/objects" / self.asset_hash[:2] / self.asset_hash).exists())
@@ -431,10 +497,14 @@ class LauncherTests(unittest.TestCase):
         plan = (self.root / "profiles/launch-plan.json").read_text()
         self.assertIn("java25", profile)
         self.assertIn("-XX:+UseParallelGC", profile)
+        self.assertIn("-XX:ReservedCodeCacheSize=384M", profile)
+        self.assertIn("-XX:MetaspaceSize=128M", profile)
+        self.assertIn("codecache=info", profile)
         self.assertIn("desktop=1920x1080", profile)
         arguments=json.loads(plan)["arguments"]
         self.assertEqual(arguments[arguments.index("--width")+1], "1920")
         self.assertEqual(arguments[arguments.index("--height")+1], "1080")
+        self.assertIn("--fullscreen",arguments)
         self.assertIn("settings.resolution=1920x1080", (self.root / "launcher-view.properties").read_text())
         self.request(ok=False, command="settings", resolution="wrong")
         self.assertIn("-Dlog4j.configurationFile=", profile)
@@ -830,6 +900,42 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(self.hits.count("/icon.png"),1)
         self.assertEqual(self.hits.count("/modrinth/project/project"),1)
 
+    def test_existing_webp_pack_icon_is_downloaded_and_retained(self):
+        icon=(REPO/'tests/fixtures/icon.webp').read_bytes()
+        self.request(command="create",id="webp-pack",version="1.12.2",loader="fabric")
+        properties=self.root/'instances/webp-pack/instance.properties'
+        with properties.open('a') as file:file.write('modrinthProject=webp-project\n')
+        self.request(command="settings",modrinthApi=self.url+"/modrinth")
+        self.blobs['/modrinth/project/webp-project']=json.dumps({'icon_url':self.url+'/icon.webp'}).encode()
+        self.blobs['/icon.webp']=icon
+        process=subprocess.Popen([str(JAVA),'-jar',str(JAR),'--root',str(self.root),'--serve'],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        try:
+            deadline=time.monotonic()+15
+            while not (self.root/'backend-ready.properties').exists() and time.monotonic()<deadline:
+                self.assertIsNone(process.poll());time.sleep(.05)
+            self.assertTrue((self.root/'backend-ready.properties').is_file())
+        finally:
+            process.terminate();process.communicate(timeout=10)
+        self.assertEqual((self.root/'instances/webp-pack/icon.png').read_bytes(),icon)
+        self.assertTrue(props(self.root/'launcher-view.properties')['instance.0.icon'].endswith('/webp-pack/icon.png'))
+        self.request(command="view")
+        self.assertEqual(self.hits.count('/icon.webp'),1)
+
+    def test_theme_settings_persist_and_invalid_color_is_rejected(self):
+        self.request(command="view")
+        self.assertEqual(props(self.root/'launcher-view.properties')['settings.themeColor'],'grass')
+        for color in ('grass','ocean','diamond','amethyst','redstone','gold'):
+            self.request(command="settings",themeColor=color)
+            self.request(command="view")
+            self.assertEqual(props(self.root/'launcher-view.properties')['settings.themeColor'],color)
+        self.request(ok=False,command="settings",themeColor='invalid')
+        self.assertEqual(props(self.root/'settings.properties')['themeColor'],'gold')
+        for mode in ('stable','auto'):
+            self.request(command='settings',vrrMode=mode)
+            self.assertEqual(props(self.root/'launcher-view.properties')['settings.vrrMode'],mode)
+        self.request(ok=False,command='settings',vrrMode='invalid')
+        self.assertEqual(props(self.root/'settings.properties')['vrrMode'],'auto')
+
     def test_curseforge_api_key_is_private_and_required(self):
         self.request(command="settings",curseforgeApi=self.url+"/curse")
         error=self.request(ok=False,command="curse-search")
@@ -893,6 +999,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual((instance / ".minecraft/mods/cf-mod.jar").read_bytes(),mod)
         self.assertEqual((instance / ".minecraft/options.txt").read_text(),"renderDistance:8\n")
         self.assertEqual(props(instance / "instance.properties")["installed"],"true")
+        self.assertEqual(props(instance / "instance.properties")["name"],"CF Pack 1.12.2")
         self.request(command="curse-download",projectId="123",packVersion="456")
         self.assertEqual(self.hits.count("/cf-mod.jar"),1)
 
@@ -930,14 +1037,27 @@ class LauncherTests(unittest.TestCase):
     def test_graphics_provider_setting_roundtrip_and_invalid_rejected(self):
         self.install()
         self.request(command="view")
-        self.assertEqual(props(self.root / "launcher-view.properties")["settings.graphics"],"opengl")
+        self.assertEqual(props(self.root / "launcher-view.properties")["settings.graphics"],"zink")
         for graphics in ("zink","opengl"):
             self.request(command="settings",graphics=graphics)
-            self.assertEqual(props(self.root / "launcher-view.properties")["settings.graphics"],graphics)
+            self.assertEqual(props(self.root / "launcher-view.properties")["settings.graphics"],"zink")
             self.request(command="prepare-launch",id="fixture")
-            self.assertIn("graphics="+graphics+"\n",(self.root / "profiles/launch.profile").read_text())
+            self.assertIn("graphics=zink\n",(self.root / "profiles/launch.profile").read_text())
         self.request(ok=False,command="settings",graphics="other")
-        self.assertEqual(props(self.root / "settings.properties")["graphics"],"opengl")
+        self.assertEqual(props(self.root / "settings.properties")["graphics"],"zink")
+
+    def test_saved_native_graphics_migrates_without_changing_other_settings(self):
+        self.request(command="settings",resolution="2560x1440",memoryMb="4096")
+        settings=self.root / "settings.properties"
+        settings.write_text(settings.read_text().replace("graphics=zink", "graphics=opengl"))
+        self.request(command="view")
+        migrated=props(settings)
+        self.assertEqual(migrated["graphics"],"zink")
+        self.assertEqual(migrated["resolution"],"2560x1440")
+        self.assertEqual(migrated["memoryMb"],"4096")
+        self.request(command="settings",graphics="vulkan")
+        self.request(command="view")
+        self.assertEqual(props(settings)["graphics"],"vulkan")
 
     def test_native_controller_profile_has_no_emulated_keyboard_bindings(self):
         self.install()

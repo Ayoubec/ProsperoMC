@@ -75,6 +75,8 @@ extern "C"
         char account_mode[16];
         char graphics[16];
         char controller_mode[24];
+        char theme_color[16];
+        char vrr_mode[16];
     } PmView;
 
     typedef enum PmScreen
@@ -111,6 +113,8 @@ extern "C"
         char account_mode[16];
         char graphics[16];
         char controller_mode[24];
+        char theme_color[16];
+        char vrr_mode[16];
         char project_id[64], pack_version[64], query[129];
         int offset;
         int memory_mb;
@@ -123,15 +127,18 @@ extern "C"
         int selected_instance, selected_version, selected_mod, selected_java;
         int focus, memory_mb, loader_index, version_filter;
         int initialized_settings;
-        int resolution_index, graphics_index, input_index;
+        int resolution_index, graphics_index, input_index, theme_index, vrr_index;
         int pack_picker, selected_pack;
         int remote_browser, remote_stage, selected_remote, selected_release, remote_focus;
         int search_editor, search_key;
         int add_source, content_kind, header_focus, confirmation, confirmation_choice;
         int selector_popup, selector_choice;
+        int rename_editor,rename_key,rename_replace,rename_lower;
+        char rename_id[PM_TEXT],rename_text[97];
         char query[129];
         char confirmation_id[PM_TEXT], confirmation_file[PM_TEXT];
-        unsigned animation_ms, focus_ms;
+        unsigned animation_ms, focus_ms, transition_ms;
+        int transition_direction;
         int underline_x;
         int pointer_x, pointer_y, pointer_visible;
         char notice[PM_TEXT];

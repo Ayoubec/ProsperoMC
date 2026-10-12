@@ -132,7 +132,9 @@ final class CurseForgePacks {
         Map<String,Object> project=project(projectId),file=file(projectId,fileId);
         if(!(project.get("classId") instanceof Number)||((Number)project.get("classId")).intValue()!=4471)throw new IOException("Choose a CurseForge Minecraft modpack project");
         Path archive=FilesUtil.safe(app.root.resolve("imports"),"curseforge-"+projectId+"-"+fileId+".zip");downloadFile(project,file,archive);
-        Main imported=new Main(app.root,Main.stringMap("id",instance,"source",archive.toString(),"name",app.request.getOrDefault("name",ModrinthPacks.text(Json.text(project,"name")))));
+        Map<String,String> importRequest=Main.stringMap("id",instance,"source",archive.toString(),"packTitle",ModrinthPacks.text(Json.text(project,"name")));
+        if(app.request.containsKey("name"))importRequest.put("name",app.request.get("name"));
+        Main imported=new Main(app.root,importRequest);
         imported.importPack();Map<String,String> created=app.instance(instance);
         created.put("curseforgeProject",projectId);created.put("curseforgeFile",fileId);
         String logo=project.get("logo") instanceof Map?Json.text(Json.obj(project.get("logo")),"thumbnailUrl"):"";
@@ -159,7 +161,8 @@ final class CurseForgePacks {
             if(!Arrays.asList("fabric","quilt","forge").contains(loader))throw new IOException("Unsupported CurseForge loader: "+loader+"; modern Forge/NeoForge installers are not implemented");
             if(loader.equals("forge")&&!version.equals("1.12.2"))throw new IOException("Forge support currently requires Minecraft 1.12.2; modern Forge/NeoForge installers are not implemented");
         }
-        String name=app.request.getOrDefault("name",Json.text(manifest,"name"));Main.validateName(name);
+        String packTitle=app.request.getOrDefault("packTitle",Json.text(manifest,"name"));
+        String name=app.request.getOrDefault("name",InstanceNames.pack(packTitle,version));Main.validateName(name);
         List<Object> files=Json.arr(manifest.get("files"));if(files.size()>10000)throw new IOException("Too many CurseForge pack files");
         if(!files.isEmpty())key();
         Path game=destination.resolve(".minecraft");Files.createDirectories(game.resolve("mods"));Set<String> seen=new HashSet<String>();Set<Path> targets=new HashSet<Path>();long total=0;
@@ -179,6 +182,7 @@ final class CurseForgePacks {
         String overrides=Json.text(manifest,"overrides");
         if(!overrides.isEmpty()) {Path source=FilesUtil.safe(pack,overrides);if(Files.isDirectory(source))FilesUtil.copyTree(source,game);}
         Map<String,String> metadata=Main.stringMap("id",instance,"name",name,"version",version,"loader",loader,"loaderVersion",loaderVersion,"installed","false");
+        metadata.put("packName",packTitle);metadata.put("nameSource",app.request.containsKey("name")?"custom":"pack");
         Icons.importIcon(pack,destination,Collections.<String,String>emptyMap(),metadata);
         FilesUtil.properties(destination.resolve("instance.properties"),metadata);app.writePolyMC(destination,metadata);
         app.message="CurseForge modpack imported; install to fetch Minecraft and Java";

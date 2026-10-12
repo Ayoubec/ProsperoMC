@@ -47,6 +47,8 @@ extern void sceVideoOutSetBufferAttribute2(void *,uint64_t,uint32_t,uint32_t,uin
 extern int sceVideoOutRegisterBuffers2(int32_t,int32_t,int32_t,void *,int32_t,void *,int32_t,void *);
 extern int sceVideoOutWaitVblank(int32_t);
 extern int sceVideoOutConfigureOutput(int32_t,uint32_t,const void *,const void *,const void *);
+extern int sceVideoOutVrrUnpegFromFixedRate(int32_t);
+extern int sceVideoOutVrrPegToFixedRate(int32_t,uint64_t,uint64_t);
 extern int sceSystemServiceHideSplashScreen(void);
 
 /* Column and row parts of the tiled index, filled once at open, and the
@@ -91,8 +93,19 @@ int pw_videoout_ps5_fixed_output(PwVideoOutPs5 *video)
     /* The same normal-output preset used by ps5-opengl's HFR teardown.
      * Request it only for the launcher; game VideoOut retains its own mode. */
     int status=sceVideoOutConfigureOutput(video->handle,1,NULL,NULL,NULL);
+    if(!status)status=pw_videoout_ps5_stable_refresh(video);
     for(unsigned i=0;!status && i<2;i++)status=sceVideoOutWaitVblank(video->handle);
     return status;
+}
+int pw_videoout_ps5_stable_refresh(PwVideoOutPs5 *video)
+{
+    if(!video || !video->opened || video->handle<0)return PW_ERR_PRECONDITION;
+    /* Public VideoOut policy is process scoped. Prepare the released state
+     * before requesting fixed refresh; a refusal must remain visible in logs.
+     * Do not change resolution/HFR or retry this request every frame. */
+    video->refresh_unpeg_rc=sceVideoOutVrrUnpegFromFixedRate(video->handle);
+    video->refresh_peg_rc=sceVideoOutVrrPegToFixedRate(video->handle,0,0);
+    return video->refresh_peg_rc;
 }
 int pw_videoout_ps5_close(PwVideoOutPs5 *video)
 {
@@ -168,6 +181,15 @@ int pw_videoout_ps5_present(PwVideoOutPs5 *video,const PwPresentView *view)
         return PW_ERR_PRECONDITION;
     uint32_t *output=draw_frame(video);
     uint32_t background=0xff181010u;
+    if(view->width==WIDTH && view->height==HEIGHT && view->stride>=WIDTH*4u &&
+       view->bytes>=(uint64_t)view->stride*HEIGHT) {
+        /* Launcher frames already fill the scanout. Use the tested 4x4
+         * cache-line writer rather than scattering individual tiled pixels. */
+        PwPresentFrame frame={view->pixels,WIDTH,HEIGHT,view->stride,PW_PRESENT_BGRX8};
+        PwPresentPlacement placement={0,0,1,WIDTH,HEIGHT};
+        pw_videoout_tiles_scale(&tiles,&scale_rows,&frame,&placement,background,output);
+        return flip(video);
+    }
     /* A target larger than the scanout is cropped, never placed at an
      * underflowed offset: the old centring wrote outside the scratch frame. */
     PwVideoOutLayout layout;

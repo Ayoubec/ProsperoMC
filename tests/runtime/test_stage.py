@@ -9,8 +9,24 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('stage_ps5', ROOT / 'scripts/stage-ps5.py')
 stage = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(stage)
+zink_spec = importlib.util.spec_from_file_location('stage_zink', ROOT / 'scripts/stage-zink-provider.py')
+zink = importlib.util.module_from_spec(zink_spec)
+zink_spec.loader.exec_module(zink)
 
 class StageTests(unittest.TestCase):
+    def test_zink_provider_requires_its_matching_swapchain_driver(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            title = Path(temporary)
+            report = {'archiveSha256': zink.ARCHIVE_SHA, 'driver': 'zink',
+                      'files': {'win/mesa-zink/' + name: sha for name, sha in zink.DLLS.items()}}
+            (title / 'MESA_ZINK_REPORT.json').write_text(json.dumps(report))
+            with self.assertRaisesRegex(ValueError, 'matching display-takeover driver'):
+                zink.provider_names(title)
+            report['files'][zink.DRIVER] = zink.OLD_DRIVER_SHA
+            (title / 'MESA_ZINK_REPORT.json').write_text(json.dumps(report))
+            with self.assertRaisesRegex(ValueError, 'matching display-takeover driver'):
+                zink.provider_names(title)
+
     def test_credentials_are_excluded_from_opt_in_minecraft_content(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -52,7 +68,7 @@ class StageTests(unittest.TestCase):
             result=stage.stage_prefix(source,root/'output',root/'wine')
             self.assertFalse(result['matchingSource'])
             self.assertFalse(result['consoleValidated'])
-            self.assertEqual((root/'output/dosdevices/.pw-symlinks').read_bytes(),b'c:\t../drive_c\nz:\t/\n')
+            self.assertEqual((root/'output/dosdevices/.pw-symlinks').read_bytes(),b'c:\t../drive_c\np:\t/data/ProsperoMC\nz:\t/\n')
             self.assertIn('"Audio"="ps5"',(root/'output/user.reg').read_text())
 
 if __name__=='__main__':

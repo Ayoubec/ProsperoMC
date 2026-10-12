@@ -3,6 +3,8 @@ package org.prosperomc;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.net.InetAddress;
+import java.net.URL;
+import java.net.URLConnection;
 import java.io.DataInputStream;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -13,6 +15,16 @@ import java.security.Security;
 
 /** Local-address compatibility for the bundled Java 8 on PS5 Wine. */
 public final class Ps5Compat {
+    /** Close resource archives with their streams rather than retaining a second
+     * global JarURLConnection cache beside the loader's owned archives. */
+    static void resourceArchives() throws Exception {
+        try {
+            URLConnection.class.getMethod("setDefaultUseCaches",String.class,boolean.class)
+                .invoke(null,"jar",false);
+        } catch(NoSuchMethodException java8) {
+            new URL("jar:file:/prosperomc-unused.jar!/").openConnection().setDefaultUseCaches(false);
+        }
+    }
     static void localAddress() throws Exception {
         System.setProperty("java.net.preferIPv4Stack", "true");
         // Java 8's native local-host fallback enumerates unsupported IP Helper

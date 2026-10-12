@@ -20,9 +20,11 @@ for file in "$sdk/bin/prospero-lld" "$foundation/tooling/prospero-clang18" "$too
     [[ -f $file ]] || { echo "Missing pinned build input: $file" >&2; exit 2; }
 done
 mkdir -p "$build/obj" "$build/import-stubs" "$dist/sce_sys" "$dist/sce_module"
+python3 "$root/scripts/fetch-webp-decoder.py"
+webp="$root/.deps/native/libwebp/libwebp-1.6.0"
 cc=(env PS5_PAYLOAD_SDK="$sdk" sh "$foundation/tooling/prospero-clang18")
 common=(-O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections
-    -I"$vendor/include" -I"$vendor/src" -I"$vendor/native" -I"$vendor/native/ps5log" -I"$root/app/native"
+    -I"$vendor/include" -I"$vendor/src" -I"$vendor/native" -I"$vendor/native/ps5log" -I"$root/app/native" -I"$webp"
     -DPW_BUILD_ID=\"prosperomc-b510eb3\" -DPW_WINE64_SCRIPT=0 -DPW_WINE64_SECONDS=0)
 sources=(native/wine64_main.c native/pm_bridge.c native/pw_diagnostics.c native/pw_audio_ps5.c native/pw_pad_ps5.c
     native/pw_hid_ps5.c native/pw_agc_ps5.c native/pw_agc_submit_lifecycle.c native/pw_videoout_ps5.c
@@ -31,6 +33,13 @@ sources=(native/wine64_main.c native/pm_bridge.c native/pw_diagnostics.c native/
     src/pw_app_profile.c src/pw_present.c src/pw_pad.c src/pw_hid.c src/pw_spinner.c src/pw_tsc_calibrate.c
     wine/ps5/pw_wine_prx.c)
 objects=()
+while IFS= read -r source; do
+    object="$build/obj/webp_${source##*/}.o"
+    "${cc[@]}" -std=c11 -O2 -DNDEBUG -ffunction-sections -fdata-sections -I"$webp" -c "$source" -o "$object"
+    objects+=("$object")
+done < <(python3 "$root/scripts/fetch-webp-decoder.py" --sources)
+cp "$webp/COPYING" "$dist/WEBP_LICENSE.txt"
+cp "$webp/PATENTS" "$dist/WEBP_PATENTS.txt"
 for source in "${sources[@]}"; do
     object="$build/obj/${source//\//_}.o"
     "${cc[@]}" -std=c11 "${common[@]}" -c "$vendor/$source" -o "$object"
@@ -50,10 +59,13 @@ for name in libSceAgc libSceAgcDriver; do
     "${cc[@]}" -std=c11 -O2 -fPIC -c "$vendor/native/stubs/$name.c" -o "$build/obj/$name.o"
     "$sdk/bin/prospero-lld" --shared -soname "$name.prx" -o "$build/import-stubs/$name.so" "$build/obj/$name.o"
 done
+python3 "$root/scripts/videoout-vrr-import-facade.py" "$sdk/target/lib/libSceVideoOut.so" "$build/obj/videoout-vrr-imports.c"
+"${cc[@]}" -std=c11 -O2 -fPIC -c "$build/obj/videoout-vrr-imports.c" -o "$build/obj/videoout-vrr-imports.o"
+"$sdk/bin/prospero-lld" --shared -soname libSceVideoOut.prx -o "$build/import-stubs/libSceVideoOut.so" "$build/obj/videoout-vrr-imports.o"
 "$sdk/bin/prospero-lld" -T "$layout" --eh-frame-hdr -e _start -o "$build/llvm-pie.elf" "$build/obj/app_crt.o" "${objects[@]}" \
-    --as-needed "$sdk"/target/lib/*.so "$build/import-stubs/libSceAgc.so" "$build/import-stubs/libSceAgcDriver.so"
+    --as-needed "$build/import-stubs/libSceVideoOut.so" "$sdk"/target/lib/*.so "$build/import-stubs/libSceAgc.so" "$build/import-stubs/libSceAgcDriver.so"
 "$tool" link --in "$build/llvm-pie.elf" --out "$build/eboot.elf" --stub-dir "$sdk/target/lib" --module-sdk 0x02000009 \
-    --stub "$build/import-stubs/libSceAgc.so" --stub "$build/import-stubs/libSceAgcDriver.so" --companion-sdk 0x08050001 --file-name eboot.elf
+    --stub "$build/import-stubs/libSceAgc.so" --stub "$build/import-stubs/libSceAgcDriver.so" --stub "$build/import-stubs/libSceVideoOut.so" --companion-sdk 0x08050001 --file-name eboot.elf
 "$tool" self --sign --in "$build/eboot.elf" --out "$dist/eboot.bin" --magic 0x1D3D154F
 cp "$vendor/sce_sys/param.json" "$dist/sce_sys/param.json"
 cp "$root/sce_sys/icon0.png" "$dist/sce_sys/icon0.png"

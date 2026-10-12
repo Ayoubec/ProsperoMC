@@ -29,6 +29,7 @@ static void fixture(void)
     }
     snprintf(view.instances[0].icon, sizeof(view.instances[0].icon), "%.490s/custom.png",
              icon_root);
+    snprintf(view.instances[2].icon, sizeof(view.instances[2].icon), "%.490s/fo.webp", icon_root);
     view.memory_mb = 3584;
     view.resolution_height = 1440;
     strcpy(view.content_instance, view.instances[0].id);
@@ -131,6 +132,10 @@ static void load(const char *path)
             snprintf(view.graphics, sizeof(view.graphics), "%s", value);
         else if (!strcmp(line, "settings.controllerMode"))
             snprintf(view.controller_mode, sizeof(view.controller_mode), "%s", value);
+        else if (!strcmp(line, "settings.themeColor"))
+            snprintf(view.theme_color, sizeof(view.theme_color), "%s", value);
+        else if (!strcmp(line, "settings.vrrMode"))
+            snprintf(view.vrr_mode, sizeof(view.vrr_mode), "%s", value);
         else if (!strcmp(line, "auth.userCode"))
             snprintf(view.auth_code, sizeof(view.auth_code), "%s", value);
         else if (!strcmp(line, "auth.verificationUri"))
@@ -250,6 +255,14 @@ int main(int argc, char **argv)
     }
     pm_frontend_init(&f);
     f.screen = (PmScreen)atoi(argv[2]);
+    if (argc > 3 && !strncmp(argv[3], "--palette=", 10))
+        snprintf(view.theme_color, sizeof(view.theme_color), "%s", argv[3] + 10);
+    if (argc > 3 && !strcmp(argv[3], "--rename"))
+    {
+        f.rename_editor = f.rename_replace = 1;
+        strcpy(f.rename_text, "Fabulously Optimized 26.2");
+        f.rename_key = 43;
+    }
     if (argc > 3 && !strcmp(argv[3], "--versions"))
         f.add_source = 0;
     if (argc > 3 && !strcmp(argv[3], "--remote"))
@@ -262,18 +275,42 @@ int main(int argc, char **argv)
         f.add_source = 2;
         f.remote_browser = 1;
     }
-    if (argc > 3 && !strcmp(argv[3], "--content-search")) {
+    if (argc > 3 && !strcmp(argv[3], "--restored-modrinth"))
+        f.add_source = 1;
+    if (argc > 3 && !strcmp(argv[3], "--restored-curse"))
+        f.add_source = 2;
+    if (argc > 3 && (!strcmp(argv[3], "--resources") || !strcmp(argv[3], "--shaders")))
+    {
+        int resources = !strcmp(argv[3], "--resources");
+        f.content_kind = resources ? 1 : 2;
+        snprintf(view.content_kind, sizeof(view.content_kind), "%s",
+                 resources ? "resourcepacks" : "shaderpacks");
+        view.mod_count = 2;
+        snprintf(view.mods[0].name, PM_TEXT, "%s",
+                 resources ? "Vanilla Tweaks.zip" : "Complementary Reimagined.zip");
+        snprintf(view.mods[1].name, PM_TEXT, "%s", resources ? "Faithful.zip" : "BSL.zip");
+    }
+    if (argc > 3 && !strcmp(argv[3], "--content-search"))
+    {
         f.remote_browser = 1;
         const char *mods[] = {"Sodium", "FerriteCore", "Entity Culling"};
-        for (int j = 0; j < 3; j++) {
+        for (int j = 0; j < 3; j++)
+        {
             snprintf(view.remote_packs[j].name, PM_TEXT, "%s", mods[j]);
-            snprintf(view.remote_packs[j].description, 512, "A compatible mod for the selected Minecraft instance.");
+            snprintf(view.remote_packs[j].description, 512,
+                     "A compatible mod for the selected Minecraft instance.");
         }
     }
     if (argc > 3 && !strcmp(argv[3], "--input"))
     {
         f.selector_popup = 4;
         f.selector_choice = 0;
+    }
+    if (argc > 3 && !strcmp(argv[3], "--theme"))
+    {
+        strcpy(view.theme_color,"amethyst");
+        f.selector_popup=5;
+        f.selector_choice=3;
     }
     if (argc > 3 && !strcmp(argv[3], "--close"))
         f.confirmation = 2;
@@ -287,7 +324,7 @@ int main(int argc, char **argv)
         strcpy(view.auth_code, "ABCD-EFGH");
         strcpy(view.auth_url, "https://microsoft.com/link");
     }
-    if (argc > 4)
+    if (argc > 4 && strcmp(argv[3], "--motion"))
     {
         f.remote_browser = 1;
         f.remote_stage = !strcmp(argv[4], "--releases");
@@ -302,6 +339,13 @@ int main(int argc, char **argv)
     }
     for (int frame = 0; frame < 10; frame++)
         pm_frontend_tick(&f, 100);
+    if (argc > 3 && !strcmp(argv[3], "--motion"))
+    {
+        f.transition_ms=argc > 4 ? atoi(argv[4]) : 140;
+        f.transition_direction=1;
+    }
+    if (argc > 3 && !strcmp(argv[3], "--fo"))
+        f.selected_instance=2;
     t.width = 1920;
     t.height = 1080;
     t.stride = t.width * 4;

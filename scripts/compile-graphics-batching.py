@@ -124,6 +124,7 @@ run(['bash'], input='# These generated files' + generated_section,
 run([sys.executable, root / 'scripts/fix-mesa-upload-lifetime.py',
      mesa / 'src/gallium/auxiliary/util/u_vbuf.c'])
 run([sys.executable, root / 'scripts/check-mesa-upload-lifetime.py'])
+run([sys.executable, root / 'scripts/check-index-bounds-cache.py'])
 
 targets = subprocess.check_output(['ninja','-C',str(build),'-t','targets','all'],text=True)
 headers = [line.partition(': ')[0] for line in targets.splitlines() if line.partition(': ')[0].endswith('.h')]
@@ -153,6 +154,7 @@ run(compiler_command, cwd=psbc, env=compiler_env)
 run([sys.executable,root / 'scripts/check-shader-layout-cache.py'])
 run([sys.executable,root / 'scripts/check-worker-shader-cache.py'])
 run([sys.executable,root / 'scripts/check-batch-timings.py'])
+run([sys.executable,root / 'scripts/check-gpu-vertex-bounds.py'])
 run([sys.executable,root / 'scripts/check-descriptor-retirement.py'])
 run([sys.executable,root / 'scripts/check-descriptor-ready-reuse.py'])
 run([sys.executable,root / 'scripts/check-upstream-async.py'])
@@ -227,7 +229,7 @@ provenance.update(version=provenance['version']+'-prosperomc-quad-batching',
     sdk_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
     runtime_archive_sha256=hashlib.sha256(runtime.read_bytes()).hexdigest(),
     local_patch={'file':'smooth-legacy-batching.patch','sha256':patch_hash,
-                 'description':'Fetch packed signed and unsigned integer vertices directly on GPU through matching driver/compiler formats, avoiding per-draw CPU conversion; release every retired Mesa vertex upload after driver binding on each draw; retain legacy batching and owned-buffer fixes; reclaim ready FIFO descriptors only between batches without waiting before empty-cache allocation, recycle retired descriptors, reuse byte-verified shader layouts, ' + ('enable upstream two-worker native command preparation and worker-local byte-verified shader hits, ' if async_prepare else '') + 'log only batch errors, and ' + ('enable diagnostic profiling' if profile else 'disable hot-path profiling') + ' in the draw driver and native backend'},
+                 'description':'Reuse fully validated immutable index-buffer ranges with CPU-write/GPU-write/export guards; fetch packed signed and unsigned integer vertices directly on GPU through matching driver/compiler formats, avoiding per-draw CPU conversion; release every retired Mesa vertex upload after driver binding on each draw; retain legacy batching and owned-buffer fixes; reclaim ready FIFO descriptors only between batches without waiting before empty-cache allocation, recycle retired descriptors, reuse byte-verified shader layouts, ' + ('enable upstream two-worker native command preparation and worker-local byte-verified shader hits, ' if async_prepare else '') + 'log only batch errors, and ' + ('enable diagnostic profiling' if profile else 'disable hot-path profiling') + ' in the draw driver and native backend'},
     draw_profile=profile,
     batch_timings=batch_timings,
     async_native_prepare=async_prepare,

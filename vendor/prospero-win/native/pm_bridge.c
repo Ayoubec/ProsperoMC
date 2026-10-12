@@ -84,6 +84,13 @@ int pm_bridge_initialize(const char *root, const char *app0)
     for (size_t i = 0; i < sizeof(dirs)/sizeof(dirs[0]); i++) {
         if (path(name, sizeof(name), root, dirs[i]) || make_dir(name)) return -1;
     }
+    if (path(name,sizeof(name),root,"launcher/prosperomc-zipfs.jar") ||
+        path(source,sizeof(source),app0,"launcher/prosperomc-zipfs.jar")) return -1;
+    FILE *bootstrap=fopen(source,"rb");
+    if (bootstrap) {
+        fclose(bootstrap);
+        if (!same_file_contents(source,name) && copy_file(source,name)) return -1;
+    }
     if (path(name, sizeof(name), root, "launcher/prosperomc-launcher.jar") ||
         path(source, sizeof(source), app0, "launcher/prosperomc-launcher.jar")) return -1;
     /* Refresh when the app is upgraded, independent of the selected game JVM. */
@@ -150,6 +157,8 @@ static void view_property(void *context, const char *key, const char *value)
     TEXT("remote.projectId", remote_project);
     TEXT("graphics", graphics); TEXT("settings.graphics", graphics);
     TEXT("controllerMode", controller_mode); TEXT("settings.controllerMode", controller_mode);
+    TEXT("themeColor", theme_color); TEXT("settings.themeColor", theme_color);
+    TEXT("vrrMode", vrr_mode); TEXT("settings.vrrMode", vrr_mode);
     TEXT("content.kind", content_kind); TEXT("content.instance", content_instance);
 #undef TEXT
     if (!strcmp(key,"instance.count")) { int n=integer(value,2147483647); view->instance_count=n>PM_MAX_INSTANCES?PM_MAX_INSTANCES:n; }
@@ -259,7 +268,7 @@ int pm_bridge_view(const char *root, PmView *view)
 {
     char name[768]; int status;
     memset(view, 0, sizeof(*view)); view->memory_mb = 2048;
-    copy(view->graphics,sizeof(view->graphics),"opengl");
+    copy(view->graphics,sizeof(view->graphics),"zink");
     copy(view->controller_mode,sizeof(view->controller_mode),"emulated");
     copy(view->account_mode,sizeof(view->account_mode),"offline");
     copy(view->status,sizeof(view->status),"Ready");
@@ -296,7 +305,7 @@ int pm_bridge_request(const char *root, const PmAction *action)
         if(n==10000)return -1;
         action=&resolved;
     }
-    static const char *const commands[] = {"catalog","create","create-install","install","install-java","detect-java","import","prepare-launch","mods","mod-toggle","mod-add","settings","auth-device","auth-poll","auth-signout","clone","export","delete-instance","import-pack","pack-search","pack-versions","pack-download","curse-search","curse-versions","curse-download","content-list","content-import","content-toggle","content-delete","content-search","content-versions","content-download"};
+    static const char *const commands[] = {"catalog","create","create-install","install","install-java","detect-java","import","prepare-launch","mods","mod-toggle","mod-add","settings","auth-device","auth-poll","auth-signout","clone","rename-instance","export","delete-instance","import-pack","pack-search","pack-versions","pack-download","curse-search","curse-versions","curse-download","content-list","content-import","content-toggle","content-delete","content-search","content-versions","content-download"};
     char name[768], temporary[768]; FILE *file; int allowed = 0, failed = 0;
     for (size_t i=0; i<sizeof(commands)/sizeof(commands[0]); i++) allowed |= !strcmp(action->command,commands[i]);
     if (!allowed || action->java_major<0 || action->java_major>99 ||
@@ -317,6 +326,8 @@ int pm_bridge_request(const char *root, const PmAction *action)
     FIELD("content_kind",content_kind);
     FIELD("graphics",graphics);
     FIELD("controllerMode",controller_mode);
+    FIELD("themeColor",theme_color);
+    FIELD("vrrMode",vrr_mode);
 #undef FIELD
     if (action->memory_mb) failed |= fprintf(file,"memoryMb=%d\n",action->memory_mb) < 0;
     if (!strcmp(action->command,"pack-search") || !strcmp(action->command,"curse-search") || !strcmp(action->command,"content-search")) failed |= fprintf(file,"offset=%d\n",action->offset)<0;
@@ -378,9 +389,12 @@ int pm_bridge_game(const char *root, PwGameProfile *profile)
     if (ferror(file) || fgetc(file)!=EOF) { fclose(file); return -1; } fclose(file);
     if (pw_game_profile_parse(content,n,profile)!=PW_OK || strcmp(profile->app.id,"minecraft") ||
         !allowed_java(root,profile->app.executable) || profile->app.architecture!=PW_APP_ARCH_PE64 ||
-        (profile->app.graphics!=PW_APP_GRAPHICS_OPENGL && profile->app.graphics!=PW_APP_GRAPHICS_ZINK) ||
+        (profile->app.graphics!=PW_APP_GRAPHICS_OPENGL && profile->app.graphics!=PW_APP_GRAPHICS_ZINK && profile->app.graphics!=PW_APP_GRAPHICS_AUTO) ||
         strcmp(profile->app.prefix,"minecraft")) return -1;
     profile->runtime.thread_scheduling=1;
+    /* Older prepared profiles use the retired native GL value. */
+    if (profile->app.graphics==PW_APP_GRAPHICS_OPENGL)
+        profile->app.graphics=PW_APP_GRAPHICS_ZINK;
     return 0;
 }
 typedef struct Response { int ok, command; } Response;
@@ -420,11 +434,11 @@ static void frontend_property(void *context, const char *key, const char *value)
     else if (!strcmp(key,"mod")) frontend->selected_mod=integer(value,PM_MAX_MODS-1);
     else if (!strcmp(key,"java")) frontend->selected_java=integer(value,PM_MAX_JAVA-1);
     else if (!strcmp(key,"filter")) frontend->version_filter=integer(value,2);
-    else if (!strcmp(key,"focus")) frontend->focus=integer(value,9);
+    else if (!strcmp(key,"focus")) frontend->focus=integer(value,11);
     else if (!strcmp(key,"loader")) frontend->loader_index=integer(value,3);
     else if (!strcmp(key,"add_source")) frontend->add_source=!strcmp(value,"-1")?-1:integer(value,3);
     else if (!strcmp(key,"content_kind")) frontend->content_kind=integer(value,2);
-    else if (!strcmp(key,"graphics_index")) frontend->graphics_index=integer(value,1);
+    else if (!strcmp(key,"graphics_index")) frontend->graphics_index=integer(value,2);
     else if (!strcmp(key,"input_index")) frontend->input_index=integer(value,1);
 }
 void pm_bridge_frontend_load(const char *root, PmFrontend *frontend)
@@ -468,8 +482,10 @@ static int local_settings(const char *root, const PmAction *action, PmView *view
     if ((action->memory_mb && (action->memory_mb<512 || action->memory_mb>8192)) ||
         (action->resolution_height && !resolution_name(action->resolution_height)) ||
         (action->account_mode[0] && strcmp(action->account_mode,"offline") && strcmp(action->account_mode,"microsoft")) ||
-        (action->graphics[0] && strcmp(action->graphics,"opengl") && strcmp(action->graphics,"zink")) ||
+        (action->graphics[0] && strcmp(action->graphics,"opengl") && strcmp(action->graphics,"vulkan") && strcmp(action->graphics,"zink")) ||
         (action->controller_mode[0] && strcmp(action->controller_mode,"emulated") && strcmp(action->controller_mode,"native")) ||
+        (action->theme_color[0] && strcmp(action->theme_color,"grass") && strcmp(action->theme_color,"ocean") && strcmp(action->theme_color,"diamond") && strcmp(action->theme_color,"amethyst") && strcmp(action->theme_color,"redstone") && strcmp(action->theme_color,"gold")) ||
+        (action->vrr_mode[0] && strcmp(action->vrr_mode,"auto") && strcmp(action->vrr_mode,"stable")) ||
         !value_safe(action->username) || path(name,sizeof(name),root,"settings.properties") ||
         path(temporary,sizeof(temporary),root,"settings.properties.tmp")) { errno=EINVAL; return -1; }
     input=fopen(name,"rb");
@@ -484,6 +500,8 @@ static int local_settings(const char *root, const PmAction *action, PmView *view
                 (action->account_mode[0] && !strncmp(line,"accountMode=",12)) ||
                 (action->graphics[0] && !strncmp(line,"graphics=",9)) ||
                 (action->controller_mode[0] && !strncmp(line,"controllerMode=",15)) ||
+                (action->theme_color[0] && !strncmp(line,"themeColor=",11)) ||
+                (action->vrr_mode[0] && !strncmp(line,"vrrMode=",8)) ||
                 (action->username[0] && !strncmp(line,"username=",9))) continue;
             if (fputs(line,output)<0) { failed=1; break; }
             size_t n=strlen(line);
@@ -496,6 +514,8 @@ static int local_settings(const char *root, const PmAction *action, PmView *view
     failed |= write_property(output,"accountMode",action->account_mode)!=0;
     failed |= write_property(output,"graphics",action->graphics)!=0;
     failed |= write_property(output,"controllerMode",action->controller_mode)!=0;
+    failed |= write_property(output,"themeColor",action->theme_color)!=0;
+    failed |= write_property(output,"vrrMode",action->vrr_mode)!=0;
     failed |= write_property(output,"username",action->username)!=0;
     failed |= fclose(output)!=0;
     if (failed || rename(temporary,name)) { int saved=errno; unlink(temporary); errno=saved; return -1; }
@@ -574,7 +594,8 @@ int pm_bridge_local(const char *root, const PmAction *action, PmView *view)
 int pm_bridge_prepare_prefix(const char *root)
 {
     static const char *const folders[]={"prefixes","prefixes/minecraft","prefixes/minecraft/drive_c","prefixes/minecraft/dosdevices"};
-    static const char table[]="c:\t../drive_c\nz:\t/\n";
+    static const char table[]="c:\t../drive_c\np:\t/data/ProsperoMC\nz:\t/\n";
+    static const char original[]="c:\t../drive_c\nz:\t/\n";
     char name[768], temporary[768], present[128], normalized[128];
     for (size_t i=0;i<sizeof(folders)/sizeof(folders[0]);i++)
         if (path(name,sizeof(name),root,folders[i]) || make_dir(name)) return -1;
@@ -587,7 +608,8 @@ int pm_bridge_prepare_prefix(const char *root)
         if (failed || n>=sizeof(present)) {errno=EINVAL;return -1;}
         if (n==sizeof(table)-1 && !memcmp(present,table,n)) return 0;
         for (size_t i=0;i<n;i++) if (present[i]!='\r') normalized[kept++]=present[i];
-        if (kept!=sizeof(table)-1 || memcmp(normalized,table,kept)) {errno=EINVAL;return -1;}
+        if (!((kept==sizeof(table)-1 && !memcmp(normalized,table,kept)) ||
+              (kept==sizeof(original)-1 && !memcmp(normalized,original,kept)))) {errno=EINVAL;return -1;}
     } else if (errno!=ENOENT) return -1;
     FILE *output=fopen(temporary,"wb"); if (!output) return -1;
     int failed=fwrite(table,1,sizeof(table)-1,output)!=sizeof(table)-1;

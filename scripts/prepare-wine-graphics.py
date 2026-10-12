@@ -5,14 +5,15 @@ release = root / '.deps/source/prospero-win-8086243da85fae62206a98af322dc746fe5f
 # The existing adapter supplies archive verification and exactly 73 Wine patches.
 exec((root / 'scripts/prepare-wine-fpfix.py').read_text(), {'__file__': str(root / 'scripts/prepare-wine-fpfix.py')})
 extra_patches = ('0671-win32u-ps5-mouse-wheel.patch', '0672-win32u-ps5-fixed-game-window.patch',
-                 '0910-win32u-ps5-worker-desktop-cache.patch')
+                 '0910-win32u-ps5-worker-desktop-cache.patch',
+                 '0911-win32u-display-provider-name.patch')
 for name in extra_patches:
     (release / 'wine/patches' / name).write_bytes(
         (root / 'vendor/prospero-win/wine/patches' / name).read_bytes())
 text = (release / 'tools/build_prosperomc_ntdll.sh').read_text()
 text = text.replace('-le 899', '-le 999').replace('outside 0100-0899', 'outside 0100-0999')
 text = text.replace('\n# The PS5 OpenGL SDK', '''
-for extra_patch in 0671-win32u-ps5-mouse-wheel.patch 0672-win32u-ps5-fixed-game-window.patch 0910-win32u-ps5-worker-desktop-cache.patch; do
+for extra_patch in 0671-win32u-ps5-mouse-wheel.patch 0672-win32u-ps5-fixed-game-window.patch 0910-win32u-ps5-worker-desktop-cache.patch 0911-win32u-display-provider-name.patch; do
     if ! grep -qx "$extra_patch" "$tree/.prosperomc-patched"; then
         git -C "$tree" apply "$patches/$extra_patch" || fail "extra patch does not apply: $extra_patch"
         echo "$extra_patch" >> "$tree/.prosperomc-patched"

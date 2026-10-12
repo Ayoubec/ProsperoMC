@@ -1,40 +1,29 @@
-# PolyMC functionality audit
+# Compatibility notes
 
-This is an independent native PS5 launcher and Java backend. PolyMC's Qt
-application is not embedded. The table distinguishes implementation from actual
-PS5 execution; vanilla 1.12.2 worlds are verified, while other configurations
-still need separate console runs.
+ProsperoMC is an early release. A version appearing in the catalog means it can be installed; it does not guarantee that every mod or pack will run on PS5.
 
-| Function | Current implementation |
+## Console-tested configurations
+
+| Configuration | Current status |
 | --- | --- |
-| Minecraft releases and snapshots | Real Mojang catalog; native version screen and filters |
-| Version download/install | Client, libraries, Windows x64 native archives, assets and logging configuration; metadata SHA1/size checks |
-| Isolated instances | Create, install, clone, delete; separate game directories with shared verified downloads |
-| Java selection | Required major from version metadata; detects installed Windows x64 runtimes and downloads a verified runtime automatically when needed |
-| JVM/memory settings | Memory controls and detected-runtime/download controls in native interface; advanced settings through request files |
-| Vanilla | Supplied 1.12.2 loads saved worlds on PS5 with movement, audio and saving |
-| Fabric and Quilt | Loader metadata/profile resolution implemented and fixture-tested |
-| Legacy Forge 1.12.2 | Checked installer profiles, embedded Forge artifact and LaunchWrapper/FMLTweaker support |
-| Modern Forge and NeoForge | Not implemented; processor-based installers rejected explicitly |
-| Installed mod management | Local JAR add/remove and enable/disable; native mod toggles |
-| Online mod discovery | Modrinth search/download through backend requests; console online search is not implemented |
-| Mod dependencies | Compatible required Modrinth project dependencies resolved; unusual version-only dependencies need manual installation |
-| Instance packs | PolyMC/MultiMC ZIP import/export; Library pack picker reads `/data/ProsperoMC/imports` |
-| Modrinth packs | Native search, release selection and verified `.mrpack` installation; console downloads confirmed. Fabulously Optimized 26.2/26.3 runtime failures remain unresolved |
-| CurseForge packs | Manifest/service integration not implemented |
-| Microsoft accounts | Phone QR/code with automatic device OAuth polling, Xbox/XSTS and Minecraft ownership checks; requested PolyMC public ID or optional custom ID. Complete console account sign-in remains unverified |
-| Offline play | Explicit local single-player mode; no multiplayer authentication |
-| Controller support | Native navigation with held-D-pad repeat; L1/R1 wheel bindings cycle the hotbar; USB wheel forwarding |
-| Launcher feedback | Focus transitions, animated progress and quiet navigation/confirmation sounds; native build verified, hardware retest pending |
-| Logs | Wine/native diagnostics and Minecraft logs; no PolyMC-style console/log viewer UI |
-| Custom component/patch editors | Not implemented |
-| General PC games or Switch emulation | Excluded from the application |
+| Vanilla 1.12.2 | Single-player worlds, movement, audio and saving tested |
+| Vanilla 26.2 | Gameplay tested |
+| Minecraft XBOX 1.21.11 | Pack launches; performance depends on configuration |
+| Full Fabulously Optimized 26.2 | Gameplay, DualSense identification and world save/reopen tested |
+| Fresh & Smooth 26.2, Zink | Launches with restored animations; movement/chunk-loading stalls remain under investigation |
 
-Full PolyMC feature parity is not achieved. The working host installer and
-native cross-build are substantial implementation evidence, but neither is a
-claim that all versions or packs run on PS5. Vanilla 1.12.2 has reached playable
-saved worlds; high-distance performance is still being improved.
+## Graphics and input
 
-Minecraft 1.12.2 is used for initial vanilla and Forge testing. The normal
-application workflow selects a version from the Mojang catalog; those test
-instances do not restrict other versions.
+For the best experience on Minecraft versions with a built-in Vulkan renderer, select Vulkan in Minecraft and in the launcher before playing. Shader packs currently require OpenGL through Zink. Older versions also use Zink.
+
+Use a compatible [Controlify](https://modrinth.com/mod/controlify) release with native controller input, or a USB mouse and keyboard. DualSense identity and ordinary controls are tested; the current input transport does not expose Sony gyro or adaptive-trigger features.
+
+## Loaders, packs and online play
+
+Fabric and Quilt installation are implemented. Legacy Forge 1.12.2 is supported; modern Forge/NeoForge processor-based installers are not. Modrinth browsing, compatible content downloads and pack imports are available. CurseForge requires your own API key.
+
+Microsoft device sign-in and ownership checks are implemented. Server compatibility also depends on Minecraft version, account setup and the server's supported versions. Comprehensive multiplayer, firmware and loader coverage is still incomplete.
+
+## Reporting a result
+
+Include firmware, loader, Minecraft/modpack version, graphics backend and the steps you tried. Both successful runs and failures help. Remove private account information from any logs you share.

@@ -45,7 +45,8 @@ Only internally generated backend and Minecraft profiles can be launched.
 The Windows Java 8 supplied by the user is not a PS5-native JVM. It is intended
 to run through Wine. Wine/OpenGL inclusion proves packaging, not that HotSpot,
 AWT, LWJGL, OpenAL or a particular mod works on a PS5. Native compilation, host
-Java tests and an actual console run are separate gates in `GATES.md`.
+Java tests and an actual console run provide separate evidence. See the
+[compatibility notes](feature-audit.md) for current console coverage.
 
 The runtime release uses a title-specific elevation helper for `PPSA99995`.
 ProsperoMC uses `PPSA99888`; a helper for the other title must not be relabeled

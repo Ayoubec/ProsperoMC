@@ -6,13 +6,18 @@ import java.nio.file.*;
 import java.security.*;
 import java.util.*;
 
-/** Optional bounded PNG/JPEG artwork; a bad project image never blocks installing a pack. */
+/** Optional bounded PNG/JPEG/WebP artwork; a bad image never blocks a pack. */
 final class Icons {
     static final int MAX_BYTES=2*1024*1024;
     static boolean valid(Path file)throws IOException {
         if(!Files.isRegularFile(file,LinkOption.NOFOLLOW_LINKS)||Files.size(file)<24||Files.size(file)>MAX_BYTES)return false;
         byte[] b=new byte[24];
         try(DataInputStream in=new DataInputStream(Files.newInputStream(file))) { in.readFully(b); }
+        if(b[0]=='R'&&b[1]=='I'&&b[2]=='F'&&b[3]=='F'&&b[8]=='W'&&b[9]=='E'&&b[10]=='B'&&b[11]=='P'&&
+           b[12]=='V'&&b[13]=='P'&&b[14]=='8'&&(b[15]==' '||b[15]=='L'||b[15]=='X')) {
+            long length=0;for(int i=7;i>=4;i--)length=(length<<8)|(b[i]&255);
+            return length+8==Files.size(file); // Native decoder validates dimensions/payload.
+        }
         if((b[0]&255)==255&&(b[1]&255)==216&&(b[2]&255)==255)return true;
         byte[] signature={(byte)137,80,78,71,13,10,26,10};
         for(int i=0;i<8;i++)if(b[i]!=signature[i])return false;
@@ -77,7 +82,7 @@ final class Icons {
             metadata.put("icon","icon.png");return;
         }
     }
-    /** Existing packs gain artwork on an explicit refresh, never while drawing frames. */
+    /** Existing packs gain artwork on backend startup/refresh, never while drawing frames. */
     static void refreshInstances(Main app) {
         Path instances=app.root.resolve("instances");if(!Files.isDirectory(instances))return;
         int uncached=0;

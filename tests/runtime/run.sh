@@ -13,5 +13,8 @@ cc=${HOST_CC:-clang-18}
 "$root/build/tests/runtime-file-limit"
 python3 "$root/tests/runtime/test_icons.py"
 python3 "$root/tests/runtime/test_launcher_output.py"
+python3 "$root/tests/runtime/test_game_fallback.py"
+python3 "$root/tests/runtime/test_vrr_policy.py"
+python3 "$root/tests/runtime/test_ui_audio.py"
 python3 "$root/tests/runtime/test_wine_fd_report.py"
 python3 "$root/tests/runtime/test_stage.py"

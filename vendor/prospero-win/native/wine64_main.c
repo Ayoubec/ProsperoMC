@@ -43,6 +43,13 @@
 #include "pw_wine_prefix.h"
 #include "../src/pw_present.h"
 #include "../src/pw_spinner.h"
+
+/* The archive/space failures are repaired. A successful gameplay run must
+ * not sweep up to RLIMIT_NOFILE descriptors at30/90/180s. Keep the one-shot
+ * error census, and permit explicit diagnostic builds to restore snapshots. */
+#ifndef PW_WINE64_FILE_SAMPLES
+#define PW_WINE64_FILE_SAMPLES 0
+#endif
 #include "../src/pw_tsc_calibrate.h"
 #include "pw_wine_display.h"
 #include "../include/prospero_win.h"
@@ -78,7 +85,7 @@ static const char *const runtime_roots[] = { "/app0", PW_SANDBOX_APP0, PW_HOMEBR
 #ifndef PW_WINE64_DEBUG
 /* No +seh: WoW64 callback returns unwind with 80000026 many times a second
  * and would flood the sink. */
-#define PW_WINE64_DEBUG "err+all,+loaddll,+process"
+#define PW_WINE64_DEBUG "err+all"
 #endif
 #ifndef PW_WINE64_SECONDS
 /* A game closes itself this long after it started; 0 lets it run until it
@@ -227,6 +234,31 @@ static const char *library_root = PW_WINE64_ROOT_SANDBOX;
 static int pm_backend_running;
 static int pm_worker_active;
 static int pm_quitting;
+typedef struct {
+    uint32_t full_width,full_height,pane_width,pane_height;
+    uint64_t refresh_rate;
+    float screen_inches;
+    uint32_t reserved[4];
+} PmResolutionStatus;
+typedef struct {
+    uint32_t resolution_class,output_class;
+    uint64_t refresh_rate,flags;
+    uint32_t mode,reserved[5];
+} PmOutputStatus;
+_Static_assert(sizeof(PmResolutionStatus)==48 && sizeof(PmOutputStatus)==48,"VideoOut status ABI");
+extern int sceVideoOutGetResolutionStatus(int32_t,PmResolutionStatus *);
+extern int sceVideoOutGetOutputStatus(int32_t,PmOutputStatus *);
+static void pm_report_display(const PwVideoOutPs5 *video,const char *stage)
+{
+    if(!video || !video->opened)return;
+    PmResolutionStatus resolution={0};PmOutputStatus output={0};
+    int rr=sceVideoOutGetResolutionStatus(video->handle,&resolution);
+    int ro=sceVideoOutGetOutputStatus(video->handle,&output);
+    PS5LOG_LOG("PROSPEROMC display stage=%s resolution_rc=%08x full=%ux%u pane=%ux%u refresh_id=%llu output_rc=%08x output_refresh_id=%llu flags=%llu mode=%u",
+        stage,(unsigned)rr,resolution.full_width,resolution.full_height,resolution.pane_width,resolution.pane_height,
+        (unsigned long long)resolution.refresh_rate,(unsigned)ro,(unsigned long long)output.refresh_rate,
+        (unsigned long long)output.flags,output.mode);
+}
 static void pm_catalog_reload(void);
 static const PwGameProfile *pm_profile_find(const char *id)
 {
@@ -537,7 +569,10 @@ static int vulkan_frames_show(VulkanFrames *vf, uint64_t *sequence, int scaling,
     PwPresentFrame spinner;
     const PwPresentFrame *next;
 
-    if (!vf->tiled) return 0;
+    /* Minecraft owns scanout after the first real game presentation. Its
+     * occasional GDI progress/window frames must never replace that scanout
+     * during a short gap between native presents. Loading is monotonic. */
+    if (!vf->tiled || loading->content) return 0;
     if (!vf->idle()) {
         if (!loading->presenting_since) loading->presenting_since = now;
         else if (now - loading->presenting_since >= PW_WINE64_PRESENTING_MS * 1000000ull)
@@ -806,7 +841,10 @@ static PmKey pm_keyboard_key(uint32_t vk)
     }
 }
 /* The native UI remains on screen while the headless Java worker runs. */
-static void pm_click(PmKey key)
+static int start_thread(void (*entry)(void *), void *arg, size_t stack_bytes);
+static unsigned pm_click_pending;
+static int pm_click_running;
+static void pm_play_click(PmKey key)
 {
     if(key==PM_KEY_NONE || audio_port<0)return;
     unsigned grains=key==PM_KEY_CONFIRM?4:2, phase=0;
@@ -818,11 +856,25 @@ static void pm_click(PmKey key)
             phase=(phase+frequency)%PW_AUDIO_PS5_RATE;
             int wave=(int)(phase<PW_AUDIO_PS5_RATE/2?phase:PW_AUDIO_PS5_RATE-phase)*4-PW_AUDIO_PS5_RATE;
             int envelope=(int)(n<total/2?n:total-1-n);
-            int16_t value=(int16_t)((wave*1000/PW_AUDIO_PS5_RATE)*envelope/(int)(total/2));
+            int16_t value=(int16_t)((wave*5000/PW_AUDIO_PS5_RATE)*envelope/(int)(total/2));
             samples[i*2]=samples[i*2+1]=value;
         }
         if(audio_ops.output(audio_port,samples)<0)break;
     }
+}
+static void pm_click_worker(void *unused)
+{
+    (void)unused;
+    for (;;) {
+        unsigned key=__atomic_exchange_n(&pm_click_pending,0,__ATOMIC_ACQUIRE);
+        if(key)pm_play_click((PmKey)key);
+        else usleep(1000);
+    }
+}
+static void pm_click(PmKey key)
+{
+    if(key!=PM_KEY_NONE && pm_click_running)
+        __atomic_store_n(&pm_click_pending,(unsigned)key,__ATOMIC_RELEASE);
 }
 static void run_launcher(void)
 {
@@ -834,13 +886,20 @@ static void run_launcher(void)
     if(video_status==PW_OK) {
         int output_status=pw_videoout_ps5_fixed_output(&video);
         PS5LOG_LOG("PROSPEROMC launcher fixed output rc=%08x",(unsigned)output_status);
+        PS5LOG_LOG("PROSPEROMC launcher refresh unpeg=%08x peg=%08x",
+                   (unsigned)video.refresh_unpeg_rc,(unsigned)video.refresh_peg_rc);
+        pm_report_display(&video,"launcher");
     }
     uint64_t previous_frame=now_ns();
+    uint64_t ui_sample_at=previous_frame,ui_render_ns=0,ui_present_ns=0;
+    unsigned ui_frames=0;
+    int startup_view_loaded=0;
     uint64_t repeat_at=0;uint32_t held_navigation=0;
     int previous_r2=0;
     int exit_requested=0;
     if(audio_port<0 && pw_audio_ps5_platform_ops(&audio_ops)==PW_OK)
         (void)pw_audio_ps5_open_port(&audio_ops,&audio_port);
+    if(audio_port>=0)pm_click_running=start_thread(pm_click_worker,NULL,512u*1024u)==0;
     if (pad_status==PW_OK) pad_status=pw_pad_ps5_open(&pad,&pad_ops,pad_open_map,sizeof(pad_open_map)/sizeof(pad_open_map[0]));
     {
         int32_t user=pad_status==PW_OK ? pad.user_id : -1;
@@ -851,6 +910,14 @@ static void run_launcher(void)
         PmAction action={0}; PmKey key=PM_KEY_NONE;
         int pointer_dx=0,pointer_dy=0,pointer_button=0,pointer_wheel=0;
         pw_diagnostics_tick(now_ns());
+        if(!startup_view_loaded && pm_worker_active && !pm_view.busy && tick%15==0) {
+            char ready[768];
+            snprintf(ready,sizeof(ready),"%s/backend-ready.properties",library_root);
+            if(!access(ready,F_OK)) {
+                (void)pm_bridge_view(library_root,&pm_view);
+                pm_icons_invalidate();startup_view_loaded=1;
+            }
+        }
         if (!pm_view.busy && pm_frontend.screen==PM_ACCOUNTS && tick%30==0)
             (void)pm_bridge_view(library_root,&pm_view);
         if (pm_view.busy && tick%15==0) {
@@ -889,9 +956,9 @@ static void run_launcher(void)
             for (size_t i=0;i<poll.count;i++) {
                 if (poll.events[i].kind==PW_HID_EVENT_KEY && poll.events[i].down) {
                     unsigned vk=poll.events[i].code;
-                    if(pm_frontend.search_editor && vk==13) {key=PM_KEY_REFRESH;continue;}
-                    if(pm_frontend.search_editor && ((vk>=0x30&&vk<=0x5a)||vk==0x20||vk==8||vk==0xbd)) {
-                        pm_frontend_text(&pm_frontend,vk==0xbd?'-':vk);continue;
+                    if((pm_frontend.search_editor || pm_frontend.rename_editor) && vk==13) {key=PM_KEY_REFRESH;continue;}
+                    if((pm_frontend.search_editor || pm_frontend.rename_editor) && ((vk>=0x30&&vk<=0x5a)||vk==0x20||vk==8||vk==0xbd||vk==0xbe)) {
+                        pm_frontend_text(&pm_frontend,vk==0xbd?'-':vk==0xbe?'.':vk);continue;
                     }
                     PmKey mapped=pm_keyboard_key(poll.events[i].code);
                     if(mapped!=PM_KEY_NONE)key=mapped;
@@ -930,8 +997,19 @@ static void run_launcher(void)
         if (video_status==PW_OK && frame!=MAP_FAILED) {
             const PwPresentTarget target={frame,1920,1080,1920*4u,frame_bytes};
             const PwPresentView view={frame,target.width,target.height,target.stride,(uint32_t)frame_bytes};
+            uint64_t render_start=now_ns();
             pm_frontend_render(&pm_frontend,&pm_view,&target);
+            uint64_t rendered=now_ns();
             (void)pw_videoout_ps5_present(&video,&view);
+            uint64_t presented=now_ns();
+            ui_render_ns+=rendered-render_start;ui_present_ns+=presented-rendered;ui_frames++;
+            if(presented-ui_sample_at>=5000000000ULL) {
+                PS5LOG_LOG("PROSPEROMC UI frames=%u interval_ms=%llu render_us=%llu present_us=%llu",
+                    ui_frames,(unsigned long long)((presented-ui_sample_at)/1000000ULL),
+                    (unsigned long long)(ui_render_ns/ui_frames/1000ULL),
+                    (unsigned long long)(ui_present_ns/ui_frames/1000ULL));
+                ui_sample_at=presented;ui_render_ns=ui_present_ns=0;ui_frames=0;
+            }
         } else usleep(PW_WINE64_TICK_US);
     }
 }
@@ -1017,12 +1095,11 @@ static int start_thread(void (*entry)(void *), void *arg, size_t stack_bytes)
 int main(int argc, char **argv)
 {
     static char prefix[256 + PW_APP_ID_CAPACITY], desktop[24], view[8] = "window";
-    enum { WINE64_FIXED_ENV_COUNT = 8,
+    enum { WINE64_FIXED_ENV_COUNT = 9,
            WINE64_PROFILE_ENV_CAPACITY = 3 + PW_GAME_GRAPHICS_ENV_MAX + PW_GAME_RUNTIME_ENV_MAX + PW_GAME_CPU_ENV_MAX +
                                          PW_GAME_CLOCK_ENV_MAX };
     static PwWineStartEnv extra[WINE64_FIXED_ENV_COUNT + WINE64_PROFILE_ENV_CAPACITY] = {
         { "WINEDEBUG", PW_WINE64_DEBUG },
-        { "MESA_DEBUG", "1" }, /* Record GL errors while diagnosing missing game/menu draws. */
         /* the i386 exe runs in this process through WoW64; otherwise Wine
          * starts it from start.exe in a new process, which a title cannot */
         { "WINEARCH", "wow64" },
@@ -1031,6 +1108,10 @@ int main(int argc, char **argv)
         { "WINE_PS5_TRACE_STARTUP", "1" },  /* patch 0560: name startup steps */
         { "WINE_PS5_VIEW", view },          /* patch 0430: the game's windows, or the desktop */
         { "WINE_PS5_FIXED_WINDOW", "1" },   /* ProsperoMC: disable edge resizing. */
+        /* Cache inside the existing writable prefix, never the read-only app0.
+         * Limit disk growth independently of game data and saves. */
+        { "MESA_SHADER_CACHE_DIR", prefix },
+        { "MESA_SHADER_CACHE_MAX_SIZE", "256M" },
         { NULL, NULL }, { NULL, NULL }, { NULL, NULL }, { NULL, NULL }, /* profile-specific environment */
     };
     _Static_assert(sizeof(extra) / sizeof(extra[0]) ==
@@ -1114,7 +1195,7 @@ int main(int argc, char **argv)
         PS5LOG_LOG("PROSPEROMC dosdevices failed errno=%d",errno);
         pm_worker_active=0; pm_backend_running=0; run_launcher();
     }
-    PS5LOG_LOG("PROSPEROMC dosdevices ready C:=drive_c Z:=/");
+    PS5LOG_LOG("PROSPEROMC dosdevices ready C:=drive_c P:=/data/ProsperoMC Z:=/");
     if (game && strcmp(game->app.prefix, "default"))
         snprintf(prefix, sizeof(prefix), "%s/prefixes/%s", library_root, game->app.prefix);
     else
@@ -1294,6 +1375,12 @@ int main(int argc, char **argv)
                 (uintptr_t)pw_prx_lookup(start.descriptor, "pw_wine_rumble");
         }
         video_status = pw_videoout_ps5_open(&video);
+        if(video_status==PW_OK && !pm_backend_running && !strcmp(pm_view.vrr_mode,"stable")) {
+            int stable=pw_videoout_ps5_stable_refresh(&video);
+            PS5LOG_LOG("PROSPEROMC game stable refresh stage=start rc=%08x unpeg=%08x peg=%08x",
+                (unsigned)stable,(unsigned)video.refresh_unpeg_rc,(unsigned)video.refresh_peg_rc);
+        }
+        if(video_status==PW_OK)pm_report_display(&video,"game-start");
         pad_status = pw_pad_ps5_platform_ops(&pad_ops);
         if (pad_status == PW_OK)
             pad_status = pw_pad_ps5_open(&pad, &pad_ops, pad_open_map,
@@ -1369,10 +1456,10 @@ int main(int argc, char **argv)
     for (uint64_t tick = 1; status == PW_OK; tick++) {
         uint64_t now = now_ns();
         pw_diagnostics_tick(now);
-        /* Java's file logger does not pass chunk errors to the Wine output
-         * sink. Take three bounded snapshots and try one ordinary read-only
-         * open to distinguish kernel open failures from Wine handle errors. */
-        if(!pm_backend_running && file_samples<3 &&
+        /* Explicit diagnostic builds can take three snapshots and try one
+         * read-only open. Normal games retain error-triggered diagnostics
+         * without unconditional descriptor walks during rendering. */
+        if(PW_WINE64_FILE_SAMPLES && !pm_backend_running && file_samples<3 &&
            now-started>=file_sample_seconds[file_samples]*1000000000ull) {
             int saved_errno=errno,open_errno=0;
             char probe_path[512];
@@ -1508,6 +1595,12 @@ int main(int argc, char **argv)
         }
         if (__atomic_load_n(&display_request, __ATOMIC_ACQUIRE) &&
             !__atomic_load_n(&display_closed, __ATOMIC_RELAXED)) {
+            if(video_status==PW_OK && !strcmp(pm_view.vrr_mode,"stable")) {
+                int stable=pw_videoout_ps5_stable_refresh(&video);
+                PS5LOG_LOG("PROSPEROMC game stable refresh stage=handoff rc=%08x unpeg=%08x peg=%08x",
+                    (unsigned)stable,(unsigned)video.refresh_unpeg_rc,(unsigned)video.refresh_peg_rc);
+            }
+            if(video_status==PW_OK)pm_report_display(&video,"game-handoff");
             int closed = video_status == PW_OK ? pw_videoout_ps5_close(&video) : PW_OK;
             video_status = PW_ERR_STATE;
             __atomic_store_n(&display_closed, 1, __ATOMIC_RELEASE);

@@ -1,5 +1,11 @@
 # Third-party notices
 
+Native modpack artwork uses the decode-only libwebp1.6.0 library, copyright
+Google Inc., under its BSD license and patent grant. The official source
+archive SHA256 is e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564.
+See https://chromium.googlesource.com/webm/libwebp/+/refs/tags/v1.6.0/.
+The build includes WEBP_LICENSE.txt and WEBP_PATENTS.txt in the PS5 package.
+
 ## Credits and acknowledgements
 
 | Project | Role |

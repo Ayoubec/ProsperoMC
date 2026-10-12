@@ -87,10 +87,20 @@ def validate_package(title: Path, data: Path) -> dict:
     }
     if report.get("helper"):
         checks[title / "lapy.elf"] = report["helper"].get("elf_sha256")
+    if report.get('zipfsBootstrapSha256'):
+        for base in (title,data):
+            checks[base/'launcher/prosperomc-zipfs.jar']=report['zipfsBootstrapSha256']
+    if report.get("wine", {}).get("vulkanSha256"):
+        checks[title / "win/wine/lib/wine/x86_64-unix/libvulkan.prx"] = report['wine']['vulkanSha256']
+    if report.get('wine', {}).get('runtimeCore'):
+        from importlib.machinery import SourceFileLoader
+        core = SourceFileLoader('runtime_core_validate', str(PROJECT / 'scripts/stage-runtime-v020-core.py')).load_module()
+        core.core_names(title, data)
     for path, expected in checks.items():
         if not expected or not path.is_file() or file_digest(path) != expected:
             raise ValueError(f"Staged input changed or is missing: {path}")
-    if (data / 'prefixes/minecraft/dosdevices/.pw-symlinks').read_bytes() != b'c:\t../drive_c\nz:\t/\n':
+    if (data / 'prefixes/minecraft/dosdevices/.pw-symlinks').read_bytes() not in (
+        b'c:\t../drive_c\nz:\t/\n', b'c:\t../drive_c\np:\t/data/ProsperoMC\nz:\t/\n'):
         raise ValueError('Wine drive mapping table must use exact Unix line endings')
     for file in data.rglob("*"):
         name = file.name.lower()

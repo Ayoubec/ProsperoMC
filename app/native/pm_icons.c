@@ -22,6 +22,7 @@
 #endif
 #define STBI_MAX_DIMENSIONS 2048
 #include "../../vendor/stb/stb_image.h"
+#include "src/webp/decode.h"
 
 enum { ICON_COUNT=64, ICON_SIZE=128, ICON_FILE_LIMIT=4*1024*1024 };
 typedef struct Icon {
@@ -112,8 +113,17 @@ static void load_icon(Icon *icon)
     if(!file)goto done;
     if(fread(bytes,1,(size_t)info.st_size,file)!=(size_t)info.st_size)goto done;
     fclose(file);file=NULL;
-    if(!stbi_info_from_memory(bytes,(int)info.st_size,&width,&height,&channels)||width<=0||height<=0||width>2048||height>2048)goto done;
-    decoded=stbi_load_from_memory(bytes,(int)info.st_size,&width,&height,&channels,4);
+    int webp=info.st_size>=12&&!memcmp(bytes,"RIFF",4)&&!memcmp(bytes+8,"WEBP",4);
+    if(webp) {
+        if(!WebPGetInfo(bytes,(size_t)info.st_size,&width,&height)||width<=0||height<=0||width>2048||height>2048)goto done;
+        decoded=malloc((size_t)width*height*4);
+        if(decoded&&!WebPDecodeRGBAInto(bytes,(size_t)info.st_size,decoded,(size_t)width*height*4,width*4)) {
+            free(decoded);decoded=NULL;
+        }
+    } else {
+        if(!stbi_info_from_memory(bytes,(int)info.st_size,&width,&height,&channels)||width<=0||height<=0||width>2048||height>2048)goto done;
+        decoded=stbi_load_from_memory(bytes,(int)info.st_size,&width,&height,&channels,4);
+    }
     if(!decoded)goto done;
     unsigned out_width=(unsigned)width,out_height=(unsigned)height;
     if(out_width>ICON_SIZE||out_height>ICON_SIZE) {

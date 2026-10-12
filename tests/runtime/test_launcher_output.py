@@ -13,15 +13,18 @@ code = r'''
 #include <stddef.h>
 #include <stdio.h>
 #define PW_ERR_PRECONDITION -2
-typedef struct { int opened, handle; } PwVideoOutPs5;
+typedef struct { int opened, handle, refresh_unpeg_rc, refresh_peg_rc; } PwVideoOutPs5;
+int pw_videoout_ps5_stable_refresh(PwVideoOutPs5 *);
 static int requests, waits, request_error, wait_error;
 int sceVideoOutConfigureOutput(int32_t handle,uint32_t preset,const void *a,const void *b,const void *c) {
  assert(handle==7 && preset==1 && !a && !b && !c); ++requests; return request_error;
 }
 int sceVideoOutWaitVblank(int32_t handle) { assert(handle==7); ++waits; return wait_error; }
+int sceVideoOutVrrUnpegFromFixedRate(int32_t handle) { assert(handle==7); return 0; }
+int sceVideoOutVrrPegToFixedRate(int32_t handle,uint64_t a,uint64_t b) { assert(handle==7&&!a&&!b); return 0; }
 ''' + source[start:end] + r'''
 int main(void) {
- PwVideoOutPs5 video={0,-1};
+ PwVideoOutPs5 video={0,-1,0,0};
  assert(pw_videoout_ps5_fixed_output(NULL)==PW_ERR_PRECONDITION);
  assert(pw_videoout_ps5_fixed_output(&video)==PW_ERR_PRECONDITION);
  assert(!requests && !waits);

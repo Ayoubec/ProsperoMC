@@ -245,10 +245,13 @@ int pw_cwd_follow(const char *absolute, int follow_last, char *out, size_t size)
      * after a link leaves the target's directory, as with a real one. */
     char done[PW_CWD_PATH_MAX], todo[PW_CWD_PATH_MAX], next[PW_CWD_PATH_MAX];
     size_t used = 0;
-    int hops = 0, status = 0;
+    int hops = 0, status = 0, trailing_slash;
     const char *p;
 
     if (!absolute || absolute[0] != '/') { errno = EINVAL; return -1; }
+    /* POSIX lstat("directory-link/") follows the final directory link.
+     * Wine volume queries always spell drive roots with this final slash. */
+    trailing_slash = absolute[strlen(absolute) - 1] == '/';
     pthread_rwlock_rdlock(&cwd_lock);
     if (!link_count || copy_out(absolute, strlen(absolute), todo, sizeof(todo))) {
         pthread_rwlock_unlock(&cwd_lock);
@@ -277,7 +280,7 @@ int pw_cwd_follow(const char *absolute, int follow_last, char *out, size_t size)
         used += length;
         done[used] = 0;
         while (*p == '/') p++;
-        if ((!*p && !follow_last) || (i = find_link_locked(done)) < 0) continue;
+        if ((!*p && !follow_last && !trailing_slash) || (i = find_link_locked(done)) < 0) continue;
         if (++hops > PW_CWD_MAX_HOPS) { errno = ELOOP; status = -1; break; }
         {
             const char *target = links[i].target;
@@ -303,6 +306,11 @@ int pw_cwd_follow(const char *absolute, int follow_last, char *out, size_t size)
     /* No link on the way: the path goes to the kernel as it came. */
     if (!hops) return copy_out(absolute, strlen(absolute), out, size);
     if (!used) done[used++] = '/', done[used] = 0;
+    if (trailing_slash && used > 1) {
+        if (used + 1 >= sizeof(done)) { errno = ENAMETOOLONG; return -1; }
+        done[used++] = '/';
+        done[used] = 0;
+    }
     return copy_out(done, used, out, size);
 }
 

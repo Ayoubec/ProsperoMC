@@ -42,10 +42,14 @@ public final class Main {
         }
         if(root==null)throw new IllegalArgumentException("--root is required");
         if(root.toString().replace('\\','/').equalsIgnoreCase("Z:/data/ProsperoMC")) {
+            // Knot reads each class through a JAR URL. Disabling its cache
+            // reopens and verifies the archive for every class on PS5.
+            if(plan==null)Ps5Compat.resourceArchives();
             System.setProperty("prosperomc.ps5Dns","true");
             System.setProperty("java.net.preferIPv4Stack","true");
             if(System.getProperty("java.specification.version").equals("1.8"))Ps5Compat.localAddress();
             else Ps5Dns.initializeModern();
+            Ps5DirectoryDns.install();
         }
         if(serve) {
             if(plan!=null||requestPath!=null)throw new IllegalArgumentException("--serve cannot be combined with a request or plan");
@@ -54,6 +58,11 @@ public final class Main {
         }
         if(plan!=null) {
             Main app=new Main(root, Collections.<String, String>emptyMap());
+            if(root.toString().replace('\\','/').equalsIgnoreCase("Z:/data/ProsperoMC")) {
+                FileDiagnostics.probe(root);
+                HeapDiagnostics.probe();
+                StartupDiagnostics.start(Thread.currentThread());
+            }
             app.execute(plan);
             return;
         }
@@ -64,6 +73,9 @@ public final class Main {
     static void serve(Path root)throws Exception {
         Files.createDirectories(root);
         Path queued=root.resolve("request.properties"), active=root.resolve("request.inflight.properties");
+        // Backfill installed pack artwork once per launcher start, in the backend
+        // worker. Keep response.properties reserved for explicit UI requests.
+        perform(root,stringMap("command","view"),true);
         FilesUtil.properties(root.resolve("backend-ready.properties"),stringMap("ready","true"));
         long nextAuthPoll=System.nanoTime()+5000000000L;
         for(;;) {
@@ -165,6 +177,11 @@ public final class Main {
         FilesUtil.properties(root.resolve("progress.properties"), stringMap("status", status, "detail", detail, "done", Long.toString(done), "total", Long.toString(total)));
     }
     void command(String cmd)throws Exception {
+        String graphics=GraphicsOptions.provider(settings.get("graphics"));
+        if(!graphics.equals(settings.get("graphics"))) {
+            settings.put("graphics",graphics);
+            persistSettings("graphics");
+        }
         if(cmd.equals("catalog")) {
             installer.catalog(true);
             message="Minecraft version catalog refreshed";
@@ -239,6 +256,10 @@ public final class Main {
         else if(cmd.equals("clone")) {
             cloneInstance();
         }
+        else if(cmd.equals("rename-instance")) {
+            InstanceNames.rename(this,required("id"),required("name"));
+            message="Instance renamed";
+        }
         else if(cmd.equals("export")) {
             exportPack();
         }
@@ -250,6 +271,7 @@ public final class Main {
         }
         else if(cmd.equals("view")) {
             Icons.refreshInstances(this);
+            InstanceNames.refresh(this);
             message="Launcher ready";
         }
         else throw new IOException("Unknown command: "+cmd);
@@ -270,6 +292,13 @@ public final class Main {
     static void validateName(String name)throws IOException {
         if(name.isEmpty()||name.length()>96||name.matches("(?s).*[\\r\\n\\x00-\\x1f].*"))throw new IOException("Name must be 1–96 printable characters");
     }
+    /** Native settings can change while optional backend work is in flight. */
+    void persistSettings(String... keys)throws IOException {
+        Map<String,String> merged=FilesUtil.properties(root.resolve("settings.properties"));
+        for(String key:keys)if(settings.containsKey(key))merged.put(key,settings.get(key));
+        FilesUtil.properties(root.resolve("settings.properties"),merged);
+        settings.clear();settings.putAll(merged);
+    }
     void writePolyMC(Path d, Map<String, String> m)throws IOException {
         FilesUtil.properties(d.resolve("instance.cfg"), stringMap("InstanceType", "OneSix", "name", m.get("name"), "OverrideJavaLocation", "false"));
         List<Object> parts=new ArrayList<Object>();
@@ -289,17 +318,21 @@ public final class Main {
                 if(key.isEmpty())Files.deleteIfExists(privateConfig);
                 else {FilesUtil.properties(privateConfig,stringMap("apiKey",key));FilesUtil.restrict(privateConfig);}
             }
-            else if(k.matches("java[0-9]+")||Arrays.asList("resolution", "memoryMb", "microsoftClientId", "manifestUrl", "assetsUrl", "fabricApi", "quiltApi", "graphics", "controllerMode", "accountMode", "username", "modrinthApi", "curseforgeApi", "javaApi", "javaGithubApi").contains(k)) {
+            else if(k.matches("java[0-9]+")||Arrays.asList("resolution", "memoryMb", "microsoftClientId", "manifestUrl", "assetsUrl", "fabricApi", "quiltApi", "graphics", "controllerMode", "themeColor", "vrrMode", "accountMode", "username", "modrinthApi", "curseforgeApi", "javaApi", "javaGithubApi").contains(k)) {
                 if(k.equals("resolution")&&!Arrays.asList("1280x720","1920x1080","2560x1440","3840x2160").contains(e.getValue()))throw new IOException("Choose 720p, 1080p, 1440p or 2160p");
                 if(k.equals("memoryMb"))memory(e.getValue());
+                if(k.equals("themeColor")&&!Arrays.asList("grass","ocean","diamond","amethyst","redstone","gold").contains(e.getValue()))throw new IOException("Choose Grass, Ocean, Diamond, Amethyst, Redstone or Gold");
+                if(k.equals("vrrMode")&&!Arrays.asList("auto","stable").contains(e.getValue()))throw new IOException("Choose Auto or Stable refresh");
                 if(k.equals("accountMode")&&!Arrays.asList("microsoft", "offline").contains(e.getValue()))throw new IOException("accountMode must be microsoft or offline");
-                if(k.equals("graphics")&&!Arrays.asList("opengl", "zink").contains(e.getValue()))throw new IOException("graphics must be opengl or zink");
+                if(k.equals("graphics"))GraphicsOptions.provider(e.getValue());
                 if(k.equals("controllerMode")&&!Arrays.asList("emulated","native").contains(e.getValue()))throw new IOException("controllerMode must be emulated or native");
-                settings.put(k, e.getValue());
+                settings.put(k,k.equals("graphics")?GraphicsOptions.provider(e.getValue()):e.getValue());
             }
             else throw new IOException("Unknown setting: "+k);
         }
-        FilesUtil.properties(root.resolve("settings.properties"), settings);
+        List<String> changed=new ArrayList<String>();
+        for(String key:request.keySet())if(settings.containsKey(key))changed.add(key);
+        persistSettings(changed.toArray(new String[0]));
         message="Launcher settings saved";
     }
     static int memory(String s)throws IOException {
@@ -530,7 +563,8 @@ public final class Main {
             else throw new IOException("Unsupported pack dependency: "+key+" (Forge currently requires 1.12.2)");
             lv=id(Json.text(deps,key));
         }
-        String name=request.getOrDefault("name",Json.text(manifest,"name"));validateName(name);
+        String packTitle=request.getOrDefault("packTitle",Json.text(manifest,"name"));
+        String name=request.getOrDefault("name",InstanceNames.pack(packTitle,v));validateName(name);
         Path game=dest.resolve(".minecraft");Files.createDirectories(game.resolve("mods"));
         List<Object> files=Json.arr(manifest.get("files"));
         if(files.size()>10000)throw new IOException("Too many modpack files");
@@ -567,6 +601,7 @@ public final class Main {
         for(String folder:Arrays.asList("overrides","client-overrides"))
             if(Files.isDirectory(pack.resolve(folder)))FilesUtil.copyTree(pack.resolve(folder),game);
         Map<String,String> m=stringMap("id",i,"name",name,"version",v,"loader",loader,"loaderVersion",lv,"installed","false");
+        m.put("packName",packTitle);m.put("nameSource",request.containsKey("name")?"custom":"pack");
         FilesUtil.properties(dest.resolve("instance.properties"),m);writePolyMC(dest,m);
         message="Modrinth pack imported; select its instance to install game and loader dependencies";
     }
@@ -707,8 +742,10 @@ public final class Main {
         v.put("version.count", Integer.toString(n));
         Content.view(this,v);
         v.put("settings.memoryMb", settings.getOrDefault("memoryMb", "2048"));
+        v.put("settings.themeColor",settings.getOrDefault("themeColor","grass"));
+        v.put("settings.vrrMode",settings.getOrDefault("vrrMode","auto"));
         v.put("settings.resolution",settings.getOrDefault("resolution","1280x720"));
-        v.put("settings.graphics",settings.getOrDefault("graphics","opengl"));
+        v.put("settings.graphics",GraphicsOptions.provider(settings.get("graphics")));
         v.put("settings.controllerMode",settings.getOrDefault("controllerMode","emulated"));
         v.put("settings.accountMode", settings.getOrDefault("accountMode", "microsoft"));
         if(Files.isRegularFile(root.resolve("private/account.json"))) {
@@ -801,6 +838,10 @@ public final class Main {
         if(root.toString().replace('\\','/').equalsIgnoreCase("Z:/data/ProsperoMC")
                 &&major==8&&"1.12.2".equals(Json.text(meta,"id")))
             cp.add(0,NettyCompat.prepare(root,cp));
+        if(root.toString().replace('\\','/').equalsIgnoreCase("Z:/data/ProsperoMC")) {
+            FileDiagnostics.probe(root);
+            System.out.println("PS5 game archives: loader URL cache preserved; original dependency classpath preserved");
+        }
         Path client=FilesUtil.safe(root, Json.text(meta, "_clientPath"));
         if(!Files.isRegularFile(client))throw new IOException("Client JAR missing");
         Map<String, Object> ds=meta.containsKey("downloads")?Json.obj(meta.get("downloads")):Collections.<String, Object>emptyMap();
@@ -834,7 +875,7 @@ public final class Main {
         placeholders.put("user_type", mode.equals("microsoft")?"msa":"legacy");
         placeholders.put("version_name", m.get("version"));
         placeholders.put("version_type", "release");
-        placeholders.put("game_directory", windows(game));
+        placeholders.put("game_directory", windows(GameStorage.gameDirectory(root,game)));
         placeholders.put("assets_root", windows(root.resolve("assets")));
         String assets=meta.containsKey("assetIndex")?Json.text(Json.obj(meta.get("assetIndex")), "id"):"legacy";
         placeholders.put("assets_index_name", assets);
@@ -854,6 +895,9 @@ public final class Main {
         placeholders.put("resolution_width", dimensions[0]);
         placeholders.put("resolution_height", dimensions[1]);
         List<String> jvm=new ArrayList<String>();
+        // The resolver is selected once. Enable it before agents/early networking,
+        // rather than relying only on the later Main.main property assignment.
+        Ps5Dns.launchArguments(root,jvm,major);
         // Fabric reports loader errors to the log; its desktop AWT dialog has
         // no usable window on a native PS5 launcher.
         jvm.add("-Dfabric.noGui=true");
@@ -865,7 +909,16 @@ public final class Main {
         // G1 commits many small heap regions through Wine's direct-memory
         // backend. Parallel GC uses contiguous generations, reducing native
         // allocation pressure while retaining compiled Java and GC workers.
-        if(major>=17)jvm.add("-XX:+UseParallelGC");
+        if(major>=17) {
+            jvm.add("-XX:+UseParallelGC");
+            // Console logs show code-cache-triggered full collections during
+            // play and repeated metadata collections while loading full FO.
+            // These are growth budgets, not fixed heap/native allocations.
+            StartupDiagnostics.codeCacheArguments(major,jvm);
+            jvm.add("-XX:MetaspaceSize=128M");
+            // Preserve pause evidence and record code-cache collection causes.
+            jvm.add("-Xlog:gc,safepoint=info,codecache=info");
+        }
         jvm.add("-Djava.library.path="+windows(natives));
         List<String> gameArgs;
         if(meta.containsKey("arguments")) {
@@ -891,8 +944,16 @@ public final class Main {
         for(String a:gameArgs)planArgs.add(replace(a, placeholders, true));
         if(!planArgs.contains("--width")){planArgs.add("--width");planArgs.add(dimensions[0]);}
         if(!planArgs.contains("--height")){planArgs.add("--height");planArgs.add(dimensions[1]);}
+        // A console game owns the selected display mode. Window decorations
+        // must not subtract borders/caption height from the requested viewport.
+        if(!planArgs.contains("--fullscreen"))planArgs.add("--fullscreen");
         String main=Json.text(meta, "mainClass");
         if(!main.matches("[a-zA-Z_$][a-zA-Z0-9_$.]*"))throw new IOException("Invalid Minecraft main class");
+        if(major>=17&&(main.startsWith("net.fabricmc.")||main.startsWith("org.quiltmc."))) {
+            Path zipBootstrap=root.resolve("launcher/prosperomc-zipfs.jar");
+            if(!Files.isRegularFile(zipBootstrap))throw new IOException("ZIP channel runtime missing; update ProsperoMC");
+            jvm.add("-javaagent:"+windows(root.resolve("launcher/prosperomc-launcher.jar"))+"="+windows(zipBootstrap));
+        }
         Path plan=root.resolve("profiles/launch-plan.json");
         FilesUtil.write(plan, Json.stringify(Auth.map("instanceId", i, "mainClass", main, "arguments", planArgs, "accountMode", mode, "uuid", uuid, "name", name)));
         FilesUtil.restrict(plan);
@@ -909,12 +970,16 @@ public final class Main {
             argline.append(FilesUtil.quote(a));
         }
         if(argline.length()>32768)throw new IOException("Minecraft command line exceeds Windows/runtime 32768-character limit");
-        String graphics=settings.getOrDefault("graphics", "opengl");
+        String graphics=GraphicsOptions.provider(settings.get("graphics"));
+        GraphicsOptions.select(game,client,graphics);
+        GraphicsOptions.fullscreen(game);
+        String runtimeGraphics=graphics.equals("vulkan")?"auto":graphics;
         String controllerMode=settings.getOrDefault("controllerMode","emulated");
         if(!Arrays.asList("emulated","native").contains(controllerMode))throw new IOException("Unsupported controller mode");
+        ControlifyCompat.select(root,game,client,controllerMode);
         String input=controllerMode.equals("native")?"mode=xinput\nmouse=none\n":
             "mode=keyboard\nmouse=right_stick\ncross=space\ncircle=escape\nsquare=e\ntriangle=q\nl1=wheel_up\nr1=wheel_down\nl2=mouse_right\nr2=mouse_left\nup=w\ndown=s\nleft=a\nright=d\noptions=escape\n";
-        String text="[application]\nid=minecraft\nname=Minecraft Java\nexecutable="+windows(java)+"\nworking_directory="+windows(game)+"\narguments="+argline+"\nprefix=minecraft\nruntime=wine-wow64\narchitecture=pe64\ngraphics="+graphics+"\n[display]\ndesktop="+resolution+"\nview=window\nscaling=fit\nrefresh=120\n[input]\n"+input;
+        String text="[application]\nid=minecraft\nname=Minecraft Java\nexecutable="+windows(java)+"\nworking_directory="+windows(game)+"\narguments="+argline+"\nprefix=minecraft\nruntime=wine-wow64\narchitecture=pe64\ngraphics="+runtimeGraphics+"\n[runtime]\nthread_scheduling=true\nfast_clock=true\n[display]\ndesktop="+resolution+"\nview=window\nscaling=fit\nrefresh=120\n[input]\n"+input;
         FilesUtil.write(root.resolve("profiles/launch.profile"), text);
         FilesUtil.restrict(root.resolve("profiles/launch.profile"));
         writePolyMC(d, m);
@@ -942,6 +1007,7 @@ public final class Main {
         else throw new IOException("Invalid launch account mode");
         List<String> args=new ArrayList<String>();
         for(Object a:Json.arr(data.get("arguments")))args.add(replace(Json.str(a), values, false));
+        GameplayProfile profile=GameplayProfile.start(root,i);
         try {
             Class.forName(main).getMethod("main", String[].class).invoke(null, (Object)args.toArray(new String[0]));
         }
@@ -954,5 +1020,6 @@ public final class Main {
             System.err.println(diagnostic);
             System.exit(2);
         }
+        finally {if(profile!=null)profile.finish();}
     }
 }

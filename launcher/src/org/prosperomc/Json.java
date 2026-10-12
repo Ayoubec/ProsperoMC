@@ -3,7 +3,15 @@ import java.util.*;
 /** Strict, dependency-free JSON reader/writer for Mojang/loader metadata. */
 final class Json {
     static Object parse(String s) {
-        Parser p=new Parser(s);
+        return parse(s,false);
+    }
+    // Fabric's reader accepts literal control characters inside quoted mod
+    // descriptions and a leading UTF-8 BOM. Keep launcher/settings JSON strict.
+    static Object parseFabric(String s) {
+        return parse(s,true);
+    }
+    private static Object parse(String s,boolean fabric) {
+        Parser p=new Parser(s,fabric);
         Object v=p.value(0);
         p.ws();
         if(p.i!=s.length())throw p.bad("trailing input");
@@ -84,9 +92,12 @@ final class Json {
     }
     static final class Parser {
         final String s;
+        final boolean fabric;
         int i;
-        Parser(String s) {
+        Parser(String s,boolean fabric) {
             this.s=s;
+            this.fabric=fabric;
+            if(fabric&&s.startsWith("\uFEFF"))i=1;
         }
         void ws() {
             while(i<s.length()&&" \r\n\t".indexOf(s.charAt(i))>=0)i++;
@@ -190,7 +201,7 @@ final class Json {
             while(i<s.length()) {
                 char c=s.charAt(i++);
                 if(c=='"')return b.toString();
-                if(c<32)throw bad("control character");
+                if(c<32&&!fabric)throw bad("control character");
                 if(c=='\\') {
                     if(i==s.length())throw bad("escape");
                     c=s.charAt(i++);

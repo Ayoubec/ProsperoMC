@@ -28,7 +28,7 @@ final class FabricMods {
             }
         }
         if(metadata==null)return;
-        Map<String,Object> json=Json.obj(Json.parse(new String(metadata,StandardCharsets.UTF_8)));
+        Map<String,Object> json=Json.obj(Json.parseFabric(new String(metadata,StandardCharsets.UTF_8)));
         if("server".equals(Json.text(json,"environment")))return;
         String id=Json.text(json,"id");if(id.isEmpty())return;
         available.add(id);
@@ -53,7 +53,7 @@ final class FabricMods {
                     ZipEntry entry=zip.getEntry("fabric.mod.json");if(entry==null)continue;
                     byte[] descriptor;
                     try(InputStream in=zip.getInputStream(entry)){descriptor=read(in,1024*1024);}
-                    Map<String,Object> json=Json.obj(Json.parse(new String(descriptor,StandardCharsets.UTF_8)));
+                    Map<String,Object> json=Json.obj(Json.parseFabric(new String(descriptor,StandardCharsets.UTF_8)));
                     ByteArrayOutputStream out=new ByteArrayOutputStream();
                     try(ZipOutputStream compact=new ZipOutputStream(out)) {
                         compact.putNextEntry(new ZipEntry("fabric.mod.json"));compact.write(descriptor);compact.closeEntry();
@@ -64,7 +64,7 @@ final class FabricMods {
                         }
                     }
                     inspect(out.toByteArray(),file.getFileName().toString(),mods,available,0);
-                } catch(IllegalArgumentException e) {throw new IOException("Invalid Fabric metadata in "+file.getFileName(),e);}
+                } catch(IllegalArgumentException e) {throw new IOException("Invalid Fabric metadata in "+file.getFileName()+": "+e.getMessage(),e);}
             }
         }
         List<String> missing=new ArrayList<String>();

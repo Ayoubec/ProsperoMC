@@ -13,9 +13,8 @@ public final class Ps5ResolverProvider extends InetAddressResolverProvider {
     public String name() { return "ProsperoMC"; }
     public InetAddressResolver get(Configuration configuration) {
         if(!Boolean.getBoolean("prosperomc.ps5Dns"))return configuration.builtinResolver();
-        String endpoint=System.getProperty("prosperomc.dnsEndpoint");
-        final Ps5Dns dns=new Ps5Dns(endpoint==null?
-                new String[]{"https://1.1.1.1/dns-query","https://1.0.0.1/dns-query"}:new String[]{endpoint});
+        final Ps5Dns dns=Ps5Dns.configured();
+        System.out.println("PS5 DNS: IPv4 hostname resolver active");
         return new InetAddressResolver() {
             public Stream<InetAddress> lookupByName(String host,LookupPolicy policy)throws UnknownHostException {
                 if((policy.characteristics()&LookupPolicy.IPV4)==0)throw new UnknownHostException(host+": IPv4 required by PS5 Wine");

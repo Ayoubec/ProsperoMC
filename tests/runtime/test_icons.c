@@ -47,5 +47,13 @@ int main(int argc,char **argv)
     }
     snprintf(path,sizeof(path),"%s/entry-0.png",argv[1]);
     assert(!pm_icon_pixels(path,&width,&height));pm_icons_tick();assert(pm_icon_pixels(path,&width,&height));
-    pm_icons_invalidate();puts("INSTANCE_ICON_CACHE_PASS");return 0;
+    const char *webps[]={"1KVo5zza.webp","bHUKuhiA.webp"};
+    for(unsigned j=0;j<2;j++) {
+        snprintf(path,sizeof(path),"%s/%s",argv[1],webps[j]);
+        assert(!pm_icon_pixels(path,&width,&height));pm_icons_tick();
+        pixels=pm_icon_pixels(path,&width,&height);assert(pixels&&width==128&&height==128);
+    }
+    snprintf(path,sizeof(path),"%s/bad.webp",argv[1]);
+    assert(!pm_icon_pixels(path,&width,&height));pm_icons_tick();assert(!pm_icon_pixels(path,&width,&height));
+    pm_icons_invalidate();puts("INSTANCE_ICON_CACHE_PASS PNG/JPEG/WebP");return 0;
 }

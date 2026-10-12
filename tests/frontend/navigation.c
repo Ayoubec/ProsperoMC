@@ -75,10 +75,10 @@ static void home_library(void)
     assert(key(PM_KEY_CONFIRM));
     assert(f.screen == PM_MODS && !strcmp(a.command, "content-list"));
     f.screen = PM_LIBRARY;
-    f.focus = 3;
+    f.focus = 4;
     assert(key(PM_KEY_CONFIRM));
     assert(!strcmp(a.command, "clone"));
-    f.focus = 4;
+    f.focus = 5;
     assert(!key(PM_KEY_CONFIRM));
     assert(f.confirmation == 1 && !f.confirmation_choice);
     assert(!key(PM_KEY_CONFIRM));
@@ -131,6 +131,7 @@ static void instances(void)
     strcpy(v.remote_versions[0].id, "curse-release");
     assert(key(PM_KEY_CONFIRM));
     assert(!strcmp(a.command, "curse-download"));
+    assert(!a.name[0]);
     assert(!key(PM_KEY_BACK));
     assert(!key(PM_KEY_BACK));
     f.focus = 3;
@@ -278,8 +279,9 @@ static void settings_accounts_close(void)
     assert(!key(PM_KEY_CONFIRM));
     assert(f.selector_popup == 3);
     assert(!key(PM_KEY_DOWN));
+    assert(!key(PM_KEY_UP));
     assert(!key(PM_KEY_CONFIRM));
-    assert(f.graphics_index == 1);
+    assert(f.graphics_index == 0);
     assert(!key(PM_KEY_RIGHT));
     assert(f.focus == 9);
     assert(!key(PM_KEY_CONFIRM));
@@ -288,14 +290,22 @@ static void settings_accounts_close(void)
     assert(!key(PM_KEY_CONFIRM));
     assert(f.input_index == 1);
     assert(!key(PM_KEY_DOWN));
-    assert(f.focus == 4);
+    assert(f.focus == 11);
     assert(!key(PM_KEY_UP));
-    assert(f.focus == 9);
+    assert(f.focus == 8);
     f.focus = 6;
     assert(key(PM_KEY_CONFIRM));
     assert(a.memory_mb == 3840 && a.resolution_height == 720);
     assert(!strcmp(a.graphics, "zink"));
     assert(!strcmp(a.controller_mode, "native"));
+    f.focus = 8;
+    assert(!key(PM_KEY_CONFIRM));
+    assert(!key(PM_KEY_DOWN));
+    assert(f.selector_choice == 1);
+    assert(!key(PM_KEY_CONFIRM));
+    f.focus = 6;
+    assert(key(PM_KEY_CONFIRM));
+    assert(!strcmp(a.graphics, "vulkan"));
     const int majors[] = {8, 17, 21, 25};
     for (int j = 1; j <= 4; j++)
     {
@@ -355,6 +365,10 @@ static void search_and_delete_regressions(void)
         assert(!strcmp(a.command, provider == 1 ? "pack-search" : "curse-search"));
         v.remote_count = 1;
         strcpy(v.remote_packs[0].id, "test-project");
+        /* Saved provider source alone restores the page and its visible bar. */
+        f.remote_browser = 0;
+        assert(!key(PM_KEY_NONE));
+        assert(f.remote_browser);
         assert(!pointer(450, 313, 1, 0));
         assert(f.search_editor);
         pm_frontend_text(&f, 'Q');
@@ -381,8 +395,11 @@ static void search_and_delete_regressions(void)
         strcpy(v.mods[0].name, file[j]);
         f.focus = 2;
         assert(!key(PM_KEY_RIGHT));
-        assert(f.focus == 3);
+        assert(f.focus == 4);
+        f.focus = 3;
         assert(!key(PM_KEY_DOWN));
+        assert(f.focus == 2);
+        assert(!key(PM_KEY_RIGHT));
         assert(f.focus == 4);
         assert(!key(PM_KEY_DOWN));
         assert(f.focus == 5);
@@ -403,13 +420,30 @@ static void search_and_delete_regressions(void)
         f.focus = 3;
         assert(key(PM_KEY_CONFIRM));
         assert(!strcmp(a.command, "content-search"));
-        assert(!pointer(450, 313, 1, 0));
+        assert(!pointer(450, 380, 1, 0));
         assert(f.search_editor);
         f.query[0] = 0;
         pm_frontend_text(&f, 'P');
-        assert(pointer(1650, 313, 1, 0));
+        assert(pointer(1650, 380, 1, 0));
         assert(!strcmp(a.command, "content-search") && !strcmp(a.query, "P") &&
                !strcmp(a.content_kind, kind[j]));
+        assert(!key(PM_KEY_BACK));
+        assert(!f.remote_browser);
+        /* Search is directly on the installed-content page, not only browse. */
+        f.focus = 0;
+        assert(!key(PM_KEY_DOWN));
+        assert(f.focus == 1);
+        assert(!key(PM_KEY_DOWN));
+        assert(f.focus == 6);
+        assert(!key(PM_KEY_CONFIRM));
+        assert(f.search_editor);
+        assert(!key(PM_KEY_BACK));
+        assert(!f.remote_browser && !f.search_editor);
+        assert(!pointer(450, 380, 1, 0));
+        assert(f.search_editor);
+        assert(!key(PM_KEY_BACK));
+        assert(pointer(1650, 380, 1, 0));
+        assert(!strcmp(a.command, "content-search"));
     }
 }
 static const uint8_t *test_icon(const char *path, unsigned *w, unsigned *h)
@@ -467,6 +501,96 @@ static void render_bounds(void)
     free(bytes);
     pm_frontend_set_icon_loader(NULL);
 }
+static void themes_and_motion(void)
+{
+    fixture();
+    f.screen=PM_SETTINGS;
+    strcpy(v.theme_color,"ocean");
+    assert(!key(PM_KEY_NONE)&&f.theme_index==1);
+    assert(!key(PM_KEY_DOWN)&&f.focus==10);
+    assert(!key(PM_KEY_CONFIRM)&&f.selector_popup==5);
+    assert(!key(PM_KEY_DOWN));
+    assert(!key(PM_KEY_DOWN));
+    assert(key(PM_KEY_CONFIRM)&&f.theme_index==3&&!strcmp(a.theme_color,"amethyst"));
+    f.focus=6;assert(key(PM_KEY_CONFIRM)&&!strcmp(a.theme_color,"amethyst"));
+    assert(!pointer(350,480,1,0)&&f.selector_popup==5);
+    assert(pointer(900,350,1,0)&&f.theme_index==0&&!strcmp(a.theme_color,"grass"));
+    assert(!key(PM_KEY_NEXT_TAB)&&f.transition_ms==220);
+    pm_frontend_tick(&f,16);assert(f.transition_ms==204);
+    for(int j=0;j<15;j++)pm_frontend_tick(&f,16);
+    assert(!f.transition_ms);
+    f.screen=PM_SETTINGS;f.focus=10;
+    assert(!key(PM_KEY_RIGHT)&&f.focus==11);
+    assert(key(PM_KEY_CONFIRM)&&f.vrr_index==1&&!strcmp(a.vrr_mode,"stable"));
+    f.focus=6;assert(key(PM_KEY_CONFIRM)&&!strcmp(a.vrr_mode,"stable"));
+    assert(pointer(1650,480,1,0)&&f.vrr_index==0&&!strcmp(a.vrr_mode,"auto"));
+    f.focus=9;assert(!key(PM_KEY_DOWN)&&f.focus==11);
+    assert(!key(PM_KEY_DOWN)&&f.focus==3);
+    assert(!key(PM_KEY_UP)&&f.focus==11);
+    assert(!key(PM_KEY_LEFT)&&f.focus==10);
+    assert(!key(PM_KEY_DOWN)&&f.focus==1);
+    assert(!key(PM_KEY_DOWN)&&f.focus==5);
+    assert(!key(PM_KEY_RIGHT)&&f.focus==6);
+}
+static void full_palettes_and_transparent_icons(void)
+{
+    fixture();
+    const char *names[]={"grass","ocean","diamond","amethyst","redstone","gold"};
+    uint8_t *pixels=calloc(1,1920*1080*4);assert(pixels);
+    PwPresentTarget target={pixels,1920,1080,1920*4,1920*1080*4};
+    uint32_t backgrounds[6],surfaces[6];
+    pm_frontend_set_icon_loader(test_icon);
+    image_pixels[15]=0;
+    strcpy(v.instances[0].icon,"test-icon");
+    for(int j=0;j<6;j++)
+    {
+        pm_frontend_init(&f);strcpy(v.theme_color,names[j]);
+        f.header_focus=PM_HOME;
+        pm_frontend_render(&f,&v,&target);
+        memcpy(&backgrounds[j],pixels+(180*1920+20)*4,4);
+        memcpy(&surfaces[j],pixels+(325*1920+218)*4,4);
+        // The existing 2x2 icon fixture's transparent corner must leave the
+        // same card surface as its surroundings, with no opaque icon plate.
+        assert(!memcmp(pixels+(377*1920+193)*4,pixels+(377*1920+218)*4,4));
+        for(int k=0;k<j;k++)
+        {
+            assert(backgrounds[j]!=backgrounds[k]);
+            assert(surfaces[j]!=surfaces[k]);
+        }
+    }
+    image_pixels[15]=255;
+    free(pixels);pm_frontend_set_icon_loader(NULL);
+    puts("FULL_PALETTE_AND_ICON_ALPHA_PASS six backgrounds and surfaces");
+}
+static void renaming(void)
+{
+    fixture();f.screen=PM_LIBRARY;f.focus=3;
+    assert(!key(PM_KEY_CONFIRM)&&f.rename_editor&&f.rename_replace);
+    assert(!key(PM_KEY_CONFIRM)&&!strcmp(f.rename_text,"A"));
+    f.rename_key=42;assert(!key(PM_KEY_CONFIRM)&&f.rename_lower);
+    f.rename_key=1;assert(!key(PM_KEY_CONFIRM)&&!strcmp(f.rename_text,"Ab"));
+    pm_frontend_text(&f,'.');pm_frontend_text(&f,'2');
+    assert(!key(PM_KEY_SECONDARY)&&!strcmp(f.rename_text,"Ab."));
+    assert(key(PM_KEY_REFRESH)&&!f.rename_editor&&!strcmp(a.command,"rename-instance")&&
+           !strcmp(a.id,"world-0")&&!strcmp(a.name,"Ab."));
+    assert(!pointer(1400,689,1,0)&&f.rename_editor);
+    assert(!pointer(250,320,1,0)&&f.rename_replace);
+    pm_frontend_text(&f,'N');pm_frontend_text(&f,'E');pm_frontend_text(&f,'W');
+    assert(pointer(1500,735,1,0)&&!strcmp(a.name,"NEW"));
+    assert(!key(PM_KEY_CONFIRM)&&f.rename_editor);
+    f.rename_key=41;assert(!key(PM_KEY_CONFIRM)&&!f.rename_text[0]);
+    assert(!key(PM_KEY_REFRESH)&&f.rename_editor&&!a.command[0]&&f.notice[0]);
+    pm_frontend_text(&f,'X');v.busy=1;
+    assert(!key(PM_KEY_REFRESH)&&f.rename_editor&&!a.command[0]);
+    v.busy=0;f.selected_instance=1;
+    assert(!key(PM_KEY_REFRESH)&&!a.command[0]);
+    assert(!key(PM_KEY_BACK)&&!f.rename_editor);
+    f.selected_instance=0;assert(!key(PM_KEY_CONFIRM));
+    pm_frontend_text(&f,'C');
+    for(int j=0;j<150;j++)pm_frontend_text(&f,'D');
+    assert(strlen(f.rename_text)==96);
+    f.rename_key=44;assert(!key(PM_KEY_CONFIRM)&&!f.rename_editor&&!a.command[0]);
+}
 int main(void)
 {
     home_library();
@@ -475,6 +599,9 @@ int main(void)
     settings_accounts_close();
     search_and_delete_regressions();
     render_bounds();
+    themes_and_motion();
+    renaming();
+    full_palettes_and_transparent_icons();
     puts("Launcher controller, pointer, content, deletion, close and framebuffer checks passed.");
     return 0;
 }

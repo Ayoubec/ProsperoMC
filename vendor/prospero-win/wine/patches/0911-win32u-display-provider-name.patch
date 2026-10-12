@@ -1,0 +1,16 @@
+Subject: win32u: publish the display driver's provider in its class key
+
+OSHI reads DriverDesc, ProviderName and DriverVersion together. Publish the
+same provider already used for DEVPKEY_Device_DriverProvider when creating
+the adapter class key, including after Wine rebuilds its display devices.
+
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -1650,6 +1650,7 @@
+     set_reg_value( hkey, memory_sizeW, REG_DWORD, &value, sizeof(value) );
+ 
+     set_reg_ascii_value( hkey, "DriverVersion", driver_vendor_to_version( pci->vendor ) );
++    set_reg_ascii_value( hkey, "ProviderName", driver_vendor_to_name( pci->vendor ) );
+     NtClose( hkey );
+ 
+ 

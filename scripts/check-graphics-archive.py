@@ -27,7 +27,12 @@ after=root/'.deps/graphics-sdk-batching/sdk/lib'
 a=members(before/'libps5_opengl_core33.a');b=members(after/'libps5_opengl_core33.a')
 assert a.keys()==b.keys()
 assert [name for name in a if a[name]!=b[name]]==['ps5_screen.o','ps5_agc_runtime_backend.o']
-assert hashlib.sha256((before/'libpsbc.ps5.a').read_bytes()).digest()==hashlib.sha256((after/'libpsbc.ps5.a').read_bytes()).digest()
+a_comp=members(before/'libpsbc.ps5.a');b_comp=members(after/'libpsbc.ps5.a')
+assert a_comp.keys()==b_comp.keys()
+assert [name for name in a_comp if a_comp[name]!=b_comp[name]]==['psbc_compile.ps5.o']
+a_gallium=members(before/'libgallium.a');b_gallium=members(after/'libgallium.a')
+assert a_gallium.keys()==b_gallium.keys()
+assert [name for name in a_gallium if a_gallium[name]!=b_gallium[name]]==['util_u_vbuf.c.o']
 provenance=json.loads((root/'.deps/graphics-sdk-batching/provenance.json').read_text())
 if not provenance['draw_profile']:
     driver=(root/'artifacts/graphics-batching/ps5_screen.o').read_bytes()
@@ -42,6 +47,6 @@ if not provenance['draw_profile']:
     if provenance.get('async_native_prepare'):
         assert b'[ps5-async-prep] cpu=' in native
         assert b'pthread_create' in native and b'pthread_join' in native
-message='PASS: only draw driver and native runtime backend changed; every other runtime object and compiler library remains from verified CI SDK'
+message='PASS: only draw driver, native runtime backend, integer-format compiler and owned Mesa vertex uploader changed; every other archive member remains from verified CI SDK'
 (root/'artifacts/graphics-batching/archive-check.log').write_text(message+'\n')
 print(message)

@@ -564,6 +564,99 @@ native_after = native_after.replace(anchor, '''        ++runtime_present_count;
         runtime_batch_timing_present(present_ns, os_time_get_nano());
 #endif
 #if defined(PS5_DRAW_PROFILE)''')
+# Modern vanilla repeatedly draws unchanged shared terrain index buffers.
+# Reuse their fully validated ranges, rather than rescan every visible chunk.
+index_cache = (root / 'scripts/graphics-index-bounds-cache.c').read_text()
+index_marker = '/* Index bounds helpers; require ps5_resource. */'
+types, index_helper = index_cache.split(index_marker, 1)
+after = after.replace('struct ps5_resource {', types + '\nstruct ps5_resource {', 1)
+after = after.replace('   bool buffer_published;',
+    '   bool buffer_published;\n   bool index_bounds_gpu_writable;\n   struct ps5_index_bounds_cache index_bounds_cache;\n   struct ps5_index_bounds_metrics index_bounds_metrics;', 1)
+after = after.replace('static void\nps5_log_indices(',
+    index_marker + index_helper + '\nstatic void\nps5_log_indices(', 1)
+# Integer accounting only: no draw clocks, atomics, extra locks or hot I/O.
+# Print bounded per-resource receipts when storage is destroyed and aggregate
+# all resources at screen teardown, including statistics across invalidations.
+after = after.replace('   uint64_t census_created, census_destroyed;',
+    '   uint64_t census_created, census_destroyed;\n   uint64_t index_bounds_totals[8];\n   unsigned index_bounds_reports, index_bounded_reports;', 1)
+anchor = '   simple_mtx_lock(&ps5->resource_mutex);\n   if (resource->census_accounted) {'
+assert after.count(anchor) == 1
+after = after.replace(anchor, '''   simple_mtx_lock(&ps5->resource_mutex);
+   const struct ps5_index_bounds_metrics *metrics = &resource->index_bounds_metrics;
+   const uint64_t counts[] = {metrics->calls, metrics->range_hits, metrics->quad_hits,
+      metrics->scans, metrics->scanned_indices, metrics->quad_validated, metrics->bypass, metrics->gpu_bounded};
+   for (unsigned i = 0; i < 8; ++i)
+      ps5->index_bounds_totals[i] += counts[i];
+   if (metrics->calls >= 1024 && (metrics->gpu_bounded
+         ? ps5->index_bounded_reports++ < 8 : ps5->index_bounds_reports++ < 16))
+      printf("[ps5-index-resource] bytes=%zu calls=%" PRIu64 " range_hits=%" PRIu64
+             " quad_hits=%" PRIu64 " scans=%" PRIu64 " scanned_indices=%" PRIu64
+             " quad_validated=%" PRIu64 " bypass=%" PRIu64 " gpu_bounded=%" PRIu64 " external=%u gpu_writable=%u\\n",
+             resource->size, counts[0], counts[1], counts[2], counts[3], counts[4],
+             counts[5], counts[6], counts[7], resource->external_cpu_access, resource->index_bounds_gpu_writable);
+   if (resource->census_accounted) {''', 1)
+anchor = '   simple_mtx_destroy(&screen->submit_mutex);'
+assert after.count(anchor) == 1
+after = after.replace(anchor, '''   printf("[ps5-index-summary] calls=%" PRIu64 " range_hits=%" PRIu64
+          " quad_hits=%" PRIu64 " scans=%" PRIu64 " scanned_indices=%" PRIu64
+          " quad_validated=%" PRIu64 " bypass=%" PRIu64 " gpu_bounded=%" PRIu64 "\\n",
+          screen->index_bounds_totals[0], screen->index_bounds_totals[1],
+          screen->index_bounds_totals[2], screen->index_bounds_totals[3],
+          screen->index_bounds_totals[4], screen->index_bounds_totals[5],
+          screen->index_bounds_totals[6], screen->index_bounds_totals[7]);
+''' + anchor, 1)
+old = '''      } else if (!ps5_index_bounds(indices, info->index_size, draws[0].count,
+                                  draws[0].index_bias, &min_index, &max_index,'''
+assert after.count(old) == 1
+after = after.replace(old, '''      } else if (!ps5_cached_index_bounds(index_resource, index_offset,
+                                  info->index_size, draws[0].count,
+                                  draws[0].index_bias, &min_index, &max_index,''')
+gpu_vertex_bounds = (root / 'scripts/graphics-gpu-vertex-bounds.c').read_text()
+anchor = 'static void\nps5_draw_vbo_locked('
+assert after.count(anchor) == 1
+after = after.replace(anchor, gpu_vertex_bounds + '\n' + anchor, 1)
+anchor = '''      if (context->legacy_batch_quads && info->index_bounds_valid &&'''
+assert after.count(anchor) == 1
+after = after.replace(anchor, '''      unsigned vertex_capacity;
+      const bool gpu_bounded = ps5_gpu_vertex_capacity(context, info,
+         draws[0].index_bias, &vertex_capacity);
+      if (gpu_bounded) {
+         ++index_resource->index_bounds_metrics.calls;
+         ++index_resource->index_bounds_metrics.gpu_bounded;
+         min_index = min_effective = 0;
+         max_index = max_effective = vertex_capacity - 1u;
+      } else if (context->legacy_batch_quads && info->index_bounds_valid &&''', 1)
+# Publication invalidation already covers both synchronized and unsynchronized
+# CPU writes. Owned read-only maps preserve bytes and keep the cached bounds.
+after = after.replace('      buffer->buffer_published = false;',
+    '      buffer->buffer_published = false;\n      memset(&buffer->index_bounds_cache, 0, sizeof(buffer->index_bounds_cache));')
+after = after.replace('\n   buffer->buffer_published = false;',
+    '\n   buffer->buffer_published = false;\n   memset(&buffer->index_bounds_cache, 0, sizeof(buffer->index_bounds_cache));')
+after = after.replace('   if (!read_owned) resource->buffer_published = false;',
+    '''   if (!read_owned) {
+      resource->buffer_published = false;
+      memset(&resource->index_bounds_cache, 0, sizeof(resource->index_bounds_cache));
+   }''')
+# A later CPU read can retire a GPU write and make the bytes cacheable again.
+# Clear the old entries before marking that backing clean.
+after = after.replace('   resource->gpu_written = false;',
+    '   memset(&resource->index_bounds_cache, 0, sizeof(resource->index_bounds_cache));\n   resource->gpu_written = false;')
+# Storage and transform-feedback writes can complete synchronously without
+# leaving gpu_written set. Once a buffer has been bound for those roles, keep
+# scanning it even after a CPU read. Ordinary immutable terrain indices retain
+# their cache without depending on broad allocation bind flags.
+for anchor, resource in (
+    ('      pipe_resource_reference(&bound->buffer, b ? b->buffer : NULL);', 'b ? b->buffer : NULL'),
+    ('      pipe_resource_reference(&bound->resource, next.resource);', 'next.resource'),
+    ('   pipe_resource_reference(&target->base.buffer, buffer);', 'buffer'),
+):
+    assert after.count(anchor) == 1, anchor
+    indent = anchor[:len(anchor) - len(anchor.lstrip())]
+    mark = (indent + '{\n' + indent + '   struct ps5_resource *written = (struct ps5_resource *)(' + resource + ');\n' +
+            indent + '   if (written) {\n' + indent + '      written->index_bounds_gpu_writable = true;\n' +
+            indent + '      memset(&written->index_bounds_cache, 0, sizeof(written->index_bounds_cache));\n' +
+            indent + '   }\n' + indent + '}\n')
+    after = after.replace(anchor, mark + anchor)
 after = patch_driver(after)
 (out / 'ps5_screen.c').write_bytes(after.encode())
 (out / 'ps5_agc_native_runtime.c').write_bytes(native_after.encode())

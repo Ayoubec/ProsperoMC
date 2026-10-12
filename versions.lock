@@ -1,5 +1,33 @@
 format = 2
-generated = "2026-10-08"
+generated = "2026-10-12"
+current_runtime_profile = "v0.2.0 Wine core and Zink/RADV with preserved legacy Wine dependencies"
+
+[[binary]]
+name = "prospero-win selected core and Zink provider"
+version = "v0.2.0"
+source_revision = "644e32e400c555e340d507383398c5d21b39b0b0"
+url = "https://github.com/mpereiraesaa/prospero-win/releases/download/v0.2.0/prospero-win-v0.2.0.zip"
+sha256 = "7585efc624c2f8077c0d579a045ef808129a7b0bc525a9dd9c5c6db0c51626ca"
+includes = "Selected Wine core/PE companions, Mesa WGL/Zink provider and matching RADV; original release dependencies retained"
+
+[[dependency]]
+name = "prospero-win v0.2.0 source recipe"
+revision = "644e32e400c555e340d507383398c5d21b39b0b0"
+url = "https://github.com/mpereiraesaa/prospero-win"
+archive_sha256 = "f484565adb49aba496bd5dd02e133f3bda12d66580b0e9423cb4f939aac57edb"
+license = "LGPL-2.1-or-later"
+
+[[dependency]]
+name = "Mesa WGL/Zink provider source"
+revision = "e4607ef697fe3df8d1ebc329bf1917d041843306"
+url = "https://github.com/mpereiraesaa/PS5_Mesa"
+license = "MIT and component licenses"
+
+[[dependency]]
+name = "Matching RADV source"
+revision = "01d70579b8d410d6a482e36c6f184798ae4c83ad"
+url = "https://github.com/mpereiraesaa/PS5_Mesa"
+license = "MIT and component licenses"
 
 [[dependency]]
 name = "prospero-win"

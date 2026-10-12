@@ -75,7 +75,8 @@ are modified or deleted.
 
 The deployment tool transfers files; the user launches the app through the
 console's loader. `structurallyComplete=true` does not mean `readyToPlay=true`.
-Follow `docs/console-tests.md` to establish Java, graphics and world execution.
+Verify Java startup, rendering, input and world save/reopen on the console;
+the [compatibility notes](feature-audit.md) describe current coverage.
 
 Some PS5 FTP servers expose signed homebrew files as reconstructed ELF files.
 Before deployment, `scripts/build-ftp-views.py --tool PATH_TO_NATIVE_TOOL`

@@ -126,7 +126,7 @@ def stage_prefix(source: Path, target: Path, wine: Path) -> dict:
     dosdevices.mkdir(parents=True, exist_ok=True)
     # The PS5 virtual-link parser includes CR in targets; use exact Unix bytes
     # even when packaging on Windows.
-    (dosdevices / '.pw-symlinks').write_bytes(b'c:\t../drive_c\nz:\t/\n')
+    (dosdevices / '.pw-symlinks').write_bytes(b'c:\t../drive_c\np:\t/data/ProsperoMC\nz:\t/\n')
     registry = target / 'system.reg'
     registry_bytes = registry.read_bytes().replace(b'@="wow64cpu.dll"', b'@="wowprospero.dll"')
     # The packaged resolver supports localhost, not a host PC's copied name.
@@ -187,6 +187,10 @@ def stage(args: argparse.Namespace) -> dict:
     shutil.copy2(require(PROJECT / 'LICENSE'), output / 'LICENSE')
     if (PROJECT / 'THIRD_PARTY_NOTICES.md').is_file():
         shutil.copy2(PROJECT / 'THIRD_PARTY_NOTICES.md', output / 'THIRD_PARTY_NOTICES.md')
+    webp=PROJECT/'.deps/native/libwebp/libwebp-1.6.0'
+    if webp.is_dir():
+        shutil.copy2(require(webp/'COPYING'),output/'WEBP_LICENSE.txt')
+        shutil.copy2(require(webp/'PATENTS'),output/'WEBP_PATENTS.txt')
     font_license = PROJECT / 'app/native/Montserrat-OFL.txt'
     if font_license.is_file():
         (output / 'LICENSES').mkdir(parents=True, exist_ok=True)
@@ -205,6 +209,10 @@ def stage(args: argparse.Namespace) -> dict:
     copy_tree(args.java, data / 'runtimes/java8')
     (data / 'launcher').mkdir(parents=True, exist_ok=True)
     shutil.copy2(args.launcher, data / 'launcher/prosperomc-launcher.jar')
+    bootstrap=args.launcher.with_name('prosperomc-zipfs.jar')
+    if not bootstrap.is_file():raise ValueError('ZIP channel bootstrap JAR missing from launcher build')
+    for base in (output,data):
+        shutil.copy2(bootstrap,base/'launcher/prosperomc-zipfs.jar')
     prefix = stage_prefix(args.prefix, data / 'prefixes/minecraft', args.wine)
     (data / 'profiles').mkdir(parents=True, exist_ok=True)
     (data / 'imports').mkdir(parents=True, exist_ok=True)
@@ -256,6 +264,7 @@ def stage(args: argparse.Namespace) -> dict:
               'structurallyComplete': True, 'consoleValidated': False,
               'readyToPlay': False, 'wine': wine_info, 'prefix': prefix,
               'javaSha256': digest(args.java / 'bin/java.exe'), 'jarSha256': digest(args.launcher),
+              'zipfsBootstrapSha256':digest(bootstrap),
               'ebootSha256': digest(output / 'eboot.bin'),
               'wineDriveTableSha256': digest(data / 'prefixes/minecraft/dosdevices/.pw-symlinks'),
               'dataRoot': '/data/ProsperoMC',

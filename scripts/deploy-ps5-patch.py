@@ -10,6 +10,7 @@ from pathlib import Path
 from importlib.machinery import SourceFileLoader
 
 zink = SourceFileLoader('zink_provider',str(Path(__file__).with_name('stage-zink-provider.py'))).load_module()
+core = SourceFileLoader('runtime_core',str(Path(__file__).with_name('stage-runtime-v020-core.py'))).load_module()
 
 ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location('deploy', Path(__file__).with_name('deploy-ps5.py'))
@@ -61,6 +62,7 @@ if __name__ == '__main__':
     parser.add_argument('--port', type=int, default=2121)
     parser.add_argument('--wine-fpfix', action='store_true', help='Publish only the verified ntdll repair and source notices')
     parser.add_argument('--launcher-only', action='store_true', help='Publish only the changed launcher JAR and reports')
+    parser.add_argument('--data-drive', action='store_true', help='Also add the scoped P: ProsperoMC data drive; preserve C: and Z:')
     parser.add_argument('--graphics-only', action='store_true', help='Publish only the verified win32u graphics module and reports')
     parser.add_argument('--native-only', action='store_true', help='Publish only the native launcher executable and reports')
     parser.add_argument('--app-update', action='store_true', help='Update app binaries/reports, preserving console game data and settings')
@@ -78,13 +80,19 @@ if __name__ == '__main__':
             names = ['launcher/prosperomc-launcher.jar','win/wine/lib/wine/x86_64-unix/ntdll.prx',
                      'win/wine/lib/wine/x86_64-unix/win32u.prx','WINE_SOURCES.txt','STAGE-REPORT.json','eboot.bin',
                      'sce_sys/icon0.png','sce_sys/pic0.dds','sce_sys/pic1.dds','sce_sys/param.json','sce_sys/snd0.at9']
+            names += [name for name in ('WEBP_LICENSE.txt','WEBP_PATENTS.txt','THIRD_PARTY_NOTICES.md') if (title/name).is_file()]
             names += [p.relative_to(title).as_posix() for p in sorted((title / 'WINE_PATCHES').glob('*.patch'))]
+            launcher_data=['launcher/prosperomc-launcher.jar','STAGE-REPORT.json']
+            if json.loads((title/'STAGE-REPORT.json').read_text()).get('zipfsBootstrapSha256'):
+                names.append('launcher/prosperomc-zipfs.jar');launcher_data.append('launcher/prosperomc-zipfs.jar')
             provider_names=zink.provider_names(title)
             for name in provider_names:
                 deploy.ensure_directory(ftp,deploy.TITLE_ROOT+'/'+str(Path(name).parent).replace('\\','/'))
             names += provider_names
+            core_title, core_data = core.core_names(title)
+            names += [name for name in core_title if name not in names]
             deploy.ensure_directory(ftp,deploy.TITLE_ROOT+'/WINE_PATCHES')
-            publish(ftp,deploy.DATA_ROOT,data,['launcher/prosperomc-launcher.jar','STAGE-REPORT.json'],True)
+            publish(ftp,deploy.DATA_ROOT,data,core_data+launcher_data,True)
             publish(ftp,deploy.TITLE_ROOT,title,names,True)
         elif args.zink_only:
             names=zink.provider_names(title)
@@ -120,7 +128,14 @@ if __name__ == '__main__':
                     patch, 'WINE_SOURCES.txt', 'STAGE-REPORT.json'])
             publish(ftp, deploy.DATA_ROOT, data, ['STAGE-REPORT.json'])
         elif args.launcher_only:
-            publish(ftp, deploy.DATA_ROOT, data, ['launcher/prosperomc-launcher.jar', 'STAGE-REPORT.json'])
+            names=['launcher/prosperomc-launcher.jar', 'STAGE-REPORT.json']
+            if args.data_drive:
+                remote=bytearray()
+                ftp.retrbinary('RETR '+deploy.DATA_ROOT+'/prefixes/minecraft/dosdevices/.pw-symlinks',remote.extend)
+                if bytes(remote) not in (b'c:\t../drive_c\nz:\t/\n',b'c:\t../drive_c\np:\t/data/ProsperoMC\nz:\t/\n'):
+                    raise ValueError('Refusing to overwrite custom console drive mappings')
+                names.insert(0,'prefixes/minecraft/dosdevices/.pw-symlinks')
+            publish(ftp, deploy.DATA_ROOT, data, names)
             publish(ftp, deploy.TITLE_ROOT, title, ['launcher/prosperomc-launcher.jar', 'STAGE-REPORT.json'])
         else:
             publish(ftp, deploy.DATA_ROOT, data, ['prefixes/minecraft/dosdevices/.pw-symlinks', 'launcher/prosperomc-launcher.jar', 'STAGE-REPORT.json'])

@@ -12,11 +12,23 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
+          java-version: 17
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
           java-version: 21
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: bash scripts/build-launcher.sh
       - run: bash tests/frontend/run.sh
+        env:
+          HOST_CC: clang
       - run: bash tests/runtime/run.sh
+        env:
+          HOST_CC: clang
       - run: python3 -m unittest discover -s tests/launcher -p 'test_*.py' -v

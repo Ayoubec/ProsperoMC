@@ -118,8 +118,12 @@ final class ModrinthPacks {
         if(!FilesUtil.hash(archive,"SHA-512").equalsIgnoreCase(sha512)) {
             Files.deleteIfExists(archive);throw new IOException("Modpack archive SHA512 mismatch");
         }
-        Map<String,String> req=Main.stringMap("id",instance,"source",archive.toString(),
-            "name",app.request.getOrDefault("name",text(Json.text(metadata,"name"))));
+        Map<String,String> req=Main.stringMap("id",instance,"source",archive.toString());
+        if(app.request.containsKey("name"))req.put("name",app.request.get("name"));
+        try {
+            String title=Json.text(fetch(api()+"/project/"+project,"icon-project-"+project+".json"),"title");
+            if(!title.isEmpty())req.put("packTitle",title);
+        }catch(IOException ignored) { /* The archive's own pack title remains usable. */ }
         Main imported=new Main(app.root,req);
         imported.importPack();
         Map<String,String> created=app.instance(instance);

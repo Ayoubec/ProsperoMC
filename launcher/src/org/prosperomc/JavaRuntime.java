@@ -125,7 +125,7 @@ final class JavaRuntime {
         String key="java"+info.major;
         if(!info.executable.toString().equals(app.settings.get(key))) {
             app.settings.put(key,info.executable.toString());
-            FilesUtil.properties(app.root.resolve("settings.properties"),app.settings);
+            app.persistSettings(key);
         }
     }
 
